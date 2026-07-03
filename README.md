@@ -1,8 +1,10 @@
-# Dreamfall
+# Three.js Playground
 
-Browser-first Dreamfall prototype scaffold using Vite, Solid, and Three.js.
+An experimental browser playground for building and testing real-time 3D ideas with Three.js. It combines small game prototypes, procedural world generation, animation, physics, terrain editing, and rendering experiments in one Vite-powered workspace.
 
-## Current Slice
+This repository is intentionally exploratory rather than a finished game or reusable engine. Features may be incomplete, replaced, or kept as reference implementations while new ideas are tested.
+
+## What’s in the Playground
 
 - Open salt-plane base level.
 - FBX climber model loaded from `public/assets/models/climber.fbx`.
@@ -65,7 +67,7 @@ Press the **Map Builder** button in the floating mode switcher (top center) or h
     - `... / collision` (matching geometry, ready for trimesh or later decimation)
     - `... / metadata` (Object3D carrying `userData.heights` + resolution for round-tripping)
 
-Switch back to **Play** at any time — the original game runtime and level are untouched.
+Switch back to **Play** at any time — the playground runtime and level are untouched.
 
 The terrain modules under `src/world/terrain/` are intentionally pure and importable without the builder or any Solid/Three renderer, for future game integration or tooling.
 
