@@ -1,0 +1,14 @@
+import { existsSync } from 'node:fs';
+import { chromium } from 'playwright';
+const url = process.argv[2];
+const browser = await chromium.launch({ headless: true, executablePath: existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome') ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : undefined });
+const page = await browser.newPage({});
+const errs = [];
+page.on('pageerror', e => errs.push(String(e.message)));
+page.on('console', m => { if (m.type()==='error') errs.push('console: '+m.text()); });
+await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+await page.waitForTimeout(8000);
+const stage = await page.evaluate(() => globalThis.__DREAMFALL_DEBUG__?.snapshot?.()?.stage ?? 'no-bridge');
+console.log('stage after 8s:', stage);
+console.log('errors:', errs.slice(0,8));
+await browser.close();

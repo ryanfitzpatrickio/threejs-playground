@@ -1,0 +1,25 @@
+import { existsSync } from 'node:fs';
+import { chromium } from 'playwright';
+const url = process.argv[2];
+const browser = await chromium.launch({ headless: true, executablePath: existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome') ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : undefined });
+const page = await browser.newPage({});
+await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+await page.waitForSelector('canvas.game-canvas');
+await page.waitForFunction(() => globalThis.__DREAMFALL_DEBUG__?.snapshot?.()?.stage === 'running', { timeout: 30000 });
+const snap = () => page.evaluate(() => globalThis.__DREAMFALL_DEBUG__.snapshot());
+const reset = () => page.evaluate(() => globalThis.__DREAMFALL_DEBUG__.resetFrameStats());
+const report = async (label) => {
+  reset();
+  await page.waitForTimeout(1800);
+  const f = (await snap()).frame;
+  const sys = f.systems || {};
+  const top = Object.entries(sys).sort((a,b)=>b[1]-a[1]);
+  console.log(`[${label}] avg=${f.recentAvgMs} p95=${f.recentP95Ms} max=${f.recentMaxMs} hitches=${f.hitches} streamH=${f.streamingHitches}`);
+  console.log('  ' + top.map(([k,v])=>`${k}=${v}`).join('  '));
+};
+await page.waitForTimeout(400);
+await report('IDLE');
+await page.keyboard.down('KeyW');
+await report('JOG');
+await page.keyboard.up('KeyW');
+await browser.close();

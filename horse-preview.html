@@ -1,0 +1,119 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Horse Leg Preview</title>
+    <style>
+      html, body { margin: 0; background: #20242b; }
+      canvas { display: block; width: 100vw; height: 100vh; }
+      #status { position: fixed; top: 8px; left: 10px; color: #cfe; font: 12px monospace; }
+    </style>
+  </head>
+  <body>
+    <div id="status">loading…</div>
+    <script type="module">
+      import * as THREE from 'three';
+      import { WebGPURenderer, PCFShadowMap, SRGBColorSpace } from 'three/webgpu';
+      import { HorseSystem } from '/src/game/systems/HorseSystem.js';
+
+      const renderer = new WebGPURenderer({ antialias: true });
+      renderer.setPixelRatio(devicePixelRatio);
+      renderer.setSize(innerWidth, innerHeight);
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = PCFShadowMap;
+      renderer.outputColorSpace = SRGBColorSpace;
+      document.body.appendChild(renderer.domElement);
+      await renderer.init();
+
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x9aa9b8);
+      scene.add(new THREE.HemisphereLight(0xffffff, 0x3a3a44, 1.0));
+      const dir = new THREE.DirectionalLight(0xffffff, 1.7);
+      dir.position.set(6, 10, 5);
+      dir.castShadow = true;
+      scene.add(dir);
+      const ground = new THREE.Mesh(
+        new THREE.PlaneGeometry(40, 40),
+        new THREE.MeshStandardMaterial({ color: 0x5d6b4f }),
+      );
+      ground.rotation.x = -Math.PI / 2;
+      ground.receiveShadow = true;
+      scene.add(ground);
+
+      const camera = new THREE.PerspectiveCamera(26, innerWidth / innerHeight, 0.1, 100);
+      camera.position.set(5, 1.3, 0);
+      camera.lookAt(0, 0.85, 0);
+
+      const statusEl = document.getElementById('status');
+      const hs = new HorseSystem();
+      window.__HS = hs;
+      try {
+        await hs.load(scene, { position: new THREE.Vector3(0, 0, 0) });
+      } catch (e) {
+        statusEl.textContent = 'load error: ' + e.message;
+      }
+
+      // Frame a clean profile (side) view. Body length is along X (longest),
+      // width along Z, so view along Z to see the legs in profile.
+      const box = new THREE.Box3().setFromObject(hs.group);
+      const center = box.getCenter(new THREE.Vector3());
+      const size = box.getSize(new THREE.Vector3());
+      const dist = Math.max(size.y, size.z) * 6.5;
+      camera.position.set(center.x, center.y + size.y * 0.05, center.z + dist);
+      camera.lookAt(center.x, center.y, center.z);
+
+      window.__setVariant = (opts = {}) => {
+        hs.setFrontLegBendCorrection(opts.bend ?? { enabled: false });
+        hs.setFrontLegIk(opts.ik ?? { enabled: false });
+      };
+      window.__play = (name) => hs.playAnimation(name);
+      window.__loco = (o) => hs.setLocomotion(o ?? {});
+      window.__info = () => ({ center, size });
+
+      // Deterministic knee-direction read off the LIVE skeleton (real HorseSystem).
+      // cross > 0 => knee folds backward (real-horse carpus), cross < 0 => forward
+      // (human knee). Calibrated against the unmodified Idle pose.
+      window.__measure = () => {
+        hs.horse.updateMatrixWorld(true);
+        const get = (name) => {
+          const b = hs.findBone(name);
+          const p = new THREE.Vector3();
+          b.getWorldPosition(p);
+          return p;
+        };
+        const upper = get('Front_Leg_Upper_L');
+        const lower = get('Front_Leg_Lower_L');
+        const ankle = get('Front_Leg_Ankle_L');
+        const head = get('Head');
+        const hips = get('Hips');
+        const fwd = new THREE.Vector3(head.x - hips.x, 0, head.z - hips.z).normalize();
+        const d1 = new THREE.Vector3().subVectors(lower, upper);
+        const d2 = new THREE.Vector3().subVectors(ankle, lower);
+        const cross = d1.dot(fwd) * d2.y - d1.y * d2.dot(fwd);
+        return {
+          cross: Number(cross.toFixed(4)),
+          fwd: { x: Number(fwd.x.toFixed(3)), y: Number(fwd.y.toFixed(3)), z: Number(fwd.z.toFixed(3)) },
+        };
+      };
+      statusEl.textContent = 'ready';
+      window.__ready = true;
+
+      let last = performance.now();
+      function tick() {
+        const now = performance.now();
+        const dt = Math.min(0.05, (now - last) / 1000);
+        last = now;
+        hs.update({ delta: dt });
+        renderer.render(scene, camera);
+        requestAnimationFrame(tick);
+      }
+      tick();
+
+      addEventListener('resize', () => {
+        camera.aspect = innerWidth / innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(innerWidth, innerHeight);
+      });
+    </script>
+  </body>
+</html>

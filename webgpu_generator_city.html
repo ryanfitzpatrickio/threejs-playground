@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Dreamfall — WebGPU city global illumination</title>
+		<style>
+			html, body { margin: 0; height: 100%; overflow: hidden; background: #10141b; color: #fff; font: 14px/1.45 system-ui, sans-serif; }
+			canvas { display: block; }
+			#info { position: fixed; z-index: 2; top: 16px; left: 16px; max-width: 430px; padding: 12px 14px; border-radius: 8px; background: rgb(8 12 18 / 72%); pointer-events: none; }
+			#info strong { display: block; margin-bottom: 3px; font-size: 16px; }
+			#status { color: #c9d7e8; }
+		</style>
+	</head>
+	<body>
+		<div id="info">
+			<strong>WebGPU city global illumination</strong>
+			<div>WASD to move, drag to look. Use the inspector to change the sun, seed, GI, and probe display.</div>
+			<div id="status">Initializing WebGPU…</div>
+		</div>
+
+		<script type="module">
+			import * as THREE from 'three/webgpu';
+			import { pass, mrt, normalView, screenUV, sample, packNormalToRGB, unpackRGBToNormal, builtinAOContext } from 'three/tsl';
+
+			import { Inspector } from 'three/addons/inspector/Inspector.js';
+			import { FirstPersonControls } from 'three/addons/controls/FirstPersonControls.js';
+			import { SkyMesh } from 'three/addons/objects/SkyMesh.js';
+
+			import { dualKawaseBloom } from './src/three-addons/tsl/display/DualKawaseBloomNode.js';
+			import { ssao } from './src/three-addons/tsl/display/SSAONode.js';
+			import { CityGenerator, createRoadMaterial } from './src/three-addons/generators/CityGenerator.js';
+			import { createSkyscraperMaterial } from './src/three-addons/generators/city/SkyscraperGenerator.js';
+			import { LightProbeGrid } from './src/three-addons/lighting/LightProbeGrid.js';
+			import { LightProbeGridHelper } from './src/three-addons/helpers/LightProbeGridHelper.js';
+
+			let camera, scene, renderer, controls, timer;
+			let city, cityGroup, cityProxy, materials, renderPipeline;
+			let sky, sun, sunLight, pmremGenerator, envScene, envRenderTarget;
+			let probes, probesHelper, rebakeTimer = null;
+
+			const GRID_SIZE = new THREE.Vector3( 240, 120, 170 );
+			const GRID_PROBES = new THREE.Vector3( 10, 7, 8 );
+
+			const parameters = {
+				seed: 94,
+				timeOfDay: 6.4,
+				gi: true,
+				showProbes: false
+			};
+
+			init().catch( ( error ) => {
+				console.error( error );
+				document.querySelector( '#status' ).textContent = `Failed: ${ error.message }`;
+			} );
+
+			async function init() {
+
+				renderer = new THREE.WebGPURenderer( { antialias: true } );
+				renderer.setPixelRatio( window.devicePixelRatio );
+				renderer.setSize( window.innerWidth, window.innerHeight );
+				renderer.toneMapping = THREE.ACESFilmicToneMapping;
+				renderer.toneMappingExposure = 0.13;
+				renderer.shadowMap.enabled = true;
+				renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+				renderer.inspector = new Inspector();
+				document.body.appendChild( renderer.domElement );
+
+				await renderer.init();
+				pmremGenerator = new THREE.PMREMGenerator( renderer );
+
+				scene = new THREE.Scene();
+				scene.environmentIntensity = 0.05;
+
+				sky = new SkyMesh();
+				sky.scale.setScalar( 10000 );
+				sky.turbidity.value = 8;
+				sky.rayleigh.value = 3;
+				sky.mieCoefficient.value = 0.008;
+				sky.mieDirectionalG.value = 0.88;
+
+				sun = new THREE.Vector3();
+				envScene = new THREE.Scene();
+
+				camera = new THREE.PerspectiveCamera( 55, window.innerWidth / window.innerHeight, 1, 20000 );
+				camera.position.set( - 35, 55, - 100 );
+
+				controls = new FirstPersonControls( camera, renderer.domElement );
+				controls.movementSpeed = 15;
+				controls.lookSpeed = 0.25;
+				controls.lookAt( 35, 55, 0 );
+				timer = new THREE.Timer();
+
+				city = new CityGenerator( { seed: parameters.seed } );
+				const floorW = city.layout.cityW + 2 * city.layout.street;
+				const floorD = city.layout.cityD + 2 * city.layout.street;
+				const ground = new THREE.Mesh(
+					new THREE.PlaneGeometry( floorW, floorD ).rotateX( - Math.PI / 2 ),
+					createRoadMaterial( city.layout )
+				);
+				ground.receiveShadow = true;
+				scene.add( ground );
+
+				sunLight = new THREE.DirectionalLight();
+				sunLight.castShadow = true;
+				sunLight.shadow.camera.left = - 280;
+				sunLight.shadow.camera.right = 280;
+				sunLight.shadow.camera.top = 240;
+				sunLight.shadow.camera.bottom = - 160;
+				sunLight.shadow.camera.far = 2400;
+				sunLight.shadow.mapSize.set( 4096, 4096 );
+				sunLight.shadow.bias = - 0.0004;
+				scene.add( sunLight );
+
+				updateSun();
+				materials = { building: createSkyscraperMaterial() };
+				generateCity();
+
+				document.querySelector( '#status' ).textContent = 'Baking irradiance probes…';
+				await new Promise( requestAnimationFrame );
+				bakeProbes();
+				document.querySelector( '#status' ).textContent = `${ GRID_PROBES.x * GRID_PROBES.y * GRID_PROBES.z } probes baked`;
+
+				// Feed half-resolution SSAO into the indirect-light context, preserving
+				// direct sun, then add a low-cost quarter-resolution bloom pass.
+				renderPipeline = new THREE.RenderPipeline( renderer );
+
+				const prePass = pass( scene, camera );
+				prePass.transparent = false;
+				prePass.setMRT( mrt( { output: packNormalToRGB( normalView ) } ) );
+				prePass.getTexture( 'output' ).type = THREE.UnsignedByteType;
+
+				const prePassNormal = sample( ( uv ) => unpackRGBToNormal( prePass.getTextureNode().sample( uv ) ) );
+				const prePassDepth = prePass.getTextureNode( 'depth' );
+				const aoPass = ssao( prePassDepth, prePassNormal, camera );
+				aoPass.resolutionScale = 0.5;
+				aoPass.samples.value = 8;
+				aoPass.radius.value = 1.5;
+				aoPass.intensity.value = 4;
+				aoPass.blurEnabled = false;
+
+				const scenePass = pass( scene, camera );
+				scenePass.contextNode = builtinAOContext( aoPass.getTextureNode().sample( screenUV ).r );
+				const scenePassColor = scenePass.getTextureNode();
+				const bloomPass = dualKawaseBloom( scenePassColor, 0.05, 0, 0 );
+				bloomPass.setResolutionScale( 0.25 );
+				renderPipeline.outputNode = scenePassColor.add( bloomPass );
+
+				const gui = renderer.inspector.createParameters( 'City GI' );
+				gui.add( parameters, 'seed', 0, 100, 1 ).onChange( () => {
+					generateCity();
+					scheduleRebake();
+				} );
+				gui.add( parameters, 'timeOfDay', 6, 18, 0.1 ).name( 'time of day' ).onChange( () => {
+					updateSun();
+					scheduleRebake();
+				} );
+				gui.add( renderer, 'toneMappingExposure', 0.01, 1 ).name( 'exposure' );
+				gui.add( parameters, 'gi' ).name( 'global illumination' ).onChange( ( value ) => {
+					if ( probes ) probes.visible = value;
+				} );
+				gui.add( parameters, 'showProbes' ).name( 'show probes' ).onChange( toggleProbesHelper );
+
+				window.addEventListener( 'resize', onWindowResize );
+				renderer.setAnimationLoop( animate );
+
+			}
+
+			function updateSun() {
+
+				const u = ( parameters.timeOfDay - 12 ) / 6;
+				const elevation = Math.max( 0, 1 - u * u ) * 72;
+				const azimuth = 90 - u * 55;
+
+				sun.setFromSphericalCoords(
+					1,
+					THREE.MathUtils.degToRad( 90 - elevation ),
+					THREE.MathUtils.degToRad( azimuth )
+				);
+				sky.sunPosition.value.copy( sun );
+
+				const transmittance = Math.sqrt( Math.max( Math.sin( THREE.MathUtils.degToRad( elevation ) ), 0 ) );
+				sunLight.color.set( 0xffb072 ).lerp( new THREE.Color( 0xfff4e8 ), transmittance );
+				sunLight.intensity = 100 * transmittance;
+				sunLight.position.copy( sun ).multiplyScalar( 600 );
+
+				sky.showSunDisc.value = false;
+				envScene.add( sky );
+				envRenderTarget = pmremGenerator.fromScene( envScene, 0, 0.1, 100, { renderTarget: envRenderTarget } );
+				scene.environment = envRenderTarget.texture;
+				sky.showSunDisc.value = true;
+				scene.add( sky );
+
+			}
+
+			function generateCity() {
+
+				if ( cityGroup ) scene.remove( cityGroup );
+				if ( cityProxy ) {
+					scene.remove( cityProxy );
+					cityProxy.geometry.dispose();
+					cityProxy.material.dispose();
+				}
+
+				city.parameters.seed = parameters.seed;
+				cityGroup = city.build( materials );
+				scene.add( cityGroup );
+
+				cityProxy = city.buildProxy();
+				cityProxy.visible = false;
+				scene.add( cityProxy );
+
+			}
+
+			function bakeProbes() {
+
+				if ( probes === undefined ) {
+					probes = new LightProbeGrid( GRID_SIZE.x, GRID_SIZE.y, GRID_SIZE.z, GRID_PROBES.x, GRID_PROBES.y, GRID_PROBES.z );
+					probes.position.set( 0, GRID_SIZE.y / 2 + 1, 0 );
+					scene.add( probes );
+				}
+
+				if ( probesHelper ) probesHelper.visible = false;
+				cityGroup.visible = false;
+				cityProxy.visible = true;
+				sky.showSunDisc.value = false;
+
+				probes.bake( renderer, scene, { cubemapSize: 16, near: 0.1, far: 20000, bounces: 1 } );
+
+				sky.showSunDisc.value = true;
+				cityProxy.visible = false;
+				cityGroup.visible = true;
+				probes.visible = parameters.gi;
+
+				if ( probesHelper ) {
+					probesHelper.update();
+					probesHelper.visible = parameters.showProbes;
+				}
+
+			}
+
+			function scheduleRebake() {
+
+				if ( rebakeTimer !== null ) clearTimeout( rebakeTimer );
+				rebakeTimer = setTimeout( () => {
+					rebakeTimer = null;
+					document.querySelector( '#status' ).textContent = 'Rebaking irradiance probes…';
+					bakeProbes();
+					document.querySelector( '#status' ).textContent = 'Probe bake updated';
+				}, 300 );
+
+			}
+
+			function toggleProbesHelper( value ) {
+
+				if ( probesHelper === undefined ) {
+					probesHelper = new LightProbeGridHelper( probes, 3 );
+					scene.add( probesHelper );
+				}
+				probesHelper.visible = value;
+
+			}
+
+			function onWindowResize() {
+
+				camera.aspect = window.innerWidth / window.innerHeight;
+				camera.updateProjectionMatrix();
+				renderer.setSize( window.innerWidth, window.innerHeight );
+
+			}
+
+			function animate() {
+
+				timer.update();
+				controls.update( timer.getDelta() );
+				renderPipeline.render();
+
+			}
+		</script>
+	</body>
+</html>

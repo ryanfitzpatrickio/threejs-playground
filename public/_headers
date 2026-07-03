@@ -1,0 +1,21 @@
+/*
+  # Basic security headers for the game
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer-when-downgrade
+
+# Long-term caching for all fingerprinted build assets and static media
+# (Vite produces hashed filenames for JS/CSS chunks; public/ media too)
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# The worker and any top level chunks
+/*-*.js
+  Cache-Control: public, max-age=31536000, immutable
+
+/*-*.css
+  Cache-Control: public, max-age=31536000, immutable
+
+# HTML should be revalidated
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate

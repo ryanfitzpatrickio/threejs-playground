@@ -1,0 +1,566 @@
+{
+  "schemaVersion": 1,
+  "source": "urban-track-atlas-source.png",
+  "sourceSize": [
+    1254,
+    1254
+  ],
+  "grid": {
+    "columns": 4,
+    "rows": 4,
+    "boundaries": [
+      0,
+      314,
+      627,
+      940,
+      1254
+    ]
+  },
+  "coordinateSystem": "top-left origin; pixel rectangles are [x, y, width, height]",
+  "assets": {
+    "barrier_red_white": {
+      "file": "slices/barrier_red_white.png",
+      "kind": "barrier",
+      "gridCell": [
+        0,
+        0
+      ],
+      "sourceRect": [
+        0,
+        0,
+        314,
+        314
+      ],
+      "trimRectInCell": [
+        2,
+        3,
+        312,
+        311
+      ],
+      "pixelSize": [
+        312,
+        311
+      ],
+      "pivot": [
+        0.5,
+        0.0
+      ],
+      "worldSizeMeters": [
+        2.4,
+        0.9
+      ],
+      "repeatableHorizontally": true,
+      "alphaMode": "blend"
+    },
+    "barrier_hazard": {
+      "file": "slices/barrier_hazard.png",
+      "kind": "barrier",
+      "gridCell": [
+        1,
+        0
+      ],
+      "sourceRect": [
+        314,
+        0,
+        313,
+        314
+      ],
+      "trimRectInCell": [
+        1,
+        2,
+        312,
+        312
+      ],
+      "pixelSize": [
+        312,
+        312
+      ],
+      "pivot": [
+        0.5,
+        0.0
+      ],
+      "worldSizeMeters": [
+        2.4,
+        0.9
+      ],
+      "repeatableHorizontally": true,
+      "alphaMode": "blend"
+    },
+    "barrier_blue_white": {
+      "file": "slices/barrier_blue_white.png",
+      "kind": "barrier",
+      "gridCell": [
+        2,
+        0
+      ],
+      "sourceRect": [
+        627,
+        0,
+        313,
+        314
+      ],
+      "trimRectInCell": [
+        0,
+        3,
+        312,
+        311
+      ],
+      "pixelSize": [
+        312,
+        311
+      ],
+      "pivot": [
+        0.5,
+        0.0
+      ],
+      "worldSizeMeters": [
+        2.4,
+        0.9
+      ],
+      "repeatableHorizontally": true,
+      "alphaMode": "blend"
+    },
+    "wall_dark_reflectors": {
+      "file": "slices/wall_dark_reflectors.png",
+      "kind": "barrier",
+      "gridCell": [
+        3,
+        0
+      ],
+      "sourceRect": [
+        940,
+        0,
+        314,
+        314
+      ],
+      "trimRectInCell": [
+        0,
+        2,
+        312,
+        312
+      ],
+      "pixelSize": [
+        312,
+        312
+      ],
+      "pivot": [
+        0.5,
+        0.0
+      ],
+      "worldSizeMeters": [
+        2.4,
+        0.9
+      ],
+      "repeatableHorizontally": true,
+      "alphaMode": "blend"
+    },
+    "sign_checkpoint": {
+      "file": "slices/sign_checkpoint.png",
+      "kind": "billboard",
+      "gridCell": [
+        0,
+        1
+      ],
+      "sourceRect": [
+        0,
+        314,
+        314,
+        313
+      ],
+      "trimRectInCell": [
+        2,
+        1,
+        312,
+        312
+      ],
+      "pixelSize": [
+        312,
+        312
+      ],
+      "pivot": [
+        0.5,
+        0.0
+      ],
+      "worldSizeMeters": [
+        2.4,
+        1.2
+      ],
+      "repeatableHorizontally": false,
+      "alphaMode": "blend"
+    },
+    "sign_chevron_left": {
+      "file": "slices/sign_chevron_left.png",
+      "kind": "billboard",
+      "gridCell": [
+        1,
+        1
+      ],
+      "sourceRect": [
+        314,
+        314,
+        313,
+        313
+      ],
+      "trimRectInCell": [
+        1,
+        1,
+        312,
+        312
+      ],
+      "pixelSize": [
+        312,
+        312
+      ],
+      "pivot": [
+        0.5,
+        0.0
+      ],
+      "worldSizeMeters": [
+        2.0,
+        1.0
+      ],
+      "repeatableHorizontally": false,
+      "alphaMode": "blend"
+    },
+    "sign_chevron_right": {
+      "file": "slices/sign_chevron_right.png",
+      "kind": "billboard",
+      "gridCell": [
+        2,
+        1
+      ],
+      "sourceRect": [
+        627,
+        314,
+        313,
+        313
+      ],
+      "trimRectInCell": [
+        0,
+        1,
+        312,
+        312
+      ],
+      "pixelSize": [
+        312,
+        312
+      ],
+      "pivot": [
+        0.5,
+        0.0
+      ],
+      "worldSizeMeters": [
+        2.0,
+        1.0
+      ],
+      "repeatableHorizontally": false,
+      "alphaMode": "blend"
+    },
+    "sign_slow": {
+      "file": "slices/sign_slow.png",
+      "kind": "billboard",
+      "gridCell": [
+        3,
+        1
+      ],
+      "sourceRect": [
+        940,
+        314,
+        314,
+        313
+      ],
+      "trimRectInCell": [
+        0,
+        1,
+        312,
+        312
+      ],
+      "pixelSize": [
+        312,
+        312
+      ],
+      "pivot": [
+        0.5,
+        0.0
+      ],
+      "worldSizeMeters": [
+        1.8,
+        1.0
+      ],
+      "repeatableHorizontally": false,
+      "alphaMode": "blend"
+    },
+    "sign_speed_80": {
+      "file": "slices/sign_speed_80.png",
+      "kind": "billboard",
+      "gridCell": [
+        0,
+        2
+      ],
+      "sourceRect": [
+        0,
+        627,
+        314,
+        313
+      ],
+      "trimRectInCell": [
+        2,
+        0,
+        312,
+        312
+      ],
+      "pixelSize": [
+        312,
+        312
+      ],
+      "pivot": [
+        0.5,
+        0.0
+      ],
+      "worldSizeMeters": [
+        1.0,
+        1.0
+      ],
+      "repeatableHorizontally": false,
+      "alphaMode": "blend"
+    },
+    "sign_turn_warning": {
+      "file": "slices/sign_turn_warning.png",
+      "kind": "billboard",
+      "gridCell": [
+        1,
+        2
+      ],
+      "sourceRect": [
+        314,
+        627,
+        313,
+        313
+      ],
+      "trimRectInCell": [
+        1,
+        0,
+        312,
+        312
+      ],
+      "pixelSize": [
+        312,
+        312
+      ],
+      "pivot": [
+        0.5,
+        0.0
+      ],
+      "worldSizeMeters": [
+        1.1,
+        1.0
+      ],
+      "repeatableHorizontally": false,
+      "alphaMode": "blend"
+    },
+    "billboard_apex": {
+      "file": "slices/billboard_apex.png",
+      "kind": "billboard",
+      "gridCell": [
+        2,
+        2
+      ],
+      "sourceRect": [
+        627,
+        627,
+        313,
+        313
+      ],
+      "trimRectInCell": [
+        0,
+        0,
+        312,
+        312
+      ],
+      "pixelSize": [
+        312,
+        312
+      ],
+      "pivot": [
+        0.5,
+        0.0
+      ],
+      "worldSizeMeters": [
+        2.4,
+        1.25
+      ],
+      "repeatableHorizontally": false,
+      "alphaMode": "blend"
+    },
+    "billboard_nightshift": {
+      "file": "slices/billboard_nightshift.png",
+      "kind": "billboard",
+      "gridCell": [
+        3,
+        2
+      ],
+      "sourceRect": [
+        940,
+        627,
+        314,
+        313
+      ],
+      "trimRectInCell": [
+        0,
+        0,
+        312,
+        312
+      ],
+      "pixelSize": [
+        312,
+        312
+      ],
+      "pivot": [
+        0.5,
+        0.0
+      ],
+      "worldSizeMeters": [
+        2.4,
+        1.25
+      ],
+      "repeatableHorizontally": false,
+      "alphaMode": "blend"
+    },
+    "barricade_orange": {
+      "file": "slices/barricade_orange.png",
+      "kind": "billboard",
+      "gridCell": [
+        0,
+        3
+      ],
+      "sourceRect": [
+        0,
+        940,
+        314,
+        314
+      ],
+      "trimRectInCell": [
+        2,
+        0,
+        312,
+        311
+      ],
+      "pixelSize": [
+        312,
+        311
+      ],
+      "pivot": [
+        0.5,
+        0.0
+      ],
+      "worldSizeMeters": [
+        1.8,
+        1.1
+      ],
+      "repeatableHorizontally": false,
+      "alphaMode": "blend"
+    },
+    "tire_barrier": {
+      "file": "slices/tire_barrier.png",
+      "kind": "billboard",
+      "gridCell": [
+        1,
+        3
+      ],
+      "sourceRect": [
+        314,
+        940,
+        313,
+        314
+      ],
+      "trimRectInCell": [
+        1,
+        0,
+        312,
+        311
+      ],
+      "pixelSize": [
+        312,
+        311
+      ],
+      "pivot": [
+        0.5,
+        0.0
+      ],
+      "worldSizeMeters": [
+        2.0,
+        1.25
+      ],
+      "repeatableHorizontally": false,
+      "alphaMode": "blend"
+    },
+    "fence_chainlink": {
+      "file": "slices/fence_chainlink.png",
+      "kind": "billboard",
+      "gridCell": [
+        2,
+        3
+      ],
+      "sourceRect": [
+        627,
+        940,
+        313,
+        314
+      ],
+      "trimRectInCell": [
+        0,
+        0,
+        312,
+        311
+      ],
+      "pixelSize": [
+        312,
+        311
+      ],
+      "pivot": [
+        0.5,
+        0.0
+      ],
+      "worldSizeMeters": [
+        2.0,
+        1.8
+      ],
+      "repeatableHorizontally": true,
+      "alphaMode": "blend"
+    },
+    "cone_warning_lamp": {
+      "file": "slices/cone_warning_lamp.png",
+      "kind": "billboard",
+      "gridCell": [
+        3,
+        3
+      ],
+      "sourceRect": [
+        940,
+        940,
+        314,
+        314
+      ],
+      "trimRectInCell": [
+        0,
+        0,
+        312,
+        311
+      ],
+      "pixelSize": [
+        312,
+        311
+      ],
+      "pivot": [
+        0.5,
+        0.0
+      ],
+      "worldSizeMeters": [
+        0.65,
+        1.25
+      ],
+      "repeatableHorizontally": false,
+      "alphaMode": "blend"
+    }
+  }
+}

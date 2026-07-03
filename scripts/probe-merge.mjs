@@ -1,0 +1,21 @@
+import { existsSync } from 'node:fs';
+import path from 'node:path';
+import { chromium } from 'playwright';
+const url = process.argv[2];
+const browser = await chromium.launch({ headless: true, executablePath: existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome') ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : undefined });
+const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+await page.waitForSelector('canvas.game-canvas');
+await page.waitForFunction(() => globalThis.__DREAMFALL_DEBUG__?.snapshot?.()?.stage === 'running', { timeout: 30000 });
+await page.waitForTimeout(1500);
+const snap = () => page.evaluate(() => globalThis.__DREAMFALL_DEBUG__.snapshot());
+// walk forward a moment so chunks stream in and the camera sees buildings
+await page.keyboard.down('KeyW');
+await page.waitForTimeout(1200);
+await page.keyboard.up('KeyW');
+await page.waitForTimeout(500);
+const s = await snap();
+console.log('renderCalls:', s.renderer.renderCalls, 'triangles:', s.renderer.triangles, 'geometries:', s.renderer.geometries);
+console.log('grounded:', s.character.grounded, 'pos:', JSON.stringify(s.character.position));
+await page.screenshot({ path: path.resolve('.codex-tmp/visual-smoke/city-merged.png') });
+await browser.close();

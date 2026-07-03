@@ -1,0 +1,261 @@
+{
+  "version": 1,
+  "name": "og2",
+  "chunkSize": 32,
+  "bounds": {
+    "minX": -512,
+    "minZ": -512,
+    "maxX": 512,
+    "maxZ": 512
+  },
+  "spawn": {
+    "x": -192,
+    "z": -160,
+    "yaw": 0
+  },
+  "zones": [
+    {
+      "id": "z_mqxew6tu_1",
+      "type": "wilds",
+      "shape": "rect",
+      "rect": {
+        "minX": -512,
+        "minZ": -672,
+        "maxX": 512,
+        "maxZ": -512
+      },
+      "props": {}
+    },
+    {
+      "id": "z_mqy9qnfk_3",
+      "type": "city",
+      "shape": "rect",
+      "rect": {
+        "minX": 512,
+        "minZ": -736,
+        "maxX": 704,
+        "maxZ": 320
+      },
+      "props": {
+        "seed": 136340149
+      }
+    },
+    {
+      "id": "z_mqz76q1j_1",
+      "type": "loopout",
+      "shape": "rect",
+      "rect": {
+        "minX": 512,
+        "minZ": 320,
+        "maxX": 544,
+        "maxZ": 512
+      },
+      "props": {}
+    }
+  ],
+  "roads": [
+    {
+      "id": "r_mqy9pnvy_1",
+      "points": [
+        {
+          "x": -288,
+          "z": -192
+        },
+        {
+          "x": -416,
+          "z": -96
+        },
+        {
+          "x": -448,
+          "z": 64
+        },
+        {
+          "x": -384,
+          "z": 224
+        },
+        {
+          "x": -192,
+          "z": 288
+        },
+        {
+          "x": -96,
+          "z": 192
+        },
+        {
+          "x": 0,
+          "z": 128
+        },
+        {
+          "x": 96,
+          "z": 224
+        },
+        {
+          "x": 192,
+          "z": 288
+        },
+        {
+          "x": 320,
+          "z": 288
+        },
+        {
+          "x": 384,
+          "z": 128
+        },
+        {
+          "x": 352,
+          "z": -64
+        },
+        {
+          "x": 288,
+          "z": -192
+        },
+        {
+          "x": 128,
+          "z": -224
+        },
+        {
+          "x": -288,
+          "z": -192
+        },
+        {
+          "x": -288,
+          "z": -192
+        }
+      ],
+      "width": 8,
+      "type": "road",
+      "trackStyle": "urbanCircuit"
+    },
+    {
+      "id": "r_mqy9q8g7_2",
+      "points": [
+        {
+          "x": -224,
+          "z": -192
+        },
+        {
+          "x": -160,
+          "z": -128
+        },
+        {
+          "x": 128,
+          "z": -160
+        },
+        {
+          "x": 192,
+          "z": -224
+        }
+      ],
+      "width": 8,
+      "type": "road",
+      "trackStyle": null
+    },
+    {
+      "id": "r_mqz61n2g_4",
+      "points": [
+        {
+          "x": -224,
+          "z": -192
+        },
+        {
+          "x": -224,
+          "z": -288
+        },
+        {
+          "x": -192,
+          "z": -320
+        }
+      ],
+      "width": 8,
+      "type": "road",
+      "trackStyle": null
+    },
+    {
+      "id": "r_mqz61zwz_5",
+      "points": [
+        {
+          "x": -374.4386891689294,
+          "z": -320.5078603292066
+        },
+        {
+          "x": -214.43868916892933,
+          "z": -320.5078603292066
+        }
+      ],
+      "width": 8,
+      "type": "road",
+      "trackStyle": null
+    },
+    {
+      "id": "r_mqz6h4fo_1",
+      "points": [
+        {
+          "x": -192,
+          "z": -320
+        },
+        {
+          "x": -192,
+          "z": -448
+        },
+        {
+          "x": -192,
+          "z": -448
+        },
+        {
+          "x": -192,
+          "z": -448
+        }
+      ],
+      "width": 8,
+      "type": "road",
+      "trackStyle": null
+    },
+    {
+      "id": "r_mqz6hier_2",
+      "points": [
+        {
+          "x": -96,
+          "z": -448
+        },
+        {
+          "x": -96,
+          "z": -832
+        }
+      ],
+      "width": 8,
+      "type": "road",
+      "trackStyle": null
+    },
+    {
+      "id": "r_mqz6iee0_3",
+      "points": [
+        {
+          "x": -192,
+          "z": -448
+        },
+        {
+          "x": -96,
+          "z": -448
+        }
+      ],
+      "width": 8,
+      "type": "road",
+      "trackStyle": null
+    }
+  ],
+  "rivers": [],
+  "pois": [],
+  "entities": [
+    {
+      "id": "e_mqz7383r_1",
+      "name": "salt",
+      "blueprintId": "bp_mqz6l7ee_1",
+      "x": -32,
+      "z": 448,
+      "yaw": 0,
+      "scale": 1,
+      "groundMode": "merge"
+    }
+  ],
+  "createdAt": 1782488163794
+}

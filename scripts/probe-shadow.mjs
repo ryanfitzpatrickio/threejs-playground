@@ -1,0 +1,24 @@
+import { existsSync } from 'node:fs';
+import { chromium } from 'playwright';
+const url = process.argv[2];
+const browser = await chromium.launch({ headless: true, executablePath: existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome') ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : undefined });
+const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+await page.waitForSelector('canvas.game-canvas');
+await page.waitForFunction(() => globalThis.__DREAMFALL_DEBUG__?.snapshot?.()?.stage === 'running', { timeout: 30000 });
+await page.waitForTimeout(2000);
+const read = () => page.evaluate(() => {
+  const s = globalThis.__DREAMFALL_DEBUG__.snapshot();
+  return { char: s.character.position, shadow: s.scene?.shadowTarget, frustum: s.scene?.shadowFrustum, map: s.scene?.shadowMapSize };
+});
+console.log('at spawn:', JSON.stringify(await read()));
+await page.keyboard.down('KeyW');
+await page.waitForTimeout(4000);
+await page.keyboard.up('KeyW');
+await page.waitForTimeout(400);
+const after = await read();
+console.log('after walk:', JSON.stringify(after));
+const dx = after.shadow[0] - after.char.x;
+const dz = after.shadow[2] - after.char.z;
+console.log(`shadow target vs player delta: dx=${dx.toFixed(2)} dz=${dz.toFixed(2)} (should be ~0, i.e. tracking)`);
+await browser.close();

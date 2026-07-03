@@ -1,0 +1,22 @@
+import { existsSync } from 'node:fs';
+import path from 'node:path';
+import { mkdir } from 'node:fs/promises';
+import { chromium } from 'playwright';
+const url = process.env.DREAMFALL_URL ?? 'http://127.0.0.1:5173';
+const out = path.resolve('.codex-tmp', 'visual-smoke');
+await mkdir(out, { recursive: true });
+const browser = await chromium.launch({ headless: true, executablePath: existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome') ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : undefined });
+const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+await page.goto(url, { waitUntil: 'networkidle' });
+await page.waitForSelector('canvas.game-canvas');
+await page.waitForFunction(() => globalThis.__DREAMFALL_DEBUG__?.snapshot?.()?.stage === 'running');
+await page.waitForTimeout(500);
+// Run + draw mid-stride
+await page.keyboard.down('KeyW');
+await page.waitForTimeout(250);
+await page.keyboard.press('KeyQ');
+await page.waitForTimeout(200);
+await page.screenshot({ path: path.join(out, 'layer-draw-moving.png') });
+await page.keyboard.up('KeyW');
+console.log('captured layer-draw-moving.png');
+await browser.close();
