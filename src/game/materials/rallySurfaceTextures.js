@@ -268,14 +268,12 @@ export function createRallySurfaceMaterial(maps, {
     ? normalMap((pomEnabled ? makePom().sample(maps.normalMap) : texture(maps.normalMap, uv)).rgb)
     : null;
 
-  // Base mud treatment: force a controlled dark wet-mud brown. A plain multiply
-  // over-darkens the (light) dirt albedo toward black in shade and washes to sand
-  // in sun glare — so instead MIX mostly toward a fixed mud brown (keeping some
-  // texture variation) and slick the surface (low roughness = wet sheen). Applied
-  // before ruts/rain so ruts darken further and rain layers a wet gloss on top.
+  // Base mud treatment: wet-mud brown over the dirt albedo. Kept lighter than the
+  // first pass — a heavy mix + 0.82 multiply read too dark in shade and washed
+  // to sand only in direct sun.
   if (mudSurface) {
-    baseColorNode = mix(baseColorNode, color(0x53381f), 0.72).mul(0.82);
-    baseRoughnessNode = baseRoughnessNode.mul(0.55);
+    baseColorNode = mix(baseColorNode, color(0x725636), 0.62).mul(0.94);
+    baseRoughnessNode = baseRoughnessNode.mul(0.62);
   }
 
   // Break the uniform gloss with LARGE-scale roughness variation — shallow
@@ -323,8 +321,8 @@ export function createRallySurfaceMaterial(maps, {
     // (raise roughness) so they're clearly distinct from the glossy rain puddles.
     // Tread grooves add darker lines. Gated by `present` so un-stamped road just
     // shows the base mud look.
-    const darken = mix(float(1), float(0.28), rut.mul(present))
-      .mul(mix(float(1), float(0.7), tread.mul(present)));
+    const darken = mix(float(1), float(0.42), rut.mul(present))
+      .mul(mix(float(1), float(0.78), tread.mul(present)));
     baseColorNode = baseColorNode.mul(darken);
     // Churned mud is rougher than the surrounding wet skin (matte, not slick).
     baseRoughnessNode = mix(baseRoughnessNode, float(0.85), rut.mul(present));

@@ -44,6 +44,13 @@ import { spawnVehicleOptions } from '../vehicles/garageBuilds.js';
 import { getActiveWorldMapSync } from '../../world/worldMap/worldMapScenes.js';
 import { sanitizeWebGPUVertexBuffers } from '../geometry/prepareWebGPUGeometry.js';
 import { applyCityLevelOverrides } from '../config/cityPerformance.js';
+import {
+  cycleCameraFeel,
+  getCameraFeel,
+  getComfortEnabled,
+  setCameraFeel,
+  setComfortEnabled,
+} from '../config/cameraComfort.js';
 
 // Office interiors live persistently far below the map, one slot per building,
 // built lazily on first entry and cached for the session. Entering is then a pure
@@ -174,6 +181,10 @@ export class GameRuntime {
     }
 
     this.cameraSystem.initialize(this.sceneSystem.scene, this.qualityPreset);
+    this.cameraSystem.setComfortOptions({
+      enabled: getComfortEnabled(),
+      feel: getCameraFeel(),
+    });
     this.sceneSystem.skySystem?.attachToCamera?.(this.cameraSystem.camera);
     this.sceneSystem.setShadowCamera(this.cameraSystem.camera);
     this.enemyCutSystem.initialize(this.sceneSystem.scene, this.qualityPreset);
@@ -326,7 +337,7 @@ export class GameRuntime {
         ? -Math.PI / 4
         : (this.horseSystem.group?.rotation.y ?? 0);
       const garageVehicleOptions = spawnVehicleOptions(this.levelMode);
-      await this.vehicleSystem.spawnVehicle({
+      const spawnCar = await this.vehicleSystem.spawnVehicle({
         vehicle: new BaseVehicle({
           ...garageVehicleOptions,
           name: 'Spawn Car',
@@ -334,6 +345,9 @@ export class GameRuntime {
           rotationY: carYaw,
         }),
       });
+      if (this.levelMode === 'rally' && character && spawnCar) {
+        await this.vehicleSystem.enterVehicle(character, spawnCar, { warmup: true });
+      }
     }
     if (this.disposed) {
       return;
@@ -904,7 +918,9 @@ export class GameRuntime {
       enabled: !this.vehicleSystem?.activeVehicle && this.mountSystem?.state !== 'mounted',
     });
 
-    if (this.sceneSystem.skySystem?.update(delta, this.cameraSystem?.camera)) {
+    // Skip the sky/env advance while inside a building so the suppressed interior
+    // lighting isn't re-installed each frame.
+    if (!this.insideBuilding && this.sceneSystem.skySystem?.update(delta, this.cameraSystem?.camera)) {
       this.rendererSystem.installEnvironment(this.sceneSystem.scene, this.sceneSystem.skySystem);
     }
 
@@ -1061,7 +1077,41 @@ export class GameRuntime {
     // Facade over the interior so ground/blocking/streaming queries use it. The
     // interior's colliders already live in the physics world (below the map).
     this.levelSystem.level = interior;
+    this._suppressOutdoorLighting();
     this._teleportPlayer(character, interior.spawnPoint);
+  }
+
+  // Turn off the scene-level sun / hemisphere / sky IBL / background while inside
+  // so the interior's own lights (emissive panels + hemisphere + point) read
+  // instead of being washed out by the outdoor environment. Restored on exit; the
+  // per-frame sky/env re-install is skipped while inside (see update()).
+  _suppressOutdoorLighting() {
+    const scene = this.sceneSystem.scene;
+    this._savedLighting = {
+      environment: scene.environment,
+      background: scene.background,
+      fog: scene.fog,
+    };
+    this.sceneSystem.setSunEnabled(false);
+    this.sceneSystem.setHemisphereEnabled(false);
+    this.sceneSystem.skySystem?.setVisible(false);
+    scene.environment = null;
+    scene.background = new THREE.Color(0x090a0d);
+    scene.fog = null;
+  }
+
+  _restoreOutdoorLighting() {
+    const saved = this._savedLighting;
+    if (!saved) return;
+    const scene = this.sceneSystem.scene;
+    this.sceneSystem.setSunEnabled(true);
+    this.sceneSystem.setHemisphereEnabled(true);
+    this.sceneSystem.skySystem?.setVisible(true);
+    scene.environment = saved.environment;
+    scene.background = saved.background;
+    scene.fog = saved.fog;
+    this._savedLighting = null;
+    this.rendererSystem.installEnvironment(scene, this.sceneSystem.skySystem);
   }
 
   // True when the player is standing in the interior doorway (where the exit
@@ -1083,6 +1133,7 @@ export class GameRuntime {
     inside.interior.group.visible = false;
     inside.exteriorLevel.group.visible = true;
     this.levelSystem.level = inside.exteriorLevel;
+    this._restoreOutdoorLighting();
     this._teleportPlayer(character, inside.returnPosition);
     this.insideBuilding = null;
   }
@@ -1130,6 +1181,37 @@ export class GameRuntime {
     this.cameraSystem.cycleVehicleCameraMode();
     this.emitSnapshot();
     return this.snapshot();
+  }
+
+  setVehicleCameraMode(mode) {
+    this.cameraSystem.setVehicleCameraMode(mode);
+    this.emitSnapshot();
+    return this.snapshot();
+  }
+
+  setCameraComfortEnabled(enabled) {
+    setComfortEnabled(Boolean(enabled));
+    this.cameraSystem.setComfortOptions({
+      enabled: getComfortEnabled(),
+      feel: getCameraFeel(),
+    });
+    this.emitSnapshot();
+    return this.snapshot();
+  }
+
+  setCameraFeel(feel) {
+    const normalized = setCameraFeel(feel);
+    this.cameraSystem.setComfortOptions({
+      enabled: getComfortEnabled(),
+      feel: normalized,
+    });
+    this.emitSnapshot();
+    return this.snapshot();
+  }
+
+  cycleCameraFeel() {
+    const next = cycleCameraFeel(getCameraFeel());
+    return this.setCameraFeel(next);
   }
 
   getClothColliderEditorSnapshot() {

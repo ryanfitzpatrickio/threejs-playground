@@ -1186,22 +1186,49 @@ export class WorldMapEditor {
     this.emitChange();
   }
 
+  setSelectedDistrictColor(color) {
+    if (!this.selection || this.selection.kind !== 'district') return;
+    const d = this._districtById(this.selection.id);
+    if (d) {
+      d.color = color;
+      this._dirty = true;
+      this.emitChange();
+    }
+  }
+
+  setSelectedDistrictProp(key, value) {
+    if (!this.selection || this.selection.kind !== 'district') return;
+    const d = this._districtById(this.selection.id);
+    if (d) {
+      if (!d.props) d.props = {};
+      if (value === null || value === '') {
+        delete d.props[key];
+      } else {
+        d.props[key] = value;
+      }
+      this._dirty = true;
+      this.emitChange();
+    }
+  }
+
   addDistrict(spec = {}) {
     const name = String(spec.name || this.districtName || 'District').trim() || 'District';
     const shape = ['rect','polygon','circle','triangle'].includes(spec.shape) ? spec.shape : 'rect';
     const n = (v, fb=0) => { const x = Number(v); return Number.isFinite(x) ? x : fb; };
+    const color = typeof spec.color === 'string' && spec.color ? spec.color : '#4fc3f7';
+    const props = spec.props && typeof spec.props === 'object' ? { ...spec.props } : {};
     let d;
     if (shape === 'circle') {
       const c = spec.center || {x:0,z:0};
-      d = { id: makeId('d'), name, shape: 'circle', center: {x: n(c.x,0), z: n(c.z,0)}, radius: Math.max(2, n(spec.radius, 32)), props: {} };
+      d = { id: makeId('d'), name, shape: 'circle', center: {x: n(c.x,0), z: n(c.z,0)}, radius: Math.max(2, n(spec.radius, 32)), color, props };
     } else if (shape === 'polygon' || shape === 'triangle') {
       const pts = (spec.points || []).map(p => ({x: n(p.x,0), z: n(p.z,0)})).filter(p => Number.isFinite(p.x) && Number.isFinite(p.z));
       if (pts.length < 3) return { success: false, error: 'need 3+ points' };
-      d = { id: makeId('d'), name, shape, points: shape==='triangle' ? pts.slice(0,3) : pts, props: {} };
+      d = { id: makeId('d'), name, shape, points: shape==='triangle' ? pts.slice(0,3) : pts, color, props };
     } else {
       const r = spec.rect;
       if (!r) return { success: false, error: 'rect required' };
-      d = { id: makeId('d'), name, shape: 'rect', rect: { minX: n(r.minX,0), minZ: n(r.minZ,0), maxX: n(r.maxX,0), maxZ: n(r.maxZ,0) }, props: {} };
+      d = { id: makeId('d'), name, shape: 'rect', rect: { minX: n(r.minX,0), minZ: n(r.minZ,0), maxX: n(r.maxX,0), maxZ: n(r.maxZ,0) }, color, props };
     }
     this._pushHistory();
     this.map.districts.push(d);
@@ -1440,7 +1467,7 @@ export class WorldMapEditor {
       }
     } else if (this.selection?.kind === 'district') {
       const d = this._districtById(this.selection.id);
-      if (d) selected = { kind: 'district', id: d.id, name: d.name, shape: d.shape };
+      if (d) selected = { kind: 'district', id: d.id, name: d.name, shape: d.shape, color: d.color, props: d.props ? { ...d.props } : {} };
     }
     return {
       tool: this.tool,
@@ -1484,6 +1511,7 @@ export class WorldMapEditor {
         id: d.id,
         name: d.name,
         shape: d.shape,
+        color: d.color || '#4fc3f7',
       })),
       selected,
       canUndo: this.undoStack.length > 0,
@@ -1589,10 +1617,12 @@ export class WorldMapEditor {
         id: d.id,
         name: d.name,
         shape: d.shape,
+        color: d.color || '#4fc3f7',
         rect: d.rect ? { ...d.rect } : undefined,
         pointsCount: d.points ? d.points.length : 0,
         center: d.center,
         radius: d.radius,
+        props: d.props ? { ...d.props } : {},
       })),
       availableBlueprints: Blueprints.listBlueprints().map((bp) => ({ id: bp.id, name: bp.name })),
     };
@@ -1848,10 +1878,13 @@ export class WorldMapEditor {
 
   _drawDistrict(ctx, d) {
     const selected = this.selection?.kind === 'district' && this.selection.id === d.id;
+    const baseColor = d.color || '#4fc3f7';
     ctx.save();
     ctx.lineWidth = selected ? 2 : 1.5;
-    ctx.strokeStyle = selected ? '#ffeb3b' : '#4fc3f7';
-    ctx.fillStyle = selected ? 'rgba(79,195,247,0.25)' : 'rgba(79,195,247,0.12)';
+    ctx.strokeStyle = selected ? '#ffeb3b' : baseColor;
+    // Use alpha from baseColor or default
+    const fillColor = selected ? 'rgba(255,235,59,0.3)' : (baseColor + '33'); // 20% alpha approx
+    ctx.fillStyle = fillColor;
     ctx.setLineDash(selected ? [] : [4, 3]);
 
     if (d.shape === 'circle') {
@@ -1889,7 +1922,7 @@ export class WorldMapEditor {
     const lx = (b.minX + (b.maxX || b.minX)) * 0.5;
     const ly = b.minZ;
     const ls = this.worldToScreen(lx, ly);
-    ctx.fillStyle = '#e3f2fd';
+    ctx.fillStyle = selected ? '#fff' : '#e3f2fd';
     ctx.font = (selected ? 'bold ' : '') + '11px system-ui, sans-serif';
     ctx.fillText(d.name || 'District', ls.x + 2, ls.y + 12);
 

@@ -216,13 +216,15 @@ export function normalizeDistrict(raw) {
   const id = typeof raw.id === 'string' && raw.id ? raw.id : makeId('d');
   const name = (typeof raw.name === 'string' && raw.name ? raw.name : 'District').trim() || 'District';
   let shape = DISTRICT_SHAPES.includes(raw.shape) ? raw.shape : 'rect';
+  const color = typeof raw.color === 'string' && raw.color ? raw.color : '#4fc3f7';
+  const props = raw.props && typeof raw.props === 'object' ? { ...raw.props } : {};
 
   if (shape === 'circle') {
     const c = raw.center || {};
     const cx = num(c.x, 0);
     const cz = num(c.z, 0);
     const radius = Math.max(1, num(raw.radius, 32));
-    return { id, name, shape: 'circle', center: { x: cx, z: cz }, radius, props: raw.props && typeof raw.props === 'object' ? { ...raw.props } : {} };
+    return { id, name, shape: 'circle', center: { x: cx, z: cz }, radius, color, props };
   }
 
   if (shape === 'polygon' || shape === 'triangle') {
@@ -234,13 +236,13 @@ export function normalizeDistrict(raw) {
     }
     if (pts.length < 3) return null;
     const finalPts = shape === 'triangle' ? pts.slice(0, 3) : pts;
-    return { id, name, shape, points: finalPts, props: raw.props && typeof raw.props === 'object' ? { ...raw.props } : {} };
+    return { id, name, shape, points: finalPts, color, props };
   }
 
   // rect default
   const rect = normalizeRect(raw.rect);
   if (!rect) return null;
-  return { id, name, shape: 'rect', rect, props: raw.props && typeof raw.props === 'object' ? { ...raw.props } : {} };
+  return { id, name, shape: 'rect', rect, color, props };
 }
 
 export function districtContains(d, x, z) {

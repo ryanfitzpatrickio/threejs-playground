@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { createAaaMudParticleRenderer } from '../render/createAaaMudParticleRenderer.js';
 
 const MAX_STREAK_SEGMENTS = 320;
 const MIN_POINT_DISTANCE = 0.16;
@@ -391,14 +392,20 @@ export class DirtDustSystem {
     this.particles = Array.from({ length: this.max }, () => ({
       life: 0, maxLife: 1, age: 0,
       x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0,
-      baseSize: 0, seed: 0,
+      baseSize: 0, seed: 0, isClod: false, floorY: 0,
     }));
 
     this._puffTexture = makeDustPuffTexture(cfg.textureSize ?? 96);
-    // Hard-edged clod texture for mud: an (almost) solid speck, so mud kicks read
-    // as discrete flung particles, never a soft smoke plume. Swapped in on mud.
     this._clodTexture = makeMudClodTexture(cfg.textureSize ?? 96);
     this._activeTexture = this._puffTexture;
+    this.aaaMud = typeof document !== 'undefined'
+      ? createAaaMudParticleRenderer({
+        poolSize: this.max,
+        parent: group,
+        name: 'Rally Mud Clods (AAA)',
+      })
+      : null;
+    this._elapsed = 0;
     const materialParams = {
       transparent: true,
       depthWrite: false,
@@ -474,12 +481,14 @@ export class DirtDustSystem {
       const p = this.particles[i];
       if (p.life <= 0) {
         this._hide(i);
+        this.aaaMud?.hideParticle(i);
         continue;
       }
       p.life -= step;
       p.age += step;
       if (p.life <= 0) {
         this._hide(i);
+        this.aaaMud?.hideParticle(i);
         continue;
       }
       // Turbulence on the CPU so neighbouring trajectories actually diverge.
@@ -496,18 +505,39 @@ export class DirtDustSystem {
       p.vx *= dragK;
       p.vz *= dragK;
 
+      if (p.isClod && p.y <= p.floorY) {
+        this.aaaMud?.spawnDecal(p.x, p.floorY, p.z, this._elapsed);
+        p.life = 0;
+        this._hide(i);
+        this.aaaMud?.hideParticle(i);
+        continue;
+      }
+
       const lifeFrac = THREE.MathUtils.clamp(p.life / p.maxLife, 0, 1); // 1 fresh → 0 dying
       const age01 = 1 - lifeFrac;
-      // Puff grows with age, then shrinks to nothing in its last 30% (death fade).
-      const grown = p.baseSize * (1 + age01 * cfg.size.ageGrow);
-      const deathFade = lifeFrac > 0.3 ? 1 : lifeFrac / 0.3;
-      const scale = grown * deathFade;
-      this._p.set(p.x, p.y, p.z);
-      this._s.set(scale, scale, scale);
-      this._m.compose(this._p, this._camQuat, this._s);
-      this.mesh.setMatrixAt(i, this._m);
-      setRampColor(this._col, age01, p.seed, cfg.color);
-      this.mesh.setColorAt(i, this._col);
+
+      if (p.isClod && this.aaaMud) {
+        this.aaaMud.writeParticle(i, {
+          x: p.x, y: p.y, z: p.z,
+          vx: p.vx, vy: p.vy, vz: p.vz,
+          life01: age01,
+          scale: p.baseSize,
+          seed: p.seed,
+        });
+        this._hide(i);
+      } else {
+        this.aaaMud?.hideParticle(i);
+        // Puff grows with age, then shrinks to nothing in its last 30% (death fade).
+        const grown = p.baseSize * (1 + age01 * cfg.size.ageGrow);
+        const deathFade = lifeFrac > 0.3 ? 1 : lifeFrac / 0.3;
+        const scale = grown * deathFade;
+        this._p.set(p.x, p.y, p.z);
+        this._s.set(scale, scale, scale);
+        this._m.compose(this._p, this._camQuat, this._s);
+        this.mesh.setMatrixAt(i, this._m);
+        setRampColor(this._col, age01, p.seed, cfg.color);
+        this.mesh.setColorAt(i, this._col);
+      }
       active += 1;
       const op = lifeFrac * peak;
       if (op > opacityMax) opacityMax = op;
@@ -563,6 +593,10 @@ export class DirtDustSystem {
 
     this.mesh.instanceMatrix.needsUpdate = true;
     this.mesh.instanceColor.needsUpdate = true;
+    this._elapsed += step;
+    this.aaaMud?.update({ camera, elapsedTime: this._elapsed });
+    const hasClodParticles = this.particles.some((p) => p.isClod && p.life > 0);
+    this.mesh.visible = !hasClodParticles || !this.aaaMud;
   }
 
   // Collapse an instance to zero scale so it renders nothing.
@@ -620,6 +654,8 @@ export class DirtDustSystem {
     p.life = p.maxLife;
     p.age = 0;
     p.wheelIndex = wheelIndex;
+    p.isClod = Boolean(cfg.clod);
+    p.floorY = contact.y + 0.015;
     // No per-instance write here: the next update() loop sees life > 0 and
     // writes this particle's matrix + color; until then it stays collapsed.
   }
@@ -638,6 +674,7 @@ export class DirtDustSystem {
     this.mesh.material.dispose();
     this._puffTexture?.dispose();
     this._clodTexture?.dispose();
+    this.aaaMud?.dispose();
   }
 }
 
@@ -681,53 +718,7 @@ function mergeMudLiquidConfig(vehicle) {
   };
 }
 
-function makeMudSplashTexture(size = 64) {
-  if (typeof document === 'undefined') return null;
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  const g = ctx.createRadialGradient(
-    size * 0.48, size * 0.5, size * 0.04,
-    size * 0.5, size * 0.5, size * 0.46,
-  );
-  g.addColorStop(0, 'rgba(255,255,255,1)');
-  g.addColorStop(0.55, 'rgba(255,255,255,0.92)');
-  g.addColorStop(0.82, 'rgba(255,255,255,0.55)');
-  g.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = g;
-  // An asymmetric torn splash with uneven lobes. It deliberately avoids a
-  // smooth ellipse/capsule silhouette, which reads as a stretched sausage once
-  // velocity-aligned. Detached beads make the edge look like breaking liquid.
-  const lobes = [
-    [0.5, 0.08], [0.6, 0.22], [0.79, 0.18], [0.76, 0.37],
-    [0.94, 0.48], [0.72, 0.57], [0.82, 0.79], [0.59, 0.72],
-    [0.49, 0.94], [0.39, 0.7], [0.17, 0.82], [0.24, 0.58],
-    [0.05, 0.45], [0.29, 0.35], [0.21, 0.15], [0.42, 0.24],
-  ];
-  ctx.beginPath();
-  ctx.moveTo(lobes[0][0] * size, lobes[0][1] * size);
-  for (let i = 1; i < lobes.length; i += 1) {
-    ctx.lineTo(lobes[i][0] * size, lobes[i][1] * size);
-  }
-  ctx.closePath();
-  ctx.fill();
-  ctx.fillStyle = 'rgba(255,255,255,0.72)';
-  for (const [x, y, r] of [
-    [0.1, 0.2, 0.055], [0.9, 0.25, 0.035], [0.92, 0.75, 0.06],
-    [0.12, 0.7, 0.035], [0.34, 0.92, 0.025],
-  ]) {
-    ctx.beginPath();
-    ctx.arc(x * size, y * size, r * size, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.needsUpdate = true;
-  return texture;
-}
-
-/** Wet wheel spray: fine liquid streaks separate from the heavier mud clods. */
+/** Wet wheel spray: AAA-shaded liquid blobs separate from the heavier mud clods. */
 export class MudLiquidSpraySystem {
   constructor(group, vehicle) {
     this.cfg = mergeMudLiquidConfig(vehicle);
@@ -737,32 +728,14 @@ export class MudLiquidSpraySystem {
       width: 0, length: 0, seed: 0, age: 0, floorY: 0,
       wheelIndex: -1, sheet: false, broken: false, fragment: false,
     }));
-    this.texture = makeMudSplashTexture(this.cfg.textureSize);
-    const materialParams = {
-      transparent: true,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-      toneMapped: false,
-      opacity: 0,
-    };
-    if (this.texture) materialParams.map = this.texture;
-    this.mesh = new THREE.InstancedMesh(
-      new THREE.PlaneGeometry(1, 1),
-      new THREE.MeshBasicMaterial(materialParams),
-      this.max,
-    );
-    this.mesh.name = 'Rally Mud Liquid Splash';
-    this.mesh.frustumCulled = false;
-    this.mesh.renderOrder = 4;
-    const collapsed = new THREE.Matrix4().makeScale(0, 0, 0);
-    const white = new THREE.Color(1, 1, 1);
-    for (let i = 0; i < this.max; i += 1) {
-      this.mesh.setMatrixAt(i, collapsed);
-      this.mesh.setColorAt(i, white);
-    }
-    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.mesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
-    group.add(this.mesh);
+    this.aaaMud = typeof document !== 'undefined'
+      ? createAaaMudParticleRenderer({
+        poolSize: this.max,
+        parent: group,
+        name: 'Rally Mud Liquid Splash (AAA)',
+      })
+      : null;
+    this._elapsed = 0;
 
     this.cursor = 0;
     this.emitCarry = 0;
@@ -770,16 +743,6 @@ export class MudLiquidSpraySystem {
     this._active = 0;
     this._fragmentsSpawned = 0;
     this._emittedByWheel = [0, 0, 0, 0];
-    this._m = new THREE.Matrix4();
-    this._p = new THREE.Vector3();
-    this._s = new THREE.Vector3();
-    this._q = new THREE.Quaternion();
-    this._roll = new THREE.Quaternion();
-    this._col = new THREE.Color();
-    this._cameraRight = new THREE.Vector3();
-    this._cameraUp = new THREE.Vector3();
-    this._particleVelocity = new THREE.Vector3();
-    this._billboardAxis = new THREE.Vector3(0, 0, 1);
     this._contactNormal = new THREE.Vector3();
   }
 
@@ -787,25 +750,20 @@ export class MudLiquidSpraySystem {
     const cfg = this.cfg;
     const step = THREE.MathUtils.clamp(dt || 0, 0, 0.05);
     const drag = Math.exp(-cfg.drag * step);
-    const cameraQuat = camera?.quaternion ?? _IDENTITY_QUAT;
-    this._cameraRight.set(1, 0, 0).applyQuaternion(cameraQuat);
-    this._cameraUp.set(0, 1, 0).applyQuaternion(cameraQuat);
     let active = 0;
 
     for (let i = 0; i < this.max; i += 1) {
       const p = this.particles[i];
       if (p.life <= 0) {
-        this._hide(i, cameraQuat);
+        this.aaaMud?.hideParticle(i);
         continue;
       }
       p.life -= step;
       p.age += step;
       if (p.life <= 0) {
-        this._hide(i, cameraQuat);
+        this.aaaMud?.hideParticle(i);
         continue;
       }
-      // Borrow the smoke plume's seed-driven divergence at a much lower force:
-      // enough to tear a liquid sheet apart, never enough to make mud hover.
       p.vx += Math.sin(p.age * 13 + p.seed * 6.283185) * cfg.turbulence * step;
       p.vz += Math.cos(p.age * 11 + p.seed * 6.283185) * cfg.turbulence * step;
       p.vy -= cfg.gravity * step;
@@ -819,48 +777,27 @@ export class MudLiquidSpraySystem {
         this._breakSheet(p, i);
       }
       if (p.vy < 0 && p.y <= p.floorY) {
+        this.aaaMud?.spawnDecal(p.x, p.floorY, p.z, this._elapsed);
         p.life = 0;
-        this._hide(i, cameraQuat);
+        this.aaaMud?.hideParticle(i);
         continue;
       }
-      const life01 = THREE.MathUtils.clamp(p.life / p.maxLife, 0, 1);
-      const age01 = 1 - life01;
-      const birthFade = Math.min(1, p.age / 0.055);
-      const deathFade = Math.min(1, life01 * 5);
-      const fade = birthFade * deathFade;
-      // Broad sheets collapse quickly as they atomize; the smaller beads keep
-      // their size until the final fade. This is the liquid equivalent of the
-      // smoke system's age-grown multi-scale evolution, with the direction
-      // reversed so wet mud breaks up instead of billowing outward.
+      const lifeFrac = THREE.MathUtils.clamp(p.life / p.maxLife, 0, 1);
+      const age01 = 1 - lifeFrac;
       const sheetBreakup = p.sheet ? Math.max(0.32, 1 - age01 * 1.15) : 1;
-      this._p.set(p.x, p.y, p.z);
-      this._s.set(
-        p.width * fade * sheetBreakup,
-        p.length * fade * (p.sheet ? 0.72 + life01 * 0.28 : 0.88 + life01 * 0.12),
-        1,
-      );
-      // Keep the plane facing the camera, then roll it so its long axis follows
-      // the projected ballistic trajectory. This makes the liquid visibly shoot
-      // from the tyre instead of reading as unrelated vertical brown lines.
-      this._particleVelocity.set(p.vx, p.vy, p.vz);
-      const screenX = this._particleVelocity.dot(this._cameraRight);
-      const screenY = this._particleVelocity.dot(this._cameraUp);
-      const roll = Math.atan2(screenY, screenX) - Math.PI * 0.5;
-      this._roll.setFromAxisAngle(this._billboardAxis, roll);
-      this._q.copy(cameraQuat).multiply(this._roll);
-      this._m.compose(this._p, this._q, this._s);
-      this.mesh.setMatrixAt(i, this._m);
-      const shade = 0.72 + p.seed * 0.48;
-      this._col.setRGB(
-        THREE.MathUtils.lerp(cfg.color.fresh[0], cfg.color.old[0], age01) * shade,
-        THREE.MathUtils.lerp(cfg.color.fresh[1], cfg.color.old[1], age01) * shade,
-        THREE.MathUtils.lerp(cfg.color.fresh[2], cfg.color.old[2], age01) * shade,
-      );
-      this.mesh.setColorAt(i, this._col);
+      const particleScale = Math.sqrt(Math.max(0.001, p.width * p.length))
+        * sheetBreakup
+        * (p.sheet ? 0.85 : 1.0);
+      this.aaaMud?.writeParticle(i, {
+        x: p.x, y: p.y, z: p.z,
+        vx: p.vx, vy: p.vy, vz: p.vz,
+        life01: age01,
+        scale: particleScale,
+        seed: p.seed,
+      });
       active += 1;
     }
     this._active = active;
-    this.mesh.material.opacity = active > 0 ? cfg.opacity : 0;
 
     const contacts = [];
     if (surface === 'mud' && throttle > 0.08 && speed > 0.75 && vehicle?.groundedFraction > 0) {
@@ -881,8 +818,8 @@ export class MudLiquidSpraySystem {
       this.emitCarry = 0;
     }
 
-    this.mesh.instanceMatrix.needsUpdate = true;
-    this.mesh.instanceColor.needsUpdate = true;
+    this._elapsed += step;
+    this.aaaMud?.update({ camera, elapsedTime: this._elapsed });
   }
 
   _emit({ wheel, wheelIndex, anchor }, vehicle, speed, throttle) {
@@ -997,13 +934,6 @@ export class MudLiquidSpraySystem {
     }
   }
 
-  _hide(index, cameraQuat) {
-    this._p.set(0, 0, 0);
-    this._s.set(0, 0, 0);
-    this._m.compose(this._p, cameraQuat, this._s);
-    this.mesh.setMatrixAt(index, this._m);
-  }
-
   snapshot() {
     return {
       activeParticles: this._active,
@@ -1014,10 +944,7 @@ export class MudLiquidSpraySystem {
   }
 
   dispose() {
-    this.mesh.removeFromParent();
-    this.mesh.geometry.dispose();
-    this.mesh.material.dispose();
-    this.texture?.dispose();
+    this.aaaMud?.dispose();
   }
 }
 

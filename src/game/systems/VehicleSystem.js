@@ -446,6 +446,18 @@ export class VehicleSystem {
 
   // ---- enter / exit --------------------------------------------------------
 
+  /** Place the character in a vehicle (optionally with engine audio primed). */
+  async enterVehicle(character, vehicle, { warmup = false } = {}) {
+    if (!character || !vehicle || vehicle.status !== 'ready' || vehicle.hasDriver()) {
+      return false;
+    }
+    if (warmup) {
+      await vehicle._ensureEngineAudio?.();
+    }
+    this._enter({ character, vehicle });
+    return true;
+  }
+
   _canEnter(character) {
     return (
       character.grounded !== false &&

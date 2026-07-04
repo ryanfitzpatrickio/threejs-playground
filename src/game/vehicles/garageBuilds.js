@@ -106,7 +106,7 @@ export const GARAGE_TIRE_OPTIONS = Object.freeze([
 ]);
 
 export const GARAGE_ENGINE_OPTIONS = Object.freeze([
-  Object.freeze({ id: 'bac', name: 'BAC Mono', description: 'High-rev V8 layers from the original engine-audio pack.' }),
+  Object.freeze({ id: 'bac', name: 'BAC Mono', description: 'High-rev V8 layers from markeasting/engine-audio (https://github.com/markeasting/engine-audio).' }),
   Object.freeze({ id: 'boxer', name: 'Boxer', description: 'Flat-six on/off load with boxer one-shot accents.' }),
 ]);
 

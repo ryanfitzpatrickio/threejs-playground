@@ -1,5 +1,8 @@
-// Layered engine sound sets for EngineAudio (markeasting/engine-audio style).
-// Each profile supplies looping on/off load layers plus optional limiter + tranny.
+// Layered engine sound sets for EngineAudio (https://github.com/markeasting/engine-audio style).
+//
+// Each profile supplies looping on/off-load layers (low + high RPM ranges) plus optional
+// limiter and transmission layers. The BAC profile is taken directly from the reference's
+// bac_mono configuration (same filenames, bufferRpm anchors, and volume balance).
 
 export const ENGINE_PROFILE_IDS = Object.freeze({
   bac: 'bac',
@@ -49,6 +52,7 @@ const BAC_ENGINE_SOUNDS = {
 
 const BOXER_ENGINE_SOUNDS = {
   // Looping on/off load layers (the "loop to play afterwards")
+  // on_low / on_high updated with new custom loop samples (newlowloadon / newhighloadon)
   on_low: {
     source: '/audio/engine/boxer/on-low.mp3',
     bufferRpm: 1000,

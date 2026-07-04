@@ -4,48 +4,74 @@ const STORAGE_KEY = 'dreamfall:controls-dismissed';
 
 const CONTROL_SECTIONS = [
   {
-    title: 'Movement',
+    title: 'Driving',
+    fullWidth: true,
+    intro: 'Rally drops you in the car ready to go. On foot, walk up to a vehicle and press F. Tune builds in Garage from Settings.',
+    items: [
+      ['W / S', 'Accelerate / reverse'],
+      ['A / D', 'Steer'],
+      ['Space', 'Brake'],
+      ['Shift', 'Handbrake / kick the tail out'],
+      ['F', 'Enter / exit vehicle'],
+      ['R (stuck)', 'Flip / recover onto the road'],
+      ['Mouse', 'Look around (chase camera)'],
+      ['Eye (Settings → Camera)', 'Driving camera: close · medium · far · cockpit'],
+    ],
+  },
+  {
+    title: 'On Foot',
     items: [
       ['WASD / Arrows', 'Move'],
-      ['Mouse', 'Look (click to lock pointer)'],
+      ['Mouse', 'Look (click the world to lock pointer)'],
       ['Space', 'Jump (double-tap for air dash or glider)'],
-      ['Q', 'Deploy / retract glider (wingsuit)'],
-      ['Shift', 'Brace (wall-run, hang, climb, horse gallop)'],
+      ['Q', 'Deploy / retract glider'],
+      ['Shift', 'Brace (wall-run, hang, climb, horse sprint)'],
       ['C', 'Slide'],
       ['Double-tap direction', 'Dodge'],
+      ['F', 'Mount / dismount horse'],
     ],
   },
   {
     title: 'Combat',
-    intro: 'Sword swings automatically chop enemies (heavy + light finishers always cut). Unarmed specials require a nearby target.',
+    intro: 'The great sword auto-chops on contact. Heavy and light finishers always cut. Unarmed specials need a nearby target.',
     items: [
       ['Z', 'Draw / sheathe great sword'],
-      ['Left click', 'Light attack (combo) / unarmed punch or Shift+click Drop Kick'],
-      ['Right click', 'Heavy attack (finisher) or unarmed Butterfly Twirl'],
-      ['G (near enemy)', 'Grab & Slam'],
-      ['R (near enemy)', 'Flying Shoulder Throw'],
+      ['Left click', 'Light attack / unarmed punch'],
+      ['Shift + click', 'Drop kick (unarmed)'],
+      ['Right click', 'Heavy attack / Butterfly Twirl (unarmed)'],
+      ['G (near enemy)', 'Grab & slam'],
+      ['R (near enemy)', 'Flying shoulder throw'],
     ],
   },
   {
     title: 'Chop (Precision Cut)',
-    intro: 'Aim a manual cut plane on an enemy, then release V to perform a special slash that severs it into physics pieces.',
+    intro: 'Aim a cut plane on an enemy, then release to sever it into physics pieces.',
     items: [
-      ['V (hold)', 'Slow-mo aim mode on nearest enemy (shows plane + slash guide)'],
-      ['Mouse', 'Move the cut plane position'],
-      ['A / D (left/right)', 'Rotate the cut angle (horizontal vs vertical slash)'],
+      ['V (hold)', 'Slow-mo aim on nearest enemy'],
+      ['Mouse', 'Move the cut plane'],
+      ['A / D', 'Rotate cut angle'],
       ['Left click', 'Queue another cut plane'],
-      ['Release V', 'Execute aimed chop animation (cuts apply during swing)'],
+      ['Release V', 'Execute the chop'],
       ['Esc', 'Cancel'],
     ],
   },
   {
-    title: 'Abilities',
+    title: 'Traversal & Powers',
     items: [
-      ['T', 'Telekinesis (hold to grab & orbit, release to throw)'],
-      ['Hold Alt', 'Show grapple target (raycast preview)'],
-      ['E or middle-click', 'Fire grappling hook (double-tap E to yank with 2 hooks)'],
-      ['Space (while hooked)', 'Release hook'],
-      ['F', 'Mount / dismount horse'],
+      ['T', 'Telekinesis (hold to grab, release to throw)'],
+      ['Hold Alt', 'Show grapple target'],
+      ['E / middle-click', 'Fire grappling hook'],
+      ['Double-tap E', 'Dual-hook yank launch'],
+      ['Space (hooked)', 'Release hook'],
+    ],
+  },
+  {
+    title: 'Modes & UI',
+    items: [
+      ['Settings (top right)', 'Scenes, graphics, camera comfort, photo mode, tools'],
+      ['K', 'Photo mode (pause + free-fly camera)'],
+      ['?', 'Open this guide'],
+      ['Esc', 'Close menus / cancel aim'],
     ],
   },
 ];
@@ -123,7 +149,7 @@ export function ControlsGuide(props) {
           <div class="controls-guide-header">
             <div>
               <span class="controls-guide-title">Controls</span>
-              <span class="controls-guide-sub">First time playing? Here's what you need.</span>
+              <span class="controls-guide-sub">Rally starts in the car — here's everything else.</span>
             </div>
             <button
               class="controls-close"
@@ -136,7 +162,7 @@ export function ControlsGuide(props) {
 
           <div class="controls-guide-body">
             {CONTROL_SECTIONS.map((section) => (
-              <div class="controls-section">
+              <div class={`controls-section${section.fullWidth ? ' controls-section--wide' : ''}`}>
                 <div class="controls-section-title">{section.title}</div>
                 {section.intro && <div class="controls-intro">{section.intro}</div>}
                 <div class="controls-list">
@@ -153,7 +179,7 @@ export function ControlsGuide(props) {
 
           <div class="controls-guide-footer">
             <div class="controls-note">
-              Click the world to lock your mouse for smooth look controls.
+              Click the world to lock the mouse. While driving, open Settings → Camera to change distance and comfort.
             </div>
             <button
               class="controls-gotit"

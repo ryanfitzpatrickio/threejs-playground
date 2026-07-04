@@ -18,6 +18,8 @@ import {
 } from '../src/game/world/office/buildingEntry.js';
 import { createOfficeInteriorLevel } from '../src/game/world/office/createOfficeInteriorLevel.js';
 import { BuildingEntrySystem } from '../src/game/systems/BuildingEntrySystem.js';
+import { generateOfficeLayout } from '../src/game/world/office/generateOfficeLayout.js';
+import { createOfficeWallMaterial } from '../src/game/world/office/officeWallMaterial.js';
 
 let failures = 0;
 const ok = (label) => console.log(`  ok  ${label}`);
@@ -77,9 +79,9 @@ const level = createOfficeInteriorLevel({ width: 16, depth: 16, doorFacade: 'NZ'
 if (level.group && level.group.isObject3D) ok('interior builds a group');
 else fail('interior group');
 
-// floor + 3 solid walls + 2 door segments = 6 colliders.
+// floor + 3 solid perimeter walls + 2 door segments (+ WFC partitions) ≥ 6.
 const wallNZ = level.colliders.filter((c) => c.name.startsWith('Office Wall NZ'));
-if (level.colliders.length === 6) ok('interior has 6 colliders (floor + 3 solid walls + 2 door segments)');
+if (level.colliders.length >= 6) ok('interior has floor + perimeter + partition colliders (>= 6)');
 else fail('interior collider count', String(level.colliders.length));
 if (wallNZ.length === 2) ok('door facade wall is split into two segments (a gap)');
 else fail('door facade split', String(wallNZ.length));
@@ -129,6 +131,82 @@ for (const facade of ['NZ', 'PZ', 'NX', 'PX']) {
   const spawnInside = sp.x >= t.minX && sp.x <= t.maxX && sp.z >= t.minZ && sp.z <= t.maxZ;
   if (spawnInside) ok(`spawn is inside the exit zone on facade ${facade}`);
   else fail(`spawn inside exit zone ${facade}`, `spawn=${JSON.stringify(sp)} trigger=${JSON.stringify(t)}`);
+}
+
+// --- WFC office layout (P1) ---
+const ROOMS = new Set(['meeting', 'office']);
+function roomOpenViolations(L) {
+  let bad = 0;
+  for (let x = 0; x < L.cols; x += 1) {
+    for (let z = 0; z < L.rows; z += 1) {
+      const a = L.zones[x][z];
+      for (const [dx, dz] of [[1, 0], [0, 1]]) {
+        const nx = x + dx; const nz = z + dz;
+        if (nx >= L.cols || nz >= L.rows) continue;
+        const b = L.zones[nx][nz];
+        if ((ROOMS.has(a) && b === 'open') || (ROOMS.has(b) && a === 'open')) bad += 1;
+      }
+    }
+  }
+  return bad;
+}
+
+let wfcAllSolved = true;
+let wfcViolations = 0;
+let sawWalls = false;
+for (let s = 1; s <= 20; s += 1) {
+  const L = generateOfficeLayout({ width: 40, depth: 30, doorFacade: 'NZ', seed: s });
+  if (!L.solved) wfcAllSolved = false;
+  wfcViolations += roomOpenViolations(L);
+  if (L.walls.length > 0) sawWalls = true;
+}
+if (wfcAllSolved) ok('WFC solves without contradiction across 20 seeds');
+else fail('WFC solves across seeds');
+if (wfcViolations === 0) ok('WFC respects sockets — no room cell adjacent to open (20 seeds)');
+else fail('WFC socket adjacency', `${wfcViolations} room↔open violations`);
+if (sawWalls) ok('WFC produces interior partition walls (rooms are carved)');
+else fail('WFC produces partition walls');
+
+// Every partition wall is tagged with its enclosed room zone (glass vs solid).
+const taggedOk = [1, 2, 3].every((s) => {
+  const L = generateOfficeLayout({ width: 40, depth: 30, seed: s });
+  return L.walls.every((w) => ROOMS.has(w.zone));
+});
+if (taggedOk) ok('partition walls are tagged with their room zone (meeting→glass / office→solid)');
+else fail('partition wall zone tags');
+
+const la = generateOfficeLayout({ width: 40, depth: 30, seed: 7 });
+const lb = generateOfficeLayout({ width: 40, depth: 30, seed: 7 });
+if (JSON.stringify(la.zones) === JSON.stringify(lb.zones) && JSON.stringify(la.walls) === JSON.stringify(lb.walls)) {
+  ok('WFC layout is deterministic (seed → identical zones + walls)');
+} else fail('WFC determinism');
+const lc = generateOfficeLayout({ width: 40, depth: 30, seed: 8 });
+if (JSON.stringify(la.zones) !== JSON.stringify(lc.zones)) ok('different seeds give different layouts');
+else fail('WFC seed variation');
+
+// The interior factory now includes the WFC partitions → more than the 6 box colliders.
+const bigInterior = createOfficeInteriorLevel({ width: 40, depth: 30, doorFacade: 'NZ', origin: { x: 0, y: 0, z: 0 }, seed: 7 });
+if (bigInterior.colliders.length > 6) ok('interior factory adds WFC partition colliders');
+else fail('interior partition colliders', String(bigInterior.colliders.length));
+
+// --- POM wall material (P2) ---
+try {
+  const wallMat = createOfficeWallMaterial({ parallaxOcclusion: { enabled: true, scale: 0.03 } });
+  if (wallMat.colorNode != null && wallMat.normalNode != null && wallMat.roughnessNode != null) {
+    ok('POM wall material builds and assigns colour/normal/roughness nodes');
+  } else fail('POM wall material nodes', 'a slot is unset');
+} catch (err) {
+  fail('POM wall material builds', err.message);
+}
+// Wall geometry is an indexed box with uv → tangents compute (POM needs them).
+try {
+  const box = new THREE.BoxGeometry(2, 3, 0.2);
+  box.computeTangents();
+  const tangent = box.getAttribute('tangent');
+  if (tangent && tangent.itemSize === 4) ok('wall box geometry computes tangents for POM');
+  else fail('wall box tangents', 'no vec4 tangent attribute');
+} catch (err) {
+  fail('wall box tangents', err.message);
 }
 
 if (failures > 0) {

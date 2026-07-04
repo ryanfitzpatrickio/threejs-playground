@@ -1,7 +1,15 @@
 // EngineAudio.js
-// Simple engine sound player modeled after markeasting/engine-audio.
-// Loads looping layers and crossfades them based on RPM + throttle.
-// Drives realistic pitch shifting and volume blending for on/off load.
+//
+// Layered engine sound player modeled after https://github.com/markeasting/engine-audio
+// (MIT © 2025 Mark Oosting).
+//
+// The core approach (multiple RPM-recorded loops for on-load / off-load at low+high ranges,
+// crossfading between them by RPM + throttle/load, pitch detuning proportional to RPM delta,
+// plus optional limiter and transmission whine layers) is taken from the reference.
+//
+// This file implements the playback + blending engine (Web Audio). Sample sets live in
+// engineProfiles.js (BAC Mono profile matches the reference's bac_mono configuration exactly;
+// boxer is a local variant that adds one-shot on-load accents).
 
 import * as THREE from 'three';
 

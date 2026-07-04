@@ -32,7 +32,7 @@ export function createComposedWorldLevel(qualityPreset = {}, { worldMap = null, 
   // A city chunk (cx,cz) spans world [cx*stride.x ± stride.x/2] × [cz*stride.z ± stride.z/2].
   // Stream it only if that footprint overlaps a `city` zone (rect or polygon).
   const chunkResolver = (cx, cz) => {
-    return resolveCityChunkDistrict(cityZones, cx, cz, stride);
+    return resolveCityChunkDistrict(cityZones, cx, cz, stride, worldMap?.districts);
   };
 
   // City zones flatten the terrain beneath them (whatever their shape).
@@ -164,21 +164,29 @@ export function createComposedWorldLevel(qualityPreset = {}, { worldMap = null, 
   };
 }
 
-export function resolveCityChunkDistrict(cityZones, cx, cz, stride = getCityStride()) {
+export function resolveCityChunkDistrict(cityZones, cx, cz, stride = getCityStride(), worldMapDistricts = null) {
   const rect = {
     minX: cx * stride.x - stride.x * 0.5, maxX: cx * stride.x + stride.x * 0.5,
     minZ: cz * stride.z - stride.z * 0.5, maxZ: cz * stride.z + stride.z * 0.5,
   };
+  const wx = cx * stride.x, wz = cz * stride.z;
+  // Districts override city style
+  if (worldMapDistricts && worldMapDistricts.length) {
+    const d = districtAtPoint({ districts: worldMapDistricts }, wx, wz);
+    if (d && d.props && CITY_STYLES[d.props.cityStyle]) {
+      return { style: d.props.cityStyle, zoneSeed: 1, zone: null, district: d };
+    }
+  }
   let edgeMatch = null;
   for (let i = (cityZones?.length ?? 0) - 1; i >= 0; i -= 1) {
     const zone = cityZones[i];
-    const district = { style: CITY_STYLES[zone.props?.cityStyle] ? zone.props.cityStyle : 'downtown',
+    const dist = { style: CITY_STYLES[zone.props?.cityStyle] ? zone.props.cityStyle : 'downtown',
       zoneSeed: Number.isFinite(Number(zone.props?.seed)) ? Number(zone.props.seed) : 1,
       zone: zone.shape === 'polygon'
         ? { shape: 'polygon', points: zone.points.map((point) => ({ x: point.x, z: point.z })) }
         : { shape: 'rect', rect: { ...zone.rect } } };
-    if (zoneContains(zone, cx * stride.x, cz * stride.z)) return district;
-    if (!edgeMatch && zoneIntersectsRect(zone, rect)) edgeMatch = district;
+    if (zoneContains(zone, wx, wz)) return dist;
+    if (!edgeMatch && zoneIntersectsRect(zone, rect)) edgeMatch = dist;
   }
   return edgeMatch;
 }

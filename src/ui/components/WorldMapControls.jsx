@@ -668,14 +668,28 @@ ${JSON.stringify({ zones: (s.zones||[]).length, roads: (s.roads||[]).length, ent
         <div style={h2}>District (named area for LLM + in-game labels)</div>
         <label style={{ 'font-size': '11px', color: '#8d9384' }}>Name</label>
         <input style={field} value={snap().districtName ?? 'District'} onInput={(e) => editor()?.setDistrictName(e.currentTarget.value)} />
+        <label style={{ 'font-size': '11px', color: '#8d9384', 'margin-top': '4px', display: 'block' }}>Color</label>
+        <div style={{ display: 'flex', gap: '3px', alignItems: 'center' }}>
+          <input type="color" value={snap().selected?.kind === 'district' ? (snap().selected.color || '#4fc3f7') : '#4fc3f7'} onInput={(e) => editor()?.setSelectedDistrictColor?.(e.currentTarget.value)} style={{ width: '32px', height: '20px', padding: 0, border: 'none', background: 'transparent' }} />
+          <For each={['#4fc3f7','#81c784','#ffb74d','#e57373','#ba68c8','#4db6ac']}>{(c) => (
+            <button style={{ ...btn(false), width: '18px', height: '18px', background: c, padding: 0, border: '1px solid #444' }} onClick={() => editor()?.setSelectedDistrictColor?.(c)} />
+          )}</For>
+        </div>
         <label style={{ 'font-size': '11px', color: '#8d9384', 'margin-top': '4px', display: 'block' }}>Shape</label>
         <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
           <For each={['rect','polygon','circle','triangle']}>{(sh) => (
             <button style={btn(snap().activeDistrictShape === sh)} onClick={() => editor()?.setActiveDistrictShape(sh)}>{sh}</button>
           )}</For>
         </div>
+        <Show when={snap().selected?.kind === 'district' && snap().selected.shape !== 'circle'}>
+          <label style={{ 'font-size': '11px', color: '#8d9384', 'margin-top': '4px', display: 'block' }}>City Style (affects runtime gen)</label>
+          <select style={field} value={snap().selected?.props?.cityStyle || ''} onChange={(e) => editor()?.setSelectedDistrictProp?.('cityStyle', e.currentTarget.value || null)}>
+            <option value="">Auto / from zone</option>
+            <For each={CITY_STYLE_ORDER}>{(s) => <option value={s}>{CITY_STYLES[s].label}</option>}</For>
+          </select>
+        </Show>
         <div style={{ 'font-size': '10px', color: '#8d9384', 'line-height': 1.3, marginTop: '4px' }}>
-          Draw to add named district. Use in prompts ("build in 'Downtown'") and game shows name on enter.
+          Draw to add named district. Color for editor. City Style for deeper runtime influence. Use in prompts.
         </div>
       </Show>
 

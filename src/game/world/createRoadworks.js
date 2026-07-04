@@ -103,7 +103,7 @@ const ROAD_UV_LENGTH = 3.2;
 // of dipping BELOW it (which would let the light terrain poke through the trough).
 // Kept small: this lift is also how far a resting tyre "sinks" into the flat mud,
 // so too much buries the car to its axles.
-const MUD_RIBBON_LIFT_EXTRA = 0.18;
+const MUD_RIBBON_LIFT_EXTRA = 0.08;
 // Metres a full-depth (normalized 1.0) rut displaces the ribbon down. Sized to the
 // available headroom (base lift + extra) so rut bottoms land at ~terrain height.
 export const MUD_VISUAL_SINK = RIBBON_LIFT + MUD_RIBBON_LIFT_EXTRA;

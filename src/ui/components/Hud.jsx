@@ -82,6 +82,45 @@ export function Hud(props) {
           <span>{snapshot().buildingEntry?.action === 'exit' ? 'Exit building' : 'Enter building'}</span>
         </div>
       </Show>
+
+      <Show when={snapshot().character?.districtNotification}>
+        {(() => {
+          const notif = snapshot().character.districtNotification;
+          const age = Date.now() - (notif.time || 0);
+          if (age > 4200) return null; // auto clear
+          const isEnter = notif.action === 'enter';
+          const opacity = Math.max(0, 1 - (age / 4200));
+          const scale = 0.8 + (Math.min(age, 400) / 400) * 0.2;
+          return (
+            <div
+              role="status"
+              aria-live="polite"
+              style={{
+                position: 'absolute',
+                left: '50%',
+                top: '18%',
+                transform: `translate(-50%, -50%) scale(${scale})`,
+                opacity,
+                transition: 'opacity 0.3s ease, transform 0.25s cubic-bezier(0.23,1,0.32,1)',
+                padding: '6px 18px',
+                background: isEnter ? 'rgba(30, 60, 90, 0.92)' : 'rgba(60, 30, 30, 0.85)',
+                border: `1px solid ${isEnter ? '#4fc3f7' : '#ff8a80'}`,
+                borderRadius: '4px',
+                color: '#e0f7fa',
+                fontSize: '13px',
+                letterSpacing: '0.5px',
+                textTransform: 'uppercase',
+                fontWeight: 600,
+                boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
+                pointerEvents: 'none',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {isEnter ? '► ' : '◄ '}{notif.name}
+            </div>
+          );
+        })()}
+      </Show>
       <Show when={drivingVehicle()}>
         <div
           class="hud__speedometer"
@@ -93,6 +132,9 @@ export function Hud(props) {
           <span class="hud__speed-value">{speedMph()}</span>
           <span class="hud__speed-unit">mph</span>
         </div>
+      </Show>
+      <Show when={snapshot().camera?.focusReticle}>
+        <div class="hud__focus-reticle" aria-hidden="true" />
       </Show>
       <Show when={snapshot().timing?.showHud}>
         <div class="hud__timing" role="status">

@@ -9,6 +9,7 @@ import { Minimap } from './components/Minimap.jsx';
 import { PhotoModeControls } from './components/PhotoModeControls.jsx';
 import { GarageScene } from './components/GarageScene.jsx';
 import { ClothColliderEditor } from './components/ClothColliderEditor.jsx';
+import { SettingsDialog } from './components/SettingsDialog.jsx';
 import { isJacketClothUiEnabled } from '../game/characters/mara/jacketConfig.js';
 import {
   setActiveSceneId,
@@ -31,28 +32,15 @@ import { createDevTools } from 'virtual:dreamfall-dev-tools';
 function readStoredLevel() {
   try {
     const v = localStorage.getItem('dreamfall:level');
-    return v === 'world' || v === 'wilds' || v === 'rally' ? v : 'city';
+    return v === 'world' || v === 'wilds' || v === 'rally' || v === 'city' ? v : 'rally';
   } catch {
-    return 'city';
-  }
-}
-
-function formatVehicleCameraMode(mode) {
-  switch (mode) {
-    case 'medium':
-      return 'Medium chase';
-    case 'far':
-      return 'Far chase';
-    case 'firstPerson':
-      return 'First person';
-    default:
-      return 'Close chase';
+    return 'rally';
   }
 }
 
 export function App() {
   const [viewMode, setViewMode] = createSignal('game'); // 'game' | 'garage' | dev-tool views
-  const [levelMode, setLevelModeSignal] = createSignal(readStoredLevel()); // 'city' | 'world'
+  const [levelMode, setLevelModeSignal] = createSignal(readStoredLevel());
   const [gameSnapshot, setGameSnapshot] = createSignal(null);
   const [quality, setQuality] = createSignal(getQualityLevel());
   const [toneMapping, setToneMapping] = createSignal(getToneMappingMode());
@@ -61,6 +49,7 @@ export function App() {
   const [showDebugPanel, setShowDebugPanel] = createSignal(false);
   const [hudVisible, setHudVisible] = createSignal(true);
   const [showClothEditor, setShowClothEditor] = createSignal(false);
+  const [showSettings, setShowSettings] = createSignal(false);
   let gameRuntime = null;
 
   // First-time player guide: show automatically unless previously dismissed
@@ -129,6 +118,11 @@ export function App() {
     const t = e.target;
     if (t && (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement
       || t.tagName === 'SELECT' || t.isContentEditable)) return;
+    if (e.key === 'Escape' && showSettings()) {
+      e.preventDefault();
+      setShowSettings(false);
+      return;
+    }
     if (e.key === 'Escape' && gameSnapshot()?.camera?.photoMode && !hudVisible()) {
       e.preventDefault();
       setHudVisible(true);
@@ -219,142 +213,59 @@ export function App() {
       {/* Persistent minimal switchers (visible on both "pages") */}
       <Show when={!gameSnapshot()?.camera?.photoMode || hudVisible()}>
       <div class="top-bar-switchers" style="position: absolute; top: 10px; right: 12px; z-index: 20; display: flex; gap: 6px; pointer-events: none;">
-        <div class="scene-switcher" style="display: flex; gap: 1px; background: rgb(22 21 18 / 92%); border: 1px solid rgb(247 244 232 / 18%); border-radius: 999px; padding: 2px; pointer-events: auto; box-shadow: 0 6px 18px rgb(0 0 0 / 25%);">
+        <div class="top-bar-actions">
           <button
-            class={`mode-btn ${isGame() && levelMode() === 'city' ? 'active' : ''}`}
-            onClick={() => setLevelMode('city')}
-            title="City — infinite generated city"
+            type="button"
+            class="settings-btn"
+            onClick={() => setShowSettings(true)}
+            title="Settings"
+            aria-label="Open settings"
           >
-            City
+            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96a7.07 7.07 0 0 0-1.63-.94l-.36-2.54A.484.484 0 0 0 14.94 2h-3.88c-.24 0-.44.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.63.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.04.7 1.63.94l.36 2.54c.05.24.24.41.47.41h3.88c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.63-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z"
+              />
+            </svg>
+            Settings
           </button>
-          <button
-            class={`mode-btn ${isGame() && levelMode() === 'world' ? 'active' : ''}`}
-            onClick={() => setLevelMode('world')}
-            title="World — streaming editable terrain"
-          >
-            World
-          </button>
-          <button
-            class={`mode-btn rally-mode-btn ${isGame() && levelMode() === 'rally' ? 'active' : ''}`}
-            onClick={() => setLevelMode('rally')}
-            title="Rally — Pine Ridge dirt stage and rally car"
-          >
-            Rally
-          </button>
-          <button
-            class={`mode-btn ${isGame() && levelMode() === 'wilds' ? 'active' : ''}`}
-            onClick={() => setLevelMode('wilds')}
-            title="Wilds — eroded alpine valley with instanced forest"
-          >
-            Wilds
-          </button>
-          <button
-            class={`mode-btn ${isGarage() ? 'active' : ''}`}
-            onClick={() => switchTo('garage')}
-            title="Garage — build and save vehicle configurations"
-          >
-            Garage
-          </button>
-          <devTools.ModeButtons />
-        </div>
-        <div class="quality-switcher" style="display: flex; gap: 1px; background: rgb(22 21 18 / 92%); border: 1px solid rgb(247 244 232 / 18%); border-radius: 999px; padding: 2px; pointer-events: auto; box-shadow: 0 6px 18px rgb(0 0 0 / 25%);">
-          <button
-            class={`mode-btn ${quality() === 'ultra' ? 'active' : ''}`}
-            onClick={() => handleQualityChange('ultra')}
-            title="Ultra — 2K shadows, extended draw distance, maximum environment quality"
-          >
-            Ultra
-          </button>
-          <button
-            class={`mode-btn ${quality() === 'high' ? 'active' : ''}`}
-            onClick={() => handleQualityChange('high')}
-            title="Medium — balanced quality and performance"
-          >
-            Med
-          </button>
-          <button
-            class={`mode-btn ${quality() === 'low' ? 'active' : ''}`}
-            onClick={() => handleQualityChange('low')}
-            title="Low Quality (Capped Pixel Ratio, Smaller City Loading)"
-          >
-            Low
-          </button>
-          <button
-            class={`mode-btn ${toneMapping() === 'ACESFilmic' ? 'active' : ''}`}
-            onClick={() => handleToneMappingChange('ACESFilmic')}
-            title="ACES Filmic — warmer cinematic highlight rolloff"
-          >
-            ACES
-          </button>
-          <button
-            class={`mode-btn ${toneMapping() === 'AgX' ? 'active' : ''}`}
-            onClick={() => handleToneMappingChange('AgX')}
-            title="AgX — more neutral color and highlight handling"
-          >
-            AgX
-          </button>
-          <button
-            class={`mode-btn ${postEffect() === 'ssao' ? 'active' : ''}`}
-            onClick={() => handlePostEffectChange('ssao')}
-            title="SSAO — screen-space ambient occlusion darkens indirect light in crevices (Low quality runs Off)"
-          >
-            SSAO
-          </button>
-          <button
-            class={`mode-btn ${postEffect() === 'ssr' ? 'active' : ''}`}
-            onClick={() => handlePostEffectChange('ssr')}
-            title="SSR — screen-space reflections on wet/metallic surfaces (Low quality runs Off)"
-          >
-            SSR
-          </button>
-          <button
-            class={`mode-btn ${postEffect() === 'off' ? 'active' : ''}`}
-            onClick={() => handlePostEffectChange('off')}
-            title="Off — no screen-space lighting effects"
-          >
-            Off
-          </button>
-          <Show when={isGame() && gameSnapshot()?.vehicles?.activeId}>
-            <button
-              class={`icon-btn camera-mode-btn ${gameSnapshot()?.camera?.vehicleCameraMode !== 'close' ? 'active' : ''}`}
-              onClick={() => gameRuntime?.cycleVehicleCameraMode()}
-              title={`Driving camera: ${formatVehicleCameraMode(gameSnapshot()?.camera?.vehicleCameraMode)}`}
-              aria-label="Cycle driving camera mode"
-            >
-              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
-                <path
-                  fill="currentColor"
-                  d="M12 5c-5 0-9.27 3.11-11 7.5 1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5C21.27 8.11 17 5 12 5zm0 12.5c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"
-                />
-              </svg>
-            </button>
-          </Show>
-          <button
-            class={`mode-btn ${gameSnapshot()?.camera?.photoMode ? 'active' : ''}`}
-            onClick={() => gameRuntime?.setPhotoMode(!gameSnapshot()?.camera?.photoMode)}
-            title="Camera mode — pause gameplay and fly the camera (K)"
-          >
-            Camera
-          </button>
-          <Show when={isJacketClothUiEnabled()}>
-            <button
-              class={`mode-btn ${showClothEditor() ? 'active' : ''}`}
-              onClick={() => setShowClothEditor((value) => !value)}
-              title="Edit player cloth collider spheres live"
-            >
-              Cloth
-            </button>
-          </Show>
           <button
             class="help-btn"
             onClick={() => setShowControls(true)}
             title="Controls (press ?)"
+            aria-label="Show controls guide"
           >
             ?
           </button>
         </div>
       </div>
       </Show>
+
+      <SettingsDialog
+        open={showSettings()}
+        onClose={() => setShowSettings(false)}
+        snapshot={gameSnapshot()}
+        viewMode={viewMode()}
+        levelMode={levelMode()}
+        quality={quality()}
+        toneMapping={toneMapping()}
+        postEffect={postEffect()}
+        clothEditorEnabled={isJacketClothUiEnabled()}
+        clothEditorOpen={showClothEditor()}
+        debugPanelOpen={showDebugPanel()}
+        devModeButtons={<devTools.ModeButtons />}
+        onLevelModeChange={setLevelMode}
+        onOpenGarage={() => switchTo('garage')}
+        onQualityChange={handleQualityChange}
+        onToneMappingChange={handleToneMappingChange}
+        onPostEffectChange={handlePostEffectChange}
+        onVehicleCameraModeChange={(mode) => gameRuntime?.setVehicleCameraMode(mode)}
+        onComfortChange={(enabled) => gameRuntime?.setCameraComfortEnabled(enabled)}
+        onCameraFeelChange={(feel) => gameRuntime?.setCameraFeel(feel)}
+        onPhotoModeChange={(enabled) => gameRuntime?.setPhotoMode(enabled)}
+        onClothEditorChange={setShowClothEditor}
+        onDebugPanelChange={setShowDebugPanel}
+      />
 
       {isGame() && (
         <>

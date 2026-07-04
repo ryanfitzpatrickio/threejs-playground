@@ -30,6 +30,7 @@
     "verify:levelsystem-forwarding": "node scripts/verify-levelsystem-forwarding.mjs",
     "verify:vehicle-suspension": "node scripts/verify-vehicle-suspension.mjs",
     "verify:vehicle-steer": "node scripts/verify-vehicle-steering.mjs",
+    "verify:camera-comfort": "node scripts/verify-camera-comfort.mjs",
     "verify:vehicle-seam": "node scripts/verify-vehicle-bridge-seam.mjs",
     "verify:vehicle-road-hitch": "node scripts/verify-vehicle-road-hitch.mjs",
     "verify:vehicle-damage": "node scripts/verify-vehicle-collision-damage.mjs",

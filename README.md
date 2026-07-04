@@ -129,6 +129,35 @@ After first successful deploy you can attach a custom domain in the dashboard.
 
 MIT — see [LICENSE](LICENSE).
 
+## References & Credits
+
+Several core effects are ports or direct adaptations of techniques from open Three.js experiments (ported to TSL + WebGPU where needed). All referenced under their original permissive licenses.
+
+### Rain, Wetness, Lightning, and Puddles
+- Rain streaks, animated ripple normals for standing water, water beading/droplets, lightning strikes + scheduling, and flash compositing: [achrefelouafi/RainSystemThreeJS](https://github.com/achrefelouafi/RainSystemThreeJS)
+  - `src/game/render/createRainEffect.js` (streaks)
+  - `src/game/render/createLightningBolt.js`
+  - `src/game/systems/WeatherSystem.js`
+  - `src/game/materials/wetSurfaceNodes.js`, `createTerrainBiomeMaterial.js`, vehicle wet overlays, and CityGenerator road material
+
+### Parallax & Surface Detail
+- Parallax Occlusion Mapping (POM) with silhouette clipping and curved horizons: [SkyeShark/threejs-silhouette-pom](https://github.com/SkyeShark/threejs-silhouette-pom) (vendored at `src/three-addons/tsl/utils/ParallaxOcclusion.js`)
+
+### Procedural City
+- City block / skyscraper / sidewalk generators: vendored from the three.js dev branch / [PR #33906](https://github.com/mrdoob/three.js/pull/33906) into `src/three-addons/generators/`
+
+### Base Library & Helpers
+- Three.js (WebGPU build + TSL): https://github.com/mrdoob/three.js (core + multiple helpers vendored under `src/three-addons/` such as `LightProbeGrid*`, `LoftGeometry`, etc.)
+
+### Audio
+- **Engine audio (RPM + load layered simulation)**: Directly modeled on https://github.com/markeasting/engine-audio (MIT © 2025 Mark Oosting). Uses on-load / off-load loop layers at multiple RPM ranges, crossfading by RPM and throttle, pitch detuning, limiter, and transmission whine. The "BAC Mono" profile matches the reference's `bac_mono` configuration (samples under `public/audio/engine/`). See `EngineAudio.js` and `engineProfiles.js`. Boxer profile is a local extension with one-shot accents.
+- Rain ambience, thunder, tire gravel/mud layers, stone pings, and screech synthesis: original procedural generation via the Web Audio API (filtered white noise, bandpass/lowpass layers, envelope sweeps). See `WeatherSystem.js` (RainAmbienceAudio, ThunderAudio) and `TireEffects.js` (TireScreechAudioSystem + procedural layers).
+- Other sampled clips (tire turn/brake, crashes, cabin rain on glass, exterior idle): custom assets under `public/audio/`.
+
+### Other / Planned
+- See `docs/` for additional studied references (e.g. `ocean-water-system-plan.md` for OceanThreejs, `wilds-nature-system-plan.md` and `cloud-fog-volume-port-plan.md` for GrassSystemThreeJS techniques).
+- Ragdoll research references: `ragdoll_research.md`.
+
 ## Development Notes
 
 - Player models are selected by source-skeleton profile. The default is `mesh2motion`; use `?playerModel=mixamo` or `?playerModel=mesh2motion` to test either rig and its compatible animation routes.

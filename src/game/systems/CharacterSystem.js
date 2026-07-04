@@ -34,6 +34,8 @@ export class CharacterSystem {
       invulnerable: false,
       iframeTimer: 0,
       pendingImpulse: new THREE.Vector3(),
+      _lastDistrict: null,
+      _districtNotification: null,
       hitReaction: null,
       hitReactionTimer: 0,
       lastHitTime: -Infinity,
@@ -163,10 +165,29 @@ export class CharacterSystem {
           const p = this.character?.group?.position;
           if (p && this.level && typeof this.level.getDistrictAt === 'function') {
             const d = this.level.getDistrictAt(p.x, p.z);
-            return d ? (d.name || 'District') : null;
+            const name = d ? (d.name || 'District') : null;
+            // Track for enter/exit notification
+            if (name !== this._lastDistrict) {
+              this._lastDistrict = name;
+              if (name) {
+                this._districtNotification = { name, action: 'enter', time: Date.now() };
+              } else if (this._lastDistrict) {
+                this._districtNotification = { name: this._lastDistrict, action: 'exit', time: Date.now() };
+              }
+            }
+            return name;
           }
         } catch {}
         return null;
+      })(),
+      districtNotification: (() => {
+        const n = this._districtNotification;
+        if (!n) return null;
+        if (Date.now() - (n.time || 0) > 4500) {
+          this._districtNotification = null;
+          return null;
+        }
+        return n;
       })(),
       speed: this.character?.speed ?? 0,
       verticalVelocity: this.character?.verticalVelocity ?? 0,
