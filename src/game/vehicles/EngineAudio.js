@@ -16,9 +16,11 @@ export class EngineAudio {
   constructor() {
     this.ctx = null;
     this.masterGain = null;
-    this.samples = {}; // { on_low: { source, gain, bufferRpm, volume } , ... }
+    this.samples = {}; // { on_low: { source, gain, bufferRpm, volume, isOneShot? } , ... }
     this._initialized = false;
     this._isMuted = false;
+    this._lastThrottle = 0;
+    this._lastAccentTime = 0;
   }
 
   async init(soundConfig) {
@@ -38,9 +40,11 @@ export class EngineAudio {
     }
     await Promise.all(promises);
 
-    // Start all sources at gain 0 (they will be modulated every frame)
+    // Start all *looping* sources at gain 0 (they will be modulated every frame).
+    // One-shot samples (e.g. boxer on-load accents) are kept as buffers only and played on demand.
     for (const key in this.samples) {
       const s = this.samples[key];
+      if (s.isOneShot) continue;
       const source = this.ctx.createBufferSource();
       source.buffer = s.buffer;
       source.loop = true;
@@ -70,6 +74,7 @@ export class EngineAudio {
       buffer: audioBuffer,
       bufferRpm: cfg.bufferRpm ?? 3000,
       volume: cfg.volume ?? 1.0,
+      isOneShot: !!(cfg.oneShot || /one-?shot/i.test(key)),
       source: null,
       gain: null,
     };
@@ -87,12 +92,50 @@ export class EngineAudio {
     }
   }
 
-  update(rpm, throttle, gear = 1, dt = 0.016) {
-    if (!this._initialized || !this.ctx || this._isMuted) return;
+  /**
+   * Play a one-shot / transient sample (e.g. boxer on-load accent).
+   * Does not affect the looping layer gains. Safe to call from update.
+   */
+  playOneShot(key, { volumeScale = 1, rpm = null } = {}) {
+    const s = this.samples[key];
+    if (!s || !s.buffer || !this.ctx || this._isMuted) return;
+    try {
+      const source = this.ctx.createBufferSource();
+      source.buffer = s.buffer;
+      source.loop = false;
+      if (rpm != null && s.bufferRpm != null) {
+        const detune = (rpm - s.bufferRpm) * RPM_PITCH_FACTOR;
+        source.detune.value = detune;
+      }
+      const gain = this.ctx.createGain();
+      const vol = (s.volume ?? 1.0) * volumeScale;
+      gain.gain.value = Math.max(0.0001, Math.min(2, vol));
+      source.connect(gain).connect(this.masterGain);
+      source.start(0);
+      source.onended = () => {
+        try {
+          source.disconnect();
+          gain.disconnect();
+        } catch {}
+      };
+    } catch {}
+  }
 
+  update(rpm, throttle, gear = 1, dt = 0.016) {
     const r = Math.max(600, rpm || 800);
     const t = THREE.MathUtils.clamp(throttle ?? 0, 0, 1);
     const g = Math.max(1, Math.min(5, gear || 1));
+
+    // Always track throttle for delta detection (even if audio not active yet).
+    // Seed on first call so the first real activation does not see a giant delta.
+    if (this._lastThrottle === 0 && t < 0.5) {
+      this._lastThrottle = t;
+    }
+
+    if (!this._initialized || !this.ctx || this._isMuted) {
+      this._lastThrottle = t;
+      return;
+    }
 
     // RPM crossfade (low <-> high)
     const rpmX = THREE.MathUtils.clamp(
@@ -113,6 +156,24 @@ export class EngineAudio {
 
     // Minimal idle baseline to keep engine audible at low RPM (original has no extra)
     const idlePresence = THREE.MathUtils.clamp((1400 - r) / 800, 0, 0.15);
+
+    // Trigger boxer on-load one-shot accents (one-shot punch) when throttle rises.
+    // The on_* loop layers then provide the sustained sound "afterwards".
+    const now = this.ctx ? this.ctx.currentTime : 0;
+    const throttleRise = t - this._lastThrottle;
+    const ACCENT_COOLDOWN = 0.32;
+    const RISE_THRESHOLD = 0.12;
+    if (throttleRise > RISE_THRESHOLD && (now - this._lastAccentTime) > ACCENT_COOLDOWN) {
+      this._lastAccentTime = now;
+      const useHigh = r > RPM_CROSSFADE_LOW + 400;
+      const accentKey = useHigh ? 'on_accent_high' : 'on_accent_low';
+      const accent = this.samples[accentKey];
+      if (accent && accent.isOneShot) {
+        const punch = THREE.MathUtils.clamp(throttleRise, 0.12, 1);
+        const scale = punch * (0.65 + 0.35 * onGain);
+        this.playOneShot(accentKey, { volumeScale: scale, rpm: r });
+      }
+    }
 
     const setLayer = (key, gainVal, applyPitch = true) => {
       const s = this.samples[key];
@@ -148,6 +209,8 @@ export class EngineAudio {
       t.source.detune.value = r * trannyGear * 0.035 - 800;
       t.gain.gain.value = offGain * (t.volume || 0.2) * trannyGear;
     }
+
+    this._lastThrottle = t;
   }
 
   mute(state = true) {
@@ -176,43 +239,5 @@ export class EngineAudio {
   }
 }
 
-// Default sound config for the muscle car
-export const DEFAULT_ENGINE_SOUNDS = {
-  // Real recordings from https://github.com/markeasting/engine-audio (BAC Mono config)
-  on_low: {
-    source: '/audio/engine/BAC_Mono_onlow.wav',
-    bufferRpm: 1000,
-    volume: 0.5,
-  },
-  on_high: {
-    source: '/audio/engine/BAC_Mono_onhigh.wav',
-    bufferRpm: 1000,
-    volume: 0.5,
-  },
-  off_low: {
-    source: '/audio/engine/BAC_Mono_offlow.wav',
-    bufferRpm: 1000,
-    volume: 0.5,
-  },
-  off_high: {
-    source: '/audio/engine/BAC_Mono_offveryhigh.wav',
-    bufferRpm: 1000,
-    volume: 0.5,
-  },
-  limiter: {
-    source: '/audio/engine/limiter.wav',
-    bufferRpm: 8000,
-    volume: 0.4,
-  },
-  // Transmission layers (gear whine)
-  tranny_on: {
-    source: '/audio/engine/trany_power_high.wav',
-    bufferRpm: 0,
-    volume: 0.4,
-  },
-  tranny_off: {
-    source: '/audio/engine/tw_offlow.wav',
-    bufferRpm: 0,
-    volume: 0.2,
-  },
-};
+// Default sound config for the muscle car — see engineProfiles.js for all profiles.
+export { DEFAULT_ENGINE_SOUNDS } from './engineProfiles.js';

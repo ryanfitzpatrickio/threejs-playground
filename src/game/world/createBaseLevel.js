@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GAME_CONFIG } from '../config/gameConfig.js';
 import { disposeObject3D } from '../utils/disposeObject3D.js';
 import { createInfiniteCityLevel } from './createInfiniteCityLevel.js';
+import { getCityStride } from './createGeneratorCityLevel.js';
 
 const COLLIDER_GRID_CELL_SIZE = 32;
 const COLLIDER_GRID_MAX_CELLS = 64;
@@ -48,6 +49,15 @@ export function createBaseLevel(qualityPreset = {}) {
         index: colliderIndex,
       });
     },
+
+    findNearestRoadPoint: (x, z, options) => findNearestCityRoadPoint(x, z, options),
+
+    getRoadSurfaceAt: (x, z) => getColliderRoadSurfaceAt({
+      x,
+      z,
+      colliders: allColliders,
+      index: colliderIndex,
+    }),
 
     getBlockingColliderAt: ({ position, radius, feetY, height, stepHeight }) => {
       const fromObjects = getBlockingColliderAt({
@@ -122,6 +132,42 @@ export function getGroundHeightAt({ position, radius, maxStepUp, maxSnapDown, re
   }
 
   return groundHeight;
+}
+
+/**
+ * Surface under a world XZ point from tagged city colliders (e.g. asphalt roads).
+ * Uses the highest overlapping collider so sidewalks/buildings mask the road below.
+ */
+export function getColliderRoadSurfaceAt({ x, z, colliders, index, radius = 0.35 }) {
+  const position = { x, y: 0, z };
+  let bestY = -Infinity;
+  let bestSurface = null;
+
+  const consider = (collider) => {
+    const surfaceY = typeof collider.surfaceHeightAt === 'function'
+      ? collider.surfaceHeightAt(x, z)
+      : collider.topY;
+    if (!Number.isFinite(surfaceY)) return;
+
+    const insideX = x + radius >= collider.minX && x - radius <= collider.maxX;
+    const insideZ = z + radius >= collider.minZ && z - radius <= collider.maxZ;
+    if (!insideX || !insideZ) return;
+
+    if (surfaceY >= bestY) {
+      bestY = surfaceY;
+      bestSurface = collider.surface ?? null;
+    }
+  };
+
+  if (index) {
+    index.forEachInPointRadius(x, z, radius, consider);
+  } else {
+    for (const collider of queryNearbyColliders(colliders, position, radius)) {
+      consider(collider);
+    }
+  }
+
+  return bestSurface;
 }
 
 function queryNearbyColliders(colliders, position, radius) {
@@ -269,4 +315,14 @@ function createDistanceGrid() {
   grid.position.y = 0.018;
 
   return grid;
+}
+
+function findNearestCityRoadPoint(x, z, { maxDistance = 180 } = {}) {
+  const stride = getCityStride();
+  const rx = Math.round(x / stride.x) * stride.x;
+  const rz = Math.round(z / stride.z) * stride.z;
+  const distance = Math.hypot(x - rx, z - rz);
+  if (distance > maxDistance) return null;
+  const rotationY = Math.abs(x - rx) >= Math.abs(z - rz) ? Math.PI / 2 : 0;
+  return { x: rx, z: rz, y: 0, rotationY, distance };
 }

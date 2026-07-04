@@ -1,16 +1,26 @@
 import * as THREE from 'three';
-import { createVehicleConfig, VEHICLE_DOMAINS } from '../config/vehicleConfig.js';
+import {
+  applyLooseSurfaceTraction,
+  createVehicleConfig,
+  isLooseGroundSurface,
+  VEHICLE_DOMAINS,
+} from '../config/vehicleConfig.js';
 import { prepareVehicleOverlayGeometry } from '../geometry/prepareVehicleOverlayGeometry.js';
 import {
   classifyVehicleOverlayMesh,
-  createVehicleOverlayMaterial,
+  resolveVehicleOverlayMaterial,
+  resolveChassisSurfaceMode,
   isVehicleTailLightMesh,
   updateVehicleTailLightEmissive,
   VEHICLE_OVERLAY_PART,
 } from '../materials/createVehicleOverlayMaterials.js';
 import { createGltfLoader } from '../utils/createGltfLoader.js';
-import { EngineAudio, DEFAULT_ENGINE_SOUNDS } from './EngineAudio.js';
+import { EngineAudio } from './EngineAudio.js';
+import { resolveEngineSounds } from './engineProfiles.js';
+import { ExteriorIdleAudio } from './ExteriorIdleAudio.js';
+import { VehicleCrashAudio } from './VehicleCrashAudio.js';
 import { TireEffects } from './TireEffects.js';
+import { rainWetness } from '../systems/weatherUniforms.js';
 
 // ---------------------------------------------------------------------------
 // BaseVehicle
@@ -72,6 +82,8 @@ const _vibQuat = new THREE.Quaternion();
 const _wheelGrounded = [];
 const _wheelWorldPts = [];
 const _damageDelta = new THREE.Vector3();
+const _glassBox = new THREE.Box3();
+const _glassLocal = new THREE.Vector3();
 const _damageDirection = new THREE.Vector3();
 const _damageLocalDirection = new THREE.Vector3();
 const _damageBodyQuat = new THREE.Quaternion();
@@ -98,6 +110,10 @@ const WHEEL_SUSP_SMOOTH = 18;
 
 // Generated ladder-frame rail height in buildMesh(); used to pivot frameHeight scaling.
 const GENERATED_FRAME_RAIL_Y = 0.08;
+
+// Exterior idle heard on foot — full volume inside inner radius, silent beyond outer.
+const EXTERIOR_IDLE_FULL_DIST = 3;
+const EXTERIOR_IDLE_MAX_DIST = 18;
 
 const DEFAULT_CHASSIS_OVERLAY = Object.freeze({
   url: '/assets/models/muscle-chasis-2.glb',
@@ -193,6 +209,7 @@ export class BaseVehicle {
     chassisOverlay = undefined,
     wheelVisual = null,
     frameParameters = null,
+    hideEngine = false,
     position = new THREE.Vector3(),
     rotationY = 0,
     autopilot = null,
@@ -227,6 +244,7 @@ export class BaseVehicle {
       : normalizeChassisOverlayOptions(chassisOverlay);
     this.chassisOverlay = null;
     this.wheelVisualOptions = wheelVisual?.url ? { ...wheelVisual } : null;
+    this.hideEngine = hideEngine === true;
     this.chassisSocket = null;
     this.tailLightMaterials = [];
     this._tailLightGlow = 0;
@@ -284,6 +302,10 @@ export class BaseVehicle {
     // Populated from Rapier's vehicle controller after each update: authoritative
     // wheel rotation, contact geometry, impulses, suspension load, and slip.
     this.wheelTelemetry = [];
+    // Rally mud deform field (docs/rally-mud-tread-plan.md), set per frame by
+    // VehicleSystem from the level. Null in every non-rally mode / mud-less map,
+    // so the mud stamp + visual-sink paths are inert. See setGroundSurface.
+    this.mudField = null;
     this.wheelSpinAngle = 0;
     this.steerWheelMesh = null;
     // Current steering-wheel spin angle (rad). Shared by the wheel mesh and the
@@ -297,7 +319,11 @@ export class BaseVehicle {
 
     // Engine audio simulation (RPM + layered sounds)
     this.engineAudio = null;
+    this.exteriorIdleAudio = null;
+    this.crashAudio = null;
     this.tireEffects = null;
+    this.glassMeshes = [];
+    this._windshieldShattered = false;
     this.engineRpm = 920; // current simulated RPM
     this._engineIdle = 920;
     this._engineRedline = 7800;
@@ -322,6 +348,17 @@ export class BaseVehicle {
     // Last-known telemetry for snapshot()/debug.
     this.grounded = false;
     this.groundedFraction = 0;
+    // Asphalt preserves historical behavior for isolated/headless vehicles that
+    // have no LevelSystem. VehicleSystem replaces this on the first live frame.
+    this.groundSurface = 'asphalt';
+    const asphaltSurface = this.config.ground?.surfaces?.asphalt ?? {};
+    this.surfaceTuning = {
+      frictionSlip: asphaltSurface.frictionSlip ?? this.config.ground?.rayCast?.frictionSlip ?? 2,
+      sideFrictionStiffness: asphaltSurface.sideFrictionStiffness ?? this.config.ground?.rayCast?.sideFrictionStiffness ?? 1,
+      powerOversteerScale: asphaltSurface.powerOversteerScale ?? 1,
+      handbrakeRearGripScale: asphaltSurface.handbrakeRearGripScale ?? this.config.ground?.handbrakeRearGripScale ?? 0.1,
+      rollingResistanceScale: asphaltSurface.rollingResistanceScale ?? 1,
+    };
     this.speed = 0;
     // World-space linear velocity, refreshed each frame from the body. Used by the
     // run-over test (which direction / how fast the chassis is travelling).
@@ -346,6 +383,8 @@ export class BaseVehicle {
     // Owned scratch for getRunOverFrame() so it allocates nothing per frame.
     this._runOverFrame = null;
     this.status = 'created';
+    this.parkedMode = true;
+    this._parkedPose = null;
     // Bake the authored defaults into config before VehicleSystem asks for spawn
     // clearance and before buildMesh() derives its geometry dimensions.
     this._applyFrameParameters();
@@ -410,7 +449,113 @@ export class BaseVehicle {
     this._damageImpactCooldown = 0;
     this.pendingDamageImpacts.length = 0;
     this.speed = 0;
+    this._restoreWindshieldGlass();
     return true;
+  }
+
+  park(physics) {
+    if (this.status !== 'ready') return;
+    const parked = makeParkedControls();
+    this.controls = parked;
+    Object.assign(this._smoothed, parked);
+    this.parkedMode = true;
+    const body = physics?.getFreshBody?.(this.bodyHandle);
+    if (!body) return;
+    body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    body.resetForces(true);
+    body.resetTorques(true);
+    this._captureParkedPose(body);
+    this._holdParkedPose(body);
+    this._syncParkedWheelVisuals();
+    if (this.group && body) this._syncMeshFromBody(body);
+    this._hasPrevStepPose = false;
+  }
+
+  // Let suspension settle after spawn/exit so the car does not drop in and roll away.
+  settleParked(physics) {
+    if (this.status !== 'ready' || typeof physics?.world?.step !== 'function') return;
+    const body = physics.getFreshBody(this.bodyHandle);
+    if (!body) return;
+
+    const parked = makeParkedControls();
+    this.controls = parked;
+    Object.assign(this._smoothed, parked);
+    body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    body.wakeUp?.();
+
+    this.parkedMode = false;
+    this._parkedPose = null;
+    const world = physics.world;
+    const dt = physics.stepDt ?? 1 / 60;
+    const previousTimestep = world.timestep;
+    world.timestep = dt;
+    try {
+      for (let i = 0; i < 16; i += 1) {
+        this.substepIntegrate({ dt, physics });
+        world.step();
+      }
+    } finally {
+      world.timestep = previousTimestep;
+    }
+
+    this.parkedMode = true;
+    this._captureParkedPose(body);
+    this._holdParkedPose(body);
+    this._syncParkedWheelVisuals();
+    if (this.group) this._syncMeshFromBody(body);
+    this._hasPrevStepPose = false;
+  }
+
+  wakeForDrive(physics) {
+    this.parkedMode = false;
+    this._parkedPose = null;
+    physics?.getFreshBody?.(this.bodyHandle)?.wakeUp?.();
+  }
+
+  _captureParkedPose(body) {
+    const t = body.translation();
+    const r = body.rotation();
+    this._parkedPose = {
+      x: t.x,
+      y: t.y,
+      z: t.z,
+      qx: r.x,
+      qy: r.y,
+      qz: r.z,
+      qw: r.w,
+    };
+  }
+
+  _holdParkedPose(body) {
+    if (!this._parkedPose) {
+      this._captureParkedPose(body);
+    }
+    const p = this._parkedPose;
+    body.setTranslation({ x: p.x, y: p.y, z: p.z }, true);
+    body.setRotation({ x: p.qx, y: p.qy, z: p.qz, w: p.qw }, true);
+    body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    body.resetForces(true);
+    body.resetTorques(true);
+    this.linearVelocity.set(0, 0, 0);
+    this.speed = 0;
+  }
+
+  _syncParkedWheelVisuals() {
+    const rc = this.config.ground?.rayCast ?? {};
+    const restLen = rc.suspensionRestLength ?? this._defaultSuspensionRestLength ?? 0.3;
+    const settleSag = rc.settleSag ?? 0.13;
+    const anchorY = this.wheelAnchors[0]?.y ?? -(this.frameParameterDefaults?.frameHeight ?? 1) * 0.5;
+    const connY = Number.isFinite(rc.connectionHeight) ? rc.connectionHeight : anchorY + restLen;
+    const settledLen = Math.max(0.05, restLen - settleSag);
+    for (const wheel of this.wheelMeshes) {
+      const node = wheel?.userData.suspNode;
+      if (node) node.position.y = connY - settledLen;
+    }
+    this.groundedFraction = 1;
+    this.grounded = true;
   }
 
   async spawn({ scene, physics }) {
@@ -433,6 +578,8 @@ export class BaseVehicle {
     scene?.add(this.group);
     if (this.domain === VEHICLE_DOMAINS.GROUND) {
       this.tireEffects = new TireEffects({ scene, vehicle: this });
+      this.exteriorIdleAudio = new ExteriorIdleAudio();
+      this.crashAudio = new VehicleCrashAudio();
     }
 
     const [sx, sy, sz] = this.config.body.size;
@@ -630,6 +777,10 @@ export class BaseVehicle {
       this.engineAudio.dispose();
       this.engineAudio = null;
     }
+    this.exteriorIdleAudio?.dispose();
+    this.exteriorIdleAudio = null;
+    this.crashAudio?.dispose();
+    this.crashAudio = null;
     this.tireEffects?.dispose();
     this.tireEffects = null;
     this._ray = null;
@@ -646,7 +797,7 @@ export class BaseVehicle {
   // pose write here: integration then happens via substepIntegrate before every
   // world step (a frame may run 0..N of them), and the group pose is set after
   // the steps by syncVisualFromBody with interpolation.
-  update({ dt, controls = null, physics, weatherSystem = null, integrate = true }) {
+  update({ dt, controls = null, physics, weatherSystem = null, integrate = true, camera = null }) {
     if (this.status !== 'ready' || !physics?.world) {
       return;
     }
@@ -673,7 +824,9 @@ export class BaseVehicle {
     if (integrate) this._applyControlSmoothing(this.controls, dt);
 
     // 2c. Subtle chassis idle vibration + stronger engine shake + piston motion on accel.
-    this._updateEngineSimulation(dt, this._smoothed);
+    if (!this.parkedMode) {
+      this._updateEngineSimulation(dt, this._smoothed);
+    }
     this._updateVibrations(dt, this._smoothed, this.speed);
 
     // 2b. Articulate visuals (front-wheel steer, steering-wheel spin) from the
@@ -691,11 +844,17 @@ export class BaseVehicle {
     if (integrate) {
       this.substepIntegrate({ dt, physics });
     }
+    // Keep dust/glass particles simulating after exit (parkedMode) so rooster tails
+    // drift and fade instead of freezing mid-air; emission naturally stops once
+    // speed hits zero.
     if (this.domain === VEHICLE_DOMAINS.GROUND) {
       this.tireEffects?.update({
         controls: this._smoothed,
         groundedFraction: this.groundedFraction,
         physics,
+        surface: this.groundSurface,
+        dt,
+        camera,
       });
     }
   }
@@ -706,7 +865,20 @@ export class BaseVehicle {
     const body = physics.getFreshBody(this.bodyHandle);
     if (!body) return;
     try {
+      if (this.parkedMode && this.domain === VEHICLE_DOMAINS.GROUND) {
+        this._holdParkedPose(body);
+        this._syncParkedWheelVisuals();
+        return;
+      }
       if (physics.fixedStepPlanning) this._applyControlSmoothing(this.controls, dt);
+      // A parked vehicle is allowed to sleep. Rapier's raycast controller can
+      // update its internal wheel/velocity state without waking that rigid body,
+      // leaving first forward throttle apparently ignored until a brake/reverse
+      // impulse happens to wake it. Wake before applying any deliberate control
+      // so the very first W/S/steer/brake input reaches the chassis this tick.
+      if (vehicleControlsRequestWake(this._smoothed) && body.isSleeping?.()) {
+        body.wakeUp();
+      }
       // Rapier's addForce/addTorque are PERSISTENT accumulators — they are not
       // cleared after world.step(). Without this reset, each pass's forces stack
       // on top of the last, so the chassis launches upward and (once airborne, no
@@ -884,6 +1056,78 @@ export class BaseVehicle {
       localDirection: _damageLocalDirection.clone(),
     });
     this._damageImpactCooldown = cfg.cooldown ?? 0.25;
+    if (tier === 'severe') {
+      this._shatterWindshield({
+        severity: severityDeltaV,
+        localDirection: _damageLocalDirection,
+      });
+    }
+    this.crashAudio?.playImpact({
+      severity: severityDeltaV,
+      tier,
+      glass: tier === 'severe',
+      sourcePosition: this.group?.position ?? null,
+      listenerPosition: this._audioListener ?? null,
+    });
+  }
+
+  _isWindshieldGlassMesh(mesh) {
+    const label = `${mesh.name} ${mesh.parent?.name ?? ''}`.toLowerCase();
+    return /\b(?:glass front|windshield|windscreen|front glass)\b/.test(label);
+  }
+
+  _getWindshieldBurstOrigin(out) {
+    const windshieldMeshes = this.glassMeshes.filter((mesh) => this._isWindshieldGlassMesh(mesh));
+    const targets = windshieldMeshes.length > 0 ? windshieldMeshes : this.glassMeshes;
+    if (targets.length > 0) {
+      _glassBox.makeEmpty();
+      for (const mesh of targets) {
+        _glassBox.expandByObject(mesh);
+      }
+      return out.copy(_glassBox.getCenter(out));
+    }
+
+    const [,, length] = this.config.body.size;
+    _glassLocal.set(0, (this.config.body.size[1] ?? 1) * 0.42, -(length ?? 4) * 0.38);
+    this.group.updateWorldMatrix(true, false);
+    return out.copy(_glassLocal).applyMatrix4(this.group.matrixWorld);
+  }
+
+  _shatterWindshield({ severity, localDirection }) {
+    if (this._windshieldShattered || !this.group) {
+      return;
+    }
+    this._windshieldShattered = true;
+
+    for (const mesh of this.glassMeshes) {
+      mesh.visible = false;
+    }
+
+    const origin = this._getWindshieldBurstOrigin(_pos);
+    if (localDirection?.isVector3) {
+      _forward.copy(localDirection).applyQuaternion(this.group.quaternion);
+    } else {
+      _forward.copy(FORWARD).applyQuaternion(this.group.quaternion);
+    }
+    _forward.multiplyScalar(-1).setY(0);
+    if (_forward.lengthSq() < 1e-6) {
+      _forward.copy(FORWARD).applyQuaternion(this.group.quaternion).setY(0);
+    }
+    _forward.normalize();
+    _right.crossVectors(UP, _forward).normalize();
+    this.tireEffects?.burstWindshieldGlass?.({
+      origin,
+      forward: _forward,
+      right: _right,
+      severity,
+    });
+  }
+
+  _restoreWindshieldGlass() {
+    this._windshieldShattered = false;
+    for (const mesh of this.glassMeshes) {
+      mesh.visible = true;
+    }
   }
 
   // Chassis frame for the vehicle-vs-enemy run-over test (all world space). Returns
@@ -1054,6 +1298,16 @@ export class BaseVehicle {
   // Now driven primarily by simulated engineRpm (synced with audio layers).
   _updateVibrations(dt, controls, speed) {
     if (this.domain !== VEHICLE_DOMAINS.GROUND) return;
+    if (this.parkedMode) {
+      if (this.engineGroup) {
+        this.engineGroup.position.y = 0;
+        this.engineGroup.quaternion.identity();
+      }
+      for (const piston of this.pistonMeshes) {
+        piston.position.y = piston.userData.restY ?? 0.44;
+      }
+      return;
+    }
     this._vibrationTime += dt;
 
     const throttle = Math.abs(controls?.throttle ?? 0);
@@ -1064,22 +1318,27 @@ export class BaseVehicle {
     const isAccel = throttle > 0.04;
     const speedFactor = Math.min(1, (speed || 0) / 12);
     const idleFactor = (1 - speedFactor) * (1 - throttle * 0.55) + 0.18;
+    // Idle shake was strong enough to read as the car bouncing on the ground — keep
+    // full intensity under throttle, taper to 1/10 at rest.
+    const vibScale = 0.1 + 0.9 * Math.min(1, throttle / 0.22);
 
     const t = this._vibrationTime;
 
     // --- Chassis: very subtle idle shake (body rocks a tiny bit at rest) ---
-    const chassisY = Math.sin(t * 19) * (0.0011 / 3) * idleFactor +
-                     Math.sin(t * 29 + 1.2) * (0.0006 / 3) * idleFactor;
+    const chassisY = (Math.sin(t * 19) * (0.0011 / 3) * idleFactor +
+                     Math.sin(t * 29 + 1.2) * (0.0006 / 3) * idleFactor) * vibScale;
     this.group.position.y += chassisY;
 
-    const cRoll = Math.sin(t * 16) * (0.0025 / 3) * idleFactor;
-    const cPitch = Math.sin(t * 23 + 0.8) * (0.0020 / 3) * idleFactor;
+    const cRoll = Math.sin(t * 16) * (0.0025 / 3) * idleFactor * vibScale;
+    const cPitch = Math.sin(t * 23 + 0.8) * (0.0020 / 3) * idleFactor * vibScale;
     const cQuat = _vibQuat.setFromEuler(_vibEuler.set(cPitch, 0, cRoll, 'XYZ'));
     this.group.quaternion.multiply(cQuat);
 
     // --- Engine group: stronger vibration, driven by rpm + throttle ---
     if (this.engineGroup) {
-      const engBase = (0.0028 + rpmNorm * 0.0095 + (isAccel ? throttle * 0.008 : 0) + idleFactor * 0.0025) * damageShake;
+      const engBase = (0.0028 + rpmNorm * 0.0095 + (isAccel ? throttle * 0.008 : 0) + idleFactor * 0.0025)
+        * damageShake
+        * vibScale;
       const engY = Math.sin(t * 47) * engBase * 1.3 +
                    Math.sin(t * 61 + 1.7) * engBase * 0.7;
       this.engineGroup.position.y = engY;
@@ -1093,9 +1352,9 @@ export class BaseVehicle {
     // --- 4 exposed pistons: frequency now follows real RPM ---
     if (this.pistonMeshes.length === 4) {
       const pFreq = 13 + rpmNorm * 54; // rpm-driven "engine speed"
-      const pAmp = isAccel
+      const pAmp = (isAccel
         ? (0.018 + rpmNorm * 0.026 + throttle * 0.022)
-        : (0.0035 + rpmNorm * 0.004);
+        : (0.0035 + rpmNorm * 0.004)) * vibScale;
       for (const piston of this.pistonMeshes) {
         const idx = piston.userData.pistonIndex ?? 0;
         // Alternating pairs + staggered phasing for 4-cyl feel (1-3 / 2-4)
@@ -1125,11 +1384,28 @@ export class BaseVehicle {
     if (typeof window === 'undefined') return;
     try {
       this.engineAudio = new EngineAudio();
-      await this.engineAudio.init(DEFAULT_ENGINE_SOUNDS);
+      await this.engineAudio.init(resolveEngineSounds(this.config.engineProfile));
     } catch (e) {
       console.warn('[EngineAudio] Failed to initialize:', e);
       this.engineAudio = null;
     }
+  }
+
+  updateExteriorIdleAudio(listenerPosition, { inVehicle = false } = {}) {
+    if (listenerPosition) this._audioListener = listenerPosition;
+    if (!this.exteriorIdleAudio || !listenerPosition) return;
+    if (inVehicle || !this.group || this.status !== 'ready') {
+      this.exteriorIdleAudio.update(0);
+      return;
+    }
+    const dist = listenerPosition.distanceTo(this.group.position);
+    let proximity = 1;
+    if (dist > EXTERIOR_IDLE_FULL_DIST) {
+      const t = (dist - EXTERIOR_IDLE_FULL_DIST)
+        / (EXTERIOR_IDLE_MAX_DIST - EXTERIOR_IDLE_FULL_DIST);
+      proximity = 1 - THREE.MathUtils.smoothstep(t, 0, 1);
+    }
+    this.exteriorIdleAudio.update(proximity);
   }
 
   _updateEngineSimulation(dt, controls) {
@@ -1308,6 +1584,7 @@ export class BaseVehicle {
     const cfg = this.config.ground;
     const rc = cfg.rayCast ?? {};
     const mass = bodyMass(body, this.config);
+    const surface = this._updateSurfaceTuning(dt);
     readBodyFrame(body);
     const speedFwd = _linvel.dot(_forward);
     this.controllerSpeed = ctrl.currentVehicleSpeed();
@@ -1370,6 +1647,14 @@ export class BaseVehicle {
 
     let grounded = 0;
     const wheels = ctrl.numWheels();
+    // Rally mud bog: a deep rut under the car saps grip, so flooring it just
+    // spins the wheels → digs deeper → saps more grip (the "stuck" feedback
+    // loop). Capped at 40% loss so careful throttle can still crawl you out.
+    let bogGrip = 1;
+    if (this.mudField && this.groundSurface === 'mud' && this.group) {
+      const rut = this.mudField.sampleDepthAt(this.group.position.x, this.group.position.z);
+      bogGrip = 1 - 0.4 * Math.min(1, rut / (this.mudField.maxDepth || 0.2));
+    }
     for (let i = 0; i < wheels; i += 1) {
       const inContact = ctrl.wheelIsInContact(i);
       if (inContact) grounded += 1;
@@ -1396,13 +1681,13 @@ export class BaseVehicle {
       const surfaceFriction = groundObject?.friction?.() ?? 0.8;
       const surfaceGrip = THREE.MathUtils.clamp(surfaceFriction / 0.8, 0.45, 1.3);
       const handbrakeGrip = controls.handbrake && !wheelIsFront(this.wheelAnchors[i])
-        ? (cfg.handbrakeRearGripScale ?? 0.1)
+        ? (surface.handbrakeRearGripScale ?? cfg.handbrakeRearGripScale ?? 0.1)
         : 1;
-      ctrl.setWheelFrictionSlip(i, (rc.frictionSlip ?? 2) * surfaceGrip * handbrakeGrip);
+      ctrl.setWheelFrictionSlip(i, (surface.frictionSlip ?? rc.frictionSlip ?? 2) * surfaceGrip * handbrakeGrip * bogGrip);
       if (ctrl.setWheelSideFrictionStiffness) {
         ctrl.setWheelSideFrictionStiffness(
           i,
-          (rc.sideFrictionStiffness ?? 1) * surfaceGrip * handbrakeGrip,
+          (surface.sideFrictionStiffness ?? rc.sideFrictionStiffness ?? 1) * surfaceGrip * handbrakeGrip * bogGrip,
         );
       }
       this.wheelTelemetry[i] = {
@@ -1422,9 +1707,27 @@ export class BaseVehicle {
         tractionControl: controls.throttle !== 0 && old?.slipRatio > (rc.tractionSlipThreshold ?? 0.32),
         abs: braking && old?.slipRatio > (rc.absSlipThreshold ?? 0.48),
       };
+
     }
     this.grounded = grounded > 0;
     this.groundedFraction = wheels ? grounded / wheels : 0;
+
+    if (this.groundedFraction > 0) {
+      // The raycast controller already has baseline contact drag. Add only the
+      // loose-surface excess so asphalt handling stays behavior-compatible.
+      const rolling = (cfg.rollingResistance ?? 0)
+        * Math.max(0, (surface.rollingResistanceScale ?? 1) - 1);
+      if (rolling > 0) {
+        _force.copy(_forward).multiplyScalar(-speedFwd * rolling * mass * this.groundedFraction);
+        body.addForce(toRapier(_force), false);
+      }
+      if (controls.throttle > 0 && Math.abs(controls.steer) > 0.04 && (cfg.powerOversteer ?? 0) > 0) {
+        const yawAccel = -controls.steer * controls.throttle * cfg.powerOversteer
+          * (surface.powerOversteerScale ?? 1) * this.groundedFraction;
+        _force.copy(_up).multiplyScalar(yawAccel * mass);
+        body.addTorque(toRapier(_force), true);
+      }
+    }
 
     // Low-speed yaw assist: wheel steering needs forward motion to rotate the car,
     // so add a fading closed-loop yaw torque below yawAssistMaxSpeed for arcade
@@ -1487,6 +1790,7 @@ export class BaseVehicle {
       return;
     }
     const cfg = this.config.ground;
+    const surface = this._updateSurfaceTuning(dt);
     const mass = bodyMass(body, this.config);
     readBodyFrame(body); // fills _pos/_quat/_linvel/_angvel/_forward/_right/_up
 
@@ -1603,7 +1907,9 @@ export class BaseVehicle {
     }
 
     // Rolling resistance.
-    _force.copy(_forward).multiplyScalar(-speedFwd * cfg.rollingResistance * mass * gf);
+    _force.copy(_forward).multiplyScalar(
+      -speedFwd * cfg.rollingResistance * (surface.rollingResistanceScale ?? 1) * mass * gf,
+    );
     body.addForce(toRapier(_force), false);
 
     const speedLat = _linvel.dot(_right);
@@ -1624,7 +1930,7 @@ export class BaseVehicle {
       }
       if (rearGrounded > 0) {
         const rearScale = controls.handbrake
-          ? (cfg.handbrakeRearGripScale ?? 0.1)
+          ? (surface.handbrakeRearGripScale ?? cfg.handbrakeRearGripScale ?? 0.1)
           : (cfg.rearGripScale ?? 0.58);
         const trim = rearAxleGrip * rearScale * mass / rearGrounded;
         for (let wi = 0; wi < wheelCount; wi += 1) {
@@ -1650,7 +1956,8 @@ export class BaseVehicle {
       controls.throttle > 0 &&
       Math.abs(controls.steer) > 0.05
     ) {
-      targetYawRate += -controls.steer * controls.throttle * cfg.powerOversteer * authority;
+      targetYawRate += -controls.steer * controls.throttle * cfg.powerOversteer
+        * (surface.powerOversteerScale ?? 1) * authority;
     }
     const actualYawRate = _angvel.dot(_up);
     let yawAccel = (targetYawRate - actualYawRate) * (cfg.yawStiffness ?? 10) * gf;
@@ -1923,6 +2230,80 @@ export class BaseVehicle {
     return this.group ? this.group.position.distanceTo(point) : Infinity;
   }
 
+  setGroundSurface(surface) {
+    this.groundSurface = surface === 'asphalt' || surface === 'dirt' || surface === 'mud'
+      ? surface
+      : 'offroad';
+  }
+
+  // Rally mud: stamp tyre ruts into the shared deform field from this frame's
+  // wheel telemetry. All four wheels cut the rut (front carves, rear follows in).
+  // A rolling wheel lays a shallow continuous rut; a SPINNING/bogged wheel bores
+  // progressively deeper each frame (the `add` accumulation) — so bad throttle
+  // control digs you a hole. Parked cars (speed < 0.5, no spin) don't bore.
+  // (docs/rally-mud-tread-plan.md §6)
+  stampMudRuts(mudField, dt = 1 / 60) {
+    if (!mudField || this.groundSurface !== 'mud') return;
+    const speed = Math.abs(this.controllerSpeed ?? this.speed ?? 0);
+    const speedFactor = Math.min(1, speed / 8);
+    // Fresh ruts are wet + churned; rain raises the baseline (M3).
+    const wet = Math.min(1, 0.55 + 0.45 * (rainWetness.value ?? 0));
+    const step = Math.max(0, Math.min(0.05, dt));
+    let rutDirectionX = 0;
+    let rutDirectionZ = -1;
+    if (this.group?.quaternion) {
+      _forward.copy(FORWARD).applyQuaternion(this.group.quaternion).setY(0);
+      if (_forward.lengthSq() > 1e-6) {
+        _forward.normalize();
+        rutDirectionX = _forward.x;
+        rutDirectionZ = _forward.z;
+      }
+    }
+    for (const t of this.wheelTelemetry) {
+      if (!t?.inContact || !t.contactPoint) continue;
+      const load = Math.min(1, (t.suspensionForce ?? 0) / 3000);
+      const slip = Math.min(1, (t.slipRatio ?? 0) / 0.6);
+      // Base rut only when actually moving; wheelspin digs even standing still.
+      const base = speed >= 0.5 ? 0.08 + 0.15 * speedFactor * (0.5 + 0.5 * load) : 0;
+      const dig = slip * 0.2 * step; // ~0.2 m/s of digging at full wheelspin
+      if (base <= 0 && dig <= 0) continue;
+      // A ~0.22 m brush (spans ~2 of the field's 0.15 m cells) so the rut is a
+      // TIGHT tyre-width trough — one wheel, not a wide merged wallow — while
+      // still having a cell of falloff for a smooth wall instead of a spike.
+      mudField.stampBrush(t.contactPoint.x, t.contactPoint.z, 0.22, {
+        depth: base,
+        add: dig,
+        wetness: wet,
+        tread: 1,
+        directionX: rutDirectionX,
+        directionZ: rutDirectionZ,
+      });
+    }
+  }
+
+  _updateSurfaceTuning(dt) {
+    const profiles = this.config.ground?.surfaces;
+    let target = profiles?.[this.groundSurface] ?? profiles?.offroad;
+    if (!target) return this.surfaceTuning;
+    if (isLooseGroundSurface(this.groundSurface)) {
+      target = applyLooseSurfaceTraction(
+        target,
+        profiles?.asphalt,
+        this.config.ground?.traction,
+      );
+    }
+    const alpha = 1 - Math.exp(-Math.max(0, target.gripLerp ?? 4) * Math.max(0, dt));
+    for (const key of [
+      'frictionSlip', 'sideFrictionStiffness', 'powerOversteerScale',
+      'handbrakeRearGripScale', 'rollingResistanceScale',
+    ]) {
+      const fallback = key.endsWith('Scale') ? 1 : 0;
+      const next = Number.isFinite(target[key]) ? target[key] : fallback;
+      this.surfaceTuning[key] = THREE.MathUtils.lerp(this.surfaceTuning[key] ?? next, next, alpha);
+    }
+    return this.surfaceTuning;
+  }
+
   // ---- overridable hooks ---------------------------------------------------
 
   onEnter(/* character, seatIndex */) {}
@@ -1936,7 +2317,7 @@ export class BaseVehicle {
     try {
       const gltf = await createGltfLoader().loadAsync(options.url);
       const overlay = gltf.scene;
-      overlay.name = 'Muscle chassis overlay';
+      overlay.name = 'Vehicle chassis overlay';
       overlay.userData.vehicleChassisOverlay = true;
       const hasTripoPartNames = overlayHasTripoPartNames(overlay);
       overlay.traverse((child) => {
@@ -1945,17 +2326,26 @@ export class BaseVehicle {
         child.receiveShadow = true;
 
         const partKind = hasTripoPartNames
-          ? classifyVehicleOverlayMesh(child)
+          ? classifyVehicleOverlayMesh(child, options.profileId, {
+            disableGlassDetection: options.disableGlassDetection === true,
+          })
           : VEHICLE_OVERLAY_PART.CHASSIS;
         child.userData.vehicleOverlayPart = partKind;
         child.userData.vehicleDamageGeometryUnique = true;
+        if (partKind === VEHICLE_OVERLAY_PART.GLASS) {
+          this.glassMeshes.push(child);
+        }
 
         if (child.geometry) {
           child.geometry = prepareVehicleOverlayGeometry(child.geometry);
         }
 
         const previous = child.material;
-        child.material = createVehicleOverlayMaterial(partKind);
+        const chassisSurfaceMode = resolveChassisSurfaceMode(options);
+        child.material = resolveVehicleOverlayMaterial(partKind, previous, {
+          chassisSurfaceMode,
+          useAuthoredTexture: options.useAuthoredTexture === true,
+        });
         if (partKind === VEHICLE_OVERLAY_PART.TAIL_LIGHT || isVehicleTailLightMesh(child)) {
           child.userData.vehicleTailLight = true;
           updateVehicleTailLightEmissive(child.material, 0);
@@ -1964,7 +2354,9 @@ export class BaseVehicle {
         if (child.material.wetnessUniform) {
           this.wetnessMaterials.push(child.material);
         }
-        disposeMaterial(previous);
+        disposeMaterial(previous, {
+          preserveMaps: chassisSurfaceMode === 'texture' || chassisSurfaceMode === 'mix',
+        });
       });
       if (this.tailLightMaterials.length < 2) {
         console.warn(
@@ -2451,77 +2843,81 @@ export class BaseVehicle {
 
       // Exposed front engine block, pulled close to the cockpit rather than
       // floating at the nose, with four deliberately visible moving pistons.
-      const engineZ = -sz * 0.25;
-      const enginePivotY = 0.28;
+      if (!this.hideEngine) {
+        const engineZ = -sz * 0.25;
+        const enginePivotY = 0.28;
 
-      // Engine mount carries the static orientation; engineGroup stays the
-      // vibration target so _updateVibrations does not wipe a base rotation.
-      const engineMount = new THREE.Group();
-      engineMount.name = 'Engine mount';
-      engineMount.position.set(0, enginePivotY, engineZ);
-      engineMount.rotation.y = Math.PI * 0.5;
-      group.add(engineMount);
+        // Engine mount carries the static orientation; engineGroup stays the
+        // vibration target so _updateVibrations does not wipe a base rotation.
+        const engineMount = new THREE.Group();
+        engineMount.name = 'Engine mount';
+        engineMount.position.set(0, enginePivotY, engineZ);
+        engineMount.rotation.y = Math.PI * 0.5;
+        group.add(engineMount);
 
-      const engineGroup = new THREE.Group();
-      engineGroup.name = 'Engine';
-      engineMount.add(engineGroup);
-      this.engineGroup = engineGroup;
-      this.pistonMeshes = [];
+        const engineGroup = new THREE.Group();
+        engineGroup.name = 'Engine';
+        engineMount.add(engineGroup);
+        this.engineGroup = engineGroup;
+        this.pistonMeshes = [];
 
-      addBox('Engine block', [sx * 0.58, 0.42, sz * 0.22], [0, 0, 0], engineMetal, engineGroup);
-      addBox('Engine head', [sx * 0.48, 0.13, sz * 0.18], [0, 0.27, 0], darkMetal, engineGroup);
-      const pistonMaterial = new THREE.MeshStandardMaterial({
-        color: 0xc5cbd0,
-        roughness: 0.24,
-        metalness: 0.92,
-      });
-      const pistonRodGeometry = new THREE.CylinderGeometry(0.035, 0.035, 0.22, 10);
-      const pistonCrownGeometry = new THREE.CylinderGeometry(0.09, 0.085, 0.1, 14);
-      const sleeveGeometry = new THREE.TorusGeometry(0.1, 0.022, 7, 14);
-      sleeveGeometry.rotateX(Math.PI * 0.5);
-      const pistonXs = [-0.34, -0.11, 0.11, 0.34];
-      for (let i = 0; i < pistonXs.length; i++) {
-        const x = pistonXs[i];
-        const sleeve = new THREE.Mesh(sleeveGeometry, engineMetal);
-        sleeve.name = 'Piston sleeve';
-        sleeve.position.set(x, 0.35, 0);
-        sleeve.castShadow = true;
-        engineGroup.add(sleeve);
+        addBox('Engine block', [sx * 0.58, 0.42, sz * 0.22], [0, 0, 0], engineMetal, engineGroup);
+        addBox('Engine head', [sx * 0.48, 0.13, sz * 0.18], [0, 0.27, 0], darkMetal, engineGroup);
+        const pistonMaterial = new THREE.MeshStandardMaterial({
+          color: 0xc5cbd0,
+          roughness: 0.24,
+          metalness: 0.92,
+        });
+        const pistonRodGeometry = new THREE.CylinderGeometry(0.035, 0.035, 0.22, 10);
+        const pistonCrownGeometry = new THREE.CylinderGeometry(0.09, 0.085, 0.1, 14);
+        const sleeveGeometry = new THREE.TorusGeometry(0.1, 0.022, 7, 14);
+        sleeveGeometry.rotateX(Math.PI * 0.5);
+        const pistonXs = [-0.34, -0.11, 0.11, 0.34];
+        for (let i = 0; i < pistonXs.length; i++) {
+          const x = pistonXs[i];
+          const sleeve = new THREE.Mesh(sleeveGeometry, engineMetal);
+          sleeve.name = 'Piston sleeve';
+          sleeve.position.set(x, 0.35, 0);
+          sleeve.castShadow = true;
+          engineGroup.add(sleeve);
 
-        const piston = new THREE.Group();
-        piston.name = 'Exposed engine piston';
-        piston.position.set(x, 0.44, 0);
-        piston.userData.pistonIndex = i;
-        piston.userData.restY = 0.44;
+          const piston = new THREE.Group();
+          piston.name = 'Exposed engine piston';
+          piston.position.set(x, 0.44, 0);
+          piston.userData.pistonIndex = i;
+          piston.userData.restY = 0.44;
 
-        const rod = new THREE.Mesh(pistonRodGeometry, pistonMaterial);
-        rod.name = 'Piston rod';
-        rod.position.y = -0.08;
-        rod.castShadow = true;
-        piston.add(rod);
+          const rod = new THREE.Mesh(pistonRodGeometry, pistonMaterial);
+          rod.name = 'Piston rod';
+          rod.position.y = -0.08;
+          rod.castShadow = true;
+          piston.add(rod);
 
-        const crown = new THREE.Mesh(pistonCrownGeometry, pistonMaterial);
-        crown.name = 'Piston crown';
-        crown.position.y = 0.07;
-        crown.castShadow = true;
-        piston.add(crown);
+          const crown = new THREE.Mesh(pistonCrownGeometry, pistonMaterial);
+          crown.name = 'Piston crown';
+          crown.position.y = 0.07;
+          crown.castShadow = true;
+          piston.add(crown);
 
-        engineGroup.add(piston);
-        this.pistonMeshes.push(piston);
+          engineGroup.add(piston);
+          this.pistonMeshes.push(piston);
+        }
       }
 
       // A low firewall closes the engine/cockpit gap. Two uprights run from the
       // floor rails into the dash crossbar, with diagonal braces back to the pan.
       addBox('Engine firewall', [sx * 0.76, 0.48, 0.09], [0, 0.34, -0.57], bodyMaterial);
+      const dashY = 0.72;
+      const dashZ = -0.31;
       for (const x of [-sx * 0.34, sx * 0.34]) {
-        addTube('Dashboard upright', [x, frameY, -0.5], [x, 0.6, -0.31], 0.06);
-        addTube('Dashboard frame brace', [x, frameY, 0.12], [x, 0.6, -0.31], 0.055);
-        addWeld([x, 0.6, -0.31]);
+        addTube('Dashboard upright', [x, frameY, -0.5], [x, dashY, dashZ], 0.06);
+        addTube('Dashboard frame brace', [x, frameY, 0.12], [x, dashY, dashZ], 0.055);
+        addWeld([x, dashY, dashZ]);
       }
 
       // Makeshift dash: a bare crossbar, small instrument pod, steering column,
       // and the wheel itself aligned with the left-side driver.
-      addTube('Dashboard crossbar', [-sx * 0.4, 0.6, -0.31], [sx * 0.4, 0.6, -0.31], 0.065);
+      addTube('Dashboard crossbar', [-sx * 0.4, dashY, dashZ], [sx * 0.4, dashY, dashZ], 0.065);
 
       // Compact molded buckets: a tapered carbon shell, reclined inset padding,
       // integrated bolsters, and a close-fitting harness instead of stacked boxes.
@@ -2587,7 +2983,7 @@ export class BaseVehicle {
       const driver = this.config.seats.find((s) => s.isDriver);
       const grip = driver?.handGrip;
       if (grip) {
-        addBox('Instrument pod', [0.42, 0.2, 0.1], [grip.offset[0], 0.69, -0.25], bodyMaterial);
+        addBox('Instrument pod', [0.42, 0.2, 0.1], [grip.offset[0], grip.offset[1] + 0.04, -0.25], bodyMaterial);
         const column = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.34, 10), darkMetal);
         column.name = 'Steering column';
         column.rotation.x = Math.PI * 0.5;
@@ -2751,14 +3147,24 @@ export class BaseVehicle {
       status: this.status,
       grounded: this.grounded,
       groundedFraction: Number(this.groundedFraction.toFixed(2)),
+      groundSurface: this.groundSurface,
+      traction: Number((this.config.ground?.traction ?? 0.55).toFixed(2)),
+      surfaceGrip: {
+        frictionSlip: Number((this.surfaceTuning.frictionSlip ?? 0).toFixed(3)),
+        sideFrictionStiffness: Number((this.surfaceTuning.sideFrictionStiffness ?? 0).toFixed(3)),
+      },
       speed: Number(this.speed.toFixed(2)),
       substeps: this._lastSubsteps ?? 1,
       rayCastController: !!this.vehicleController,
       controllerSpeed: Number((this.controllerSpeed ?? 0).toFixed(2)),
       maxWheelSlip: Number(Math.max(0, ...this.wheelTelemetry.map((wheel) => wheel?.slipRatio ?? 0)).toFixed(3)),
+      dust: this.tireEffects?.dust?.snapshot?.() ?? null,
+      mudSplash: this.tireEffects?.mudSplash?.snapshot?.() ?? null,
+      glassBurst: this.tireEffects?.glassBurst?.snapshot?.() ?? null,
       tractionControlActive: this.wheelTelemetry.some((wheel) => wheel?.tractionControl === true),
       absActive: this.wheelTelemetry.some((wheel) => wheel?.abs === true),
       groundSpeed: Number(Math.hypot(this.linearVelocity.x, this.linearVelocity.z).toFixed(2)),
+      throttle: Number((this._smoothed.throttle ?? 0).toFixed(3)),
       position: this.group
         ? {
             x: Number(this.group.position.x.toFixed(2)),
@@ -2811,8 +3217,13 @@ function copyRapierVector(value, target = null) {
 }
 
 function normalizeChassisOverlayOptions(overrides = {}) {
+  const chassisSurfaceMode = resolveChassisSurfaceMode(overrides);
   return {
     url: overrides.url ?? DEFAULT_CHASSIS_OVERLAY.url,
+    profileId: typeof overrides.profileId === 'string' ? overrides.profileId : null,
+    disableGlassDetection: overrides.disableGlassDetection === true,
+    chassisSurfaceMode,
+    useAuthoredTexture: chassisSurfaceMode !== 'metallic',
     position: vectorToArray(overrides.position, DEFAULT_CHASSIS_OVERLAY.position),
     rotationDegrees: vectorToArray(
       overrides.rotationDegrees,
@@ -2911,6 +3322,28 @@ export function makeNeutralControls() {
     boost: false,
     vertical: 0, // -1..1 (VTOL / submarine, reserved)
   };
+}
+
+/** Undriven ground vehicles: full service brake + handbrake so they stay put on slopes. */
+export function makeParkedControls() {
+  return {
+    ...makeNeutralControls(),
+    brake: 1,
+    handbrake: true,
+  };
+}
+
+export function vehicleControlsRequestWake(controls) {
+  if (!controls) return false;
+  return Math.abs(controls.throttle ?? 0) > 0.001
+    || Math.abs(controls.steer ?? 0) > 0.001
+    || Math.abs(controls.brake ?? 0) > 0.001
+    || Math.abs(controls.pitch ?? 0) > 0.001
+    || Math.abs(controls.roll ?? 0) > 0.001
+    || Math.abs(controls.yaw ?? 0) > 0.001
+    || Math.abs(controls.vertical ?? 0) > 0.001
+    || controls.handbrake === true
+    || controls.boost === true;
 }
 
 function approach(current, target, rate, dt) {
@@ -3297,10 +3730,14 @@ function disposeObject(object) {
   });
 }
 
-function disposeMaterial(material) {
+function disposeMaterial(material, { preserveMaps = false } = {}) {
   if (!material) return;
-  material.map?.dispose?.();
-  material.roughnessMap?.dispose?.();
-  if (material.bumpMap !== material.roughnessMap) material.bumpMap?.dispose?.();
+  if (!preserveMaps) {
+    material.map?.dispose?.();
+    material.roughnessMap?.dispose?.();
+    if (material.bumpMap !== material.roughnessMap) material.bumpMap?.dispose?.();
+    material.normalMap?.dispose?.();
+    material.metalnessMap?.dispose?.();
+  }
   material.dispose?.();
 }

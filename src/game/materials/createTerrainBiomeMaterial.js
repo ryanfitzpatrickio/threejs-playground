@@ -223,7 +223,7 @@ export function createTerrainBiomeMaterial({ overlay = null } = {}) {
         PUDDLE_SEED,
         rainWetness.mul(PUDDLE_COVERAGE),
         float(PUDDLE_EDGE),
-      ).mul(smoothstep(0.85, 0.98, flatness)).mul(puddleDetail);
+      ).mul(smoothstep(0.85, 0.98, flatness)).mul(puddleDetail).mul(rainWetness);
       mask.assign(m);
 
       // rippleFade/deepWater — same nested-mix structure as the reference's

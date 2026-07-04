@@ -8,7 +8,16 @@ import { CutTestCanvas } from './components/CutTestCanvas.jsx';
 import { Minimap } from './components/Minimap.jsx';
 import { PhotoModeControls } from './components/PhotoModeControls.jsx';
 import { GarageScene } from './components/GarageScene.jsx';
-import { setActiveSceneId, getActiveSceneId, getActiveWorldMapSync } from '../world/worldMap/worldMapScenes.js';
+import { ClothColliderEditor } from './components/ClothColliderEditor.jsx';
+import { isJacketClothUiEnabled } from '../game/characters/mara/jacketConfig.js';
+import {
+  setActiveSceneId,
+  getActiveSceneId,
+  getActiveWorldMapSync,
+  getDefaultWorldSceneId,
+  getDefaultRallySceneId,
+  getRallyWorldMapSync,
+} from '../world/worldMap/worldMapScenes.js';
 import {
   getPostEffectMode,
   getQualityLevel,
@@ -22,9 +31,22 @@ import { createDevTools } from 'virtual:dreamfall-dev-tools';
 function readStoredLevel() {
   try {
     const v = localStorage.getItem('dreamfall:level');
-    return v === 'world' || v === 'wilds' ? v : 'city';
+    return v === 'world' || v === 'wilds' || v === 'rally' ? v : 'city';
   } catch {
     return 'city';
+  }
+}
+
+function formatVehicleCameraMode(mode) {
+  switch (mode) {
+    case 'medium':
+      return 'Medium chase';
+    case 'far':
+      return 'Far chase';
+    case 'firstPerson':
+      return 'First person';
+    default:
+      return 'Close chase';
   }
 }
 
@@ -38,6 +60,7 @@ export function App() {
   const [showControls, setShowControls] = createSignal(false);
   const [showDebugPanel, setShowDebugPanel] = createSignal(false);
   const [hudVisible, setHudVisible] = createSignal(true);
+  const [showClothEditor, setShowClothEditor] = createSignal(false);
   let gameRuntime = null;
 
   // First-time player guide: show automatically unless previously dismissed
@@ -142,14 +165,19 @@ export function App() {
   // changes (City⇄World, or a different World map). Memoized so equal values
   // don't re-fire — and the keyed child must NOT read signals, or it remounts
   // on every game snapshot.
-  const gameKey = createMemo(() =>
-    levelMode() === 'world' ? `world:${activeSceneId() ?? 'draft'}:${playRevision()}` : levelMode(),
-  );
+  const gameKey = createMemo(() => {
+    const mode = levelMode();
+    if (mode === 'world') return `world:${activeSceneId() ?? 'draft'}:${playRevision()}`;
+    if (mode === 'rally') return `rally:${getDefaultRallySceneId() ?? 'builtin'}`;
+    return mode;
+  });
 
   // The world map currently being played (for the minimap). Recomputed when the
   // active scene changes; null in City mode.
   const activeWorldMap = createMemo(() =>
-    levelMode() === 'world' ? (activeSceneId(), playRevision(), getActiveWorldMapSync()) : null,
+    levelMode() === 'world'
+      ? (activeSceneId(), playRevision(), getActiveWorldMapSync())
+      : levelMode() === 'rally' ? getRallyWorldMapSync() : null,
   );
 
   // Centralized switch that forces terrain save when leaving the editor
@@ -166,10 +194,16 @@ export function App() {
   // Changing levelMode while in game remounts GameCanvas (keyed Show below), so a
   // fresh GameRuntime builds the chosen level.
   const setLevelMode = (mode) => {
-    const next = ['world', 'wilds'].includes(mode) ? mode : 'city';
+    const next = ['world', 'wilds', 'rally'].includes(mode) ? mode : 'city';
     try {
       localStorage.setItem('dreamfall:level', next);
     } catch {}
+    if (next === 'world') {
+      const defId = getDefaultWorldSceneId();
+      setActiveSceneId(defId || null);
+      setActiveSceneIdSignal(defId || null);
+      setPlayRevision((n) => n + 1);
+    }
     setLevelModeSignal(next);
     switchTo('game');
   };
@@ -199,6 +233,13 @@ export function App() {
             title="World — streaming editable terrain"
           >
             World
+          </button>
+          <button
+            class={`mode-btn rally-mode-btn ${isGame() && levelMode() === 'rally' ? 'active' : ''}`}
+            onClick={() => setLevelMode('rally')}
+            title="Rally — Pine Ridge dirt stage and rally car"
+          >
+            Rally
           </button>
           <button
             class={`mode-btn ${isGame() && levelMode() === 'wilds' ? 'active' : ''}`}
@@ -273,6 +314,21 @@ export function App() {
           >
             Off
           </button>
+          <Show when={isGame() && gameSnapshot()?.vehicles?.activeId}>
+            <button
+              class={`icon-btn camera-mode-btn ${gameSnapshot()?.camera?.vehicleCameraMode !== 'close' ? 'active' : ''}`}
+              onClick={() => gameRuntime?.cycleVehicleCameraMode()}
+              title={`Driving camera: ${formatVehicleCameraMode(gameSnapshot()?.camera?.vehicleCameraMode)}`}
+              aria-label="Cycle driving camera mode"
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                <path
+                  fill="currentColor"
+                  d="M12 5c-5 0-9.27 3.11-11 7.5 1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5C21.27 8.11 17 5 12 5zm0 12.5c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"
+                />
+              </svg>
+            </button>
+          </Show>
           <button
             class={`mode-btn ${gameSnapshot()?.camera?.photoMode ? 'active' : ''}`}
             onClick={() => gameRuntime?.setPhotoMode(!gameSnapshot()?.camera?.photoMode)}
@@ -280,6 +336,15 @@ export function App() {
           >
             Camera
           </button>
+          <Show when={isJacketClothUiEnabled()}>
+            <button
+              class={`mode-btn ${showClothEditor() ? 'active' : ''}`}
+              onClick={() => setShowClothEditor((value) => !value)}
+              title="Edit player cloth collider spheres live"
+            >
+              Cloth
+            </button>
+          </Show>
           <button
             class="help-btn"
             onClick={() => setShowControls(true)}
@@ -298,12 +363,24 @@ export function App() {
               chosen level fresh. The child derives mode from the key value and
               reads NO signals — reading one here caused an infinite remount loop. */}
           <Show when={gameKey()} keyed>
-            {(key) => <GameCanvas levelMode={key.startsWith('world') ? 'world' : key} onSnapshot={setGameSnapshot} onRuntime={(runtime) => { gameRuntime = runtime; }} />}
+            {(key) => (
+              <GameCanvas
+                levelMode={key.startsWith('world') ? 'world' : key.startsWith('rally') ? 'rally' : key}
+                onSnapshot={setGameSnapshot}
+                onRuntime={(runtime) => { gameRuntime = runtime; }}
+              />
+            )}
           </Show>
           {hudVisible() && <StatsPanel snapshot={gameSnapshot()} />}
           {hudVisible() && <DebugPanel snapshot={gameSnapshot()} open={showDebugPanel()} />}
           {hudVisible() && <Hud snapshot={gameSnapshot()} />}
-          {hudVisible() && levelMode() === 'world' && activeWorldMap() && (
+          <Show when={hudVisible() && isJacketClothUiEnabled() && showClothEditor()}>
+            <ClothColliderEditor
+              runtime={() => gameRuntime}
+              onClose={() => setShowClothEditor(false)}
+            />
+          </Show>
+          {hudVisible() && (levelMode() === 'world' || levelMode() === 'rally') && activeWorldMap() && (
             <Minimap map={activeWorldMap()} player={gameSnapshot()?.player} />
           )}
           <Show when={gameSnapshot()?.camera?.photoMode && hudVisible()}>

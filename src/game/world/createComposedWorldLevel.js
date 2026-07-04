@@ -17,14 +17,15 @@ import * as THREE from 'three';
 import { createStreamingTerrainLevel } from './createStreamingTerrainLevel.js';
 import { createInfiniteCityLevel } from './createInfiniteCityLevel.js';
 import { getCityStride } from './createGeneratorCityLevel.js';
-import { getGroundHeightAt as colliderGroundHeightAt, getBlockingColliderAt as colliderBlockingAt } from './createBaseLevel.js';
+import { getGroundHeightAt as colliderGroundHeightAt, getBlockingColliderAt as colliderBlockingAt, getColliderRoadSurfaceAt } from './createBaseLevel.js';
 import { zoneIntersectsRect } from '../../world/worldMap/zoneGeometry.js';
 import { zoneContains } from '../../world/worldMap/zoneGeometry.js';
+import { districtAtPoint } from '../../world/worldMap/worldMapSchema.js';
 import { CITY_STYLES } from '../../world/worldMap/worldMapSchema.js';
 
 const cityPhysicsOwnerKey = (chunkKey) => `city:${chunkKey}`;
 
-export function createComposedWorldLevel(qualityPreset = {}, { worldMap = null } = {}) {
+export function createComposedWorldLevel(qualityPreset = {}, { worldMap = null, levelMode = 'city' } = {}) {
   const cityZones = (worldMap?.zones ?? []).filter((zone) => zone.type === 'city');
 
   const stride = getCityStride();
@@ -35,7 +36,7 @@ export function createComposedWorldLevel(qualityPreset = {}, { worldMap = null }
   };
 
   // City zones flatten the terrain beneath them (whatever their shape).
-  const terrain = createStreamingTerrainLevel(qualityPreset, { worldMap, flattenZones: cityZones });
+  const terrain = createStreamingTerrainLevel(qualityPreset, { worldMap, flattenZones: cityZones, levelMode });
   const city = createInfiniteCityLevel(qualityPreset, { chunkResolver });
 
   const group = new THREE.Group();
@@ -74,6 +75,8 @@ export function createComposedWorldLevel(qualityPreset = {}, { worldMap = null }
     get ropes() { return city.ropes; },
     geometryIndex,
     spawnPoint: terrain.spawnPoint,
+    // Forward the rally mud field the terrain sub-level owns (null in non-rally).
+    mudField: terrain.mudField,
     terrainChunks: terrain.terrainChunks,
     cityChunks: city.cityChunks,
     cityChunkStride: city.cityChunkStride,
@@ -132,11 +135,26 @@ export function createComposedWorldLevel(qualityPreset = {}, { worldMap = null }
     getWaterHeightAt: (position) =>
       terrain.getWaterHeightAt?.(position) ?? { waterY: 0, weight: 0 },
 
+    getRoadSurfaceAt: (x, z) => {
+      const citySurface = getColliderRoadSurfaceAt({
+        x,
+        z,
+        colliders: city.colliders,
+        index: city.colliderIndex,
+      });
+      if (citySurface) return citySurface;
+      return terrain.getRoadSurfaceAt?.(x, z) ?? null;
+    },
+
+    findNearestRoadPoint: (x, z, options) =>
+      terrain.findNearestRoadPoint?.(x, z, options) ?? null,
+
     snapshot: () => ({
       terrain: terrain.snapshot?.() ?? null,
       city: city.snapshot?.() ?? null,
       cityZones: cityZones.length,
     }),
+    getDistrictAt: (x, z) => (worldMap ? districtAtPoint(worldMap, x, z) : null),
 
     dispose: () => {
       terrain.dispose?.();

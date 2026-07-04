@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { GAME_CONFIG } from '../config/gameConfig.js';
+import { rainWetness } from './weatherUniforms.js';
 
 const moveVector = new THREE.Vector3();
 const desiredVelocity = new THREE.Vector3();
@@ -14,6 +15,10 @@ const cameraRight = new THREE.Vector3();
 const MIN_ROOT_MOTION_DISTANCE = 0.0001;
 const MOVING_GROUND_SNAP_DOWN_LIMIT = 0.32;
 const WALK_OFF_SUPPORT_DROP_LIMIT = 0.1;
+export const MUD_ON_FOOT_SPEED_SCALE = 0.25;
+const MUD_FOOTSTEP_SPACING = 0.42;
+const MUD_FOOTSTEP_HALF_WIDTH = 0.2;
+const MUD_FOOTSTEP_DEPTH = 0.065;
 
 export class MovementSystem {
   update({ delta, input, character, level, physics, cameraBasis }) {
@@ -89,6 +94,16 @@ export class MovementSystem {
 
     const isTryingToMove = moveVector.lengthSq() > 0.0001;
     const isGrounded = character.grounded !== false;
+    const groundSurface = level?.getRoadSurfaceAt?.(
+      character.group.position.x,
+      character.group.position.z,
+    ) ?? null;
+    // A 75% reduction means Mara retains 25% of normal locomotion speed. Apply
+    // this to target velocity and locomotion root motion; impulses/knockback and
+    // airborne traversal remain unaffected.
+    const groundMovementScale = isGrounded && !inWater && groundSurface === 'mud'
+      ? MUD_ON_FOOT_SPEED_SCALE
+      : 1;
     const isBracing = input.brace && isGrounded && !isTryingToMove;
     const isSprinting = input.brace && isGrounded && isTryingToMove;
     const justJumped = input.jumpPressed && isGrounded && !isBracing && !inWater;
@@ -98,7 +113,7 @@ export class MovementSystem {
         ? isSprinting
           ? GAME_CONFIG.character.sprintSpeed
           : GAME_CONFIG.character.jogSpeed
-        : 0) * swimSpeedScale;
+        : 0) * swimSpeedScale * groundMovementScale;
     const preserveAirMomentum = !isGrounded &&
       (character.airMomentumLockTimer ?? 0) > 0 &&
       !isTryingToMove;
@@ -183,6 +198,7 @@ export class MovementSystem {
       delta,
       inputDirection: moveVector,
       wantsMove: isTryingToMove,
+      locomotionScale: groundMovementScale,
     });
 
     // Knockback / dodge shove: apply the pending impulse as a positional offset
@@ -347,6 +363,14 @@ export class MovementSystem {
 
     character.speed = character.velocity.length();
 
+    updateMudFootstepTrail({
+      character,
+      level,
+      groundSurface,
+      grounded: character.grounded,
+      moving: isTryingToMove && character.speed > 0.08,
+    });
+
     if (character.speed > 0.04) {
       const targetYaw = Math.atan2(character.velocity.x, character.velocity.z);
       character.group.rotation.y = dampAngle(
@@ -368,6 +392,7 @@ export class MovementSystem {
       grounded: character.grounded,
       airborne: !character.grounded,
       inWater,
+      groundSurface,
       justJumped,
       justLanded,
       groundHeight,
@@ -375,6 +400,74 @@ export class MovementSystem {
       verticalVelocity: character.verticalVelocity,
     };
   }
+}
+
+export function updateMudFootstepTrail({ character, level, groundSurface, grounded, moving }) {
+  const position = character?.group?.position;
+  if (!position) return false;
+
+  let trail = character.mudFootstepTrail;
+  if (!trail) {
+    trail = character.mudFootstepTrail = {
+      initialized: false,
+      lastX: position.x,
+      lastZ: position.z,
+      distance: 0,
+      side: -1,
+    };
+  }
+
+  const dx = position.x - trail.lastX;
+  const dz = position.z - trail.lastZ;
+  const travelled = Math.hypot(dx, dz);
+  trail.lastX = position.x;
+  trail.lastZ = position.z;
+
+  if (!trail.initialized || travelled > 2) {
+    trail.initialized = true;
+    trail.distance = 0;
+    return false;
+  }
+
+  const mudField = level?.mudField;
+  if (!mudField || groundSurface !== 'mud' || !grounded || !moving) {
+    if (groundSurface !== 'mud') trail.distance = 0;
+    return false;
+  }
+
+  trail.distance += travelled;
+  if (trail.distance < MUD_FOOTSTEP_SPACING) return false;
+  trail.distance %= MUD_FOOTSTEP_SPACING;
+
+  let dirX = character.velocity?.x ?? dx;
+  let dirZ = character.velocity?.z ?? dz;
+  const directionLength = Math.hypot(dirX, dirZ);
+  if (directionLength > 1e-5) {
+    dirX /= directionLength;
+    dirZ /= directionLength;
+  } else {
+    const yaw = character.group.rotation.y ?? 0;
+    dirX = Math.sin(yaw);
+    dirZ = Math.cos(yaw);
+  }
+
+  const rightX = -dirZ;
+  const rightZ = dirX;
+  const side = trail.side;
+  trail.side *= -1;
+  const footX = position.x - dirX * 0.08 + rightX * MUD_FOOTSTEP_HALF_WIDTH * side;
+  const footZ = position.z - dirZ * 0.08 + rightZ * MUD_FOOTSTEP_HALF_WIDTH * side;
+  const stampFootprint = mudField.stampFootprint;
+  if (!stampFootprint) return false;
+  stampFootprint(footX, footZ, {
+    depth: MUD_FOOTSTEP_DEPTH,
+    wetness: Math.max(0.65, rainWetness.value ?? 0),
+    tread: 0.55,
+    directionX: dirX,
+    directionZ: dirZ,
+    side,
+  });
+  return true;
 }
 
 function applyPendingVisualHandoff(character) {
@@ -452,7 +545,7 @@ function dampAngle(current, target, smoothing, delta) {
   return current + deltaAngle * (1 - Math.exp(-smoothing * delta));
 }
 
-function applyRootMotion({ character, desiredMovement, delta, inputDirection, wantsMove }) {
+function applyRootMotion({ character, desiredMovement, delta, inputDirection, wantsMove, locomotionScale = 1 }) {
   const rootMotion = character.animationController?.sampleRootMotionDelta?.(delta);
 
   if (!rootMotion) {
@@ -461,7 +554,14 @@ function applyRootMotion({ character, desiredMovement, delta, inputDirection, wa
   }
 
   if (rootMotion.drive === 'locomotion') {
-    applyLocomotionRootMotion({ character, desiredMovement, inputDirection, wantsMove, rootMotion });
+    applyLocomotionRootMotion({
+      character,
+      desiredMovement,
+      inputDirection,
+      wantsMove,
+      rootMotion,
+      locomotionScale,
+    });
     return;
   }
 
@@ -475,7 +575,14 @@ function applyRootMotion({ character, desiredMovement, delta, inputDirection, wa
   });
 }
 
-function applyLocomotionRootMotion({ character, desiredMovement, inputDirection, wantsMove, rootMotion }) {
+function applyLocomotionRootMotion({
+  character,
+  desiredMovement,
+  inputDirection,
+  wantsMove,
+  rootMotion,
+  locomotionScale = 1,
+}) {
   if (!wantsMove || !inputDirection || inputDirection.lengthSq() <= 0.0001) {
     character.lastRootMotion = rootMotionSnapshot({
       rootMotion,
@@ -497,7 +604,7 @@ function applyLocomotionRootMotion({ character, desiredMovement, inputDirection,
   }
 
   rootMotionDirection.copy(inputDirection).normalize();
-  rootMotionMovement.copy(rootMotionDirection).multiplyScalar(strideDistance);
+  rootMotionMovement.copy(rootMotionDirection).multiplyScalar(strideDistance * locomotionScale);
   desiredMovement.x = THREE.MathUtils.lerp(desiredMovement.x, rootMotionMovement.x, rootMotion.blend);
   desiredMovement.z = THREE.MathUtils.lerp(desiredMovement.z, rootMotionMovement.z, rootMotion.blend);
   character.lastRootMotion = rootMotionSnapshot({

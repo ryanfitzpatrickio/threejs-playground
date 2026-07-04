@@ -8,7 +8,7 @@ import {
 } from 'three';
 
 import { MeshStandardNodeMaterial } from 'three/webgpu';
-import { attribute, cameraPosition, cameraViewMatrix, clamp, color, float, floor, Fn, fract, fwidth, hash, If, min, mix, mod, mx_fractal_noise_float, mx_noise_float, normalView, normalize, positionView, positionWorld, smoothstep, step, uint, varying, vec2, vec3, vec4 } from 'three/tsl';
+import { attribute, cameraViewMatrix, clamp, color, float, floor, Fn, fract, fwidth, hash, If, min, mix, mod, mx_fractal_noise_float, mx_noise_float, normalView, normalize, positionView, positionWorld, smoothstep, step, uint, varying, vec2, vec3, vec4 } from 'three/tsl';
 
 import { SkyscraperGenerator, createSkyscraperMaterial, buildingPalette } from './city/SkyscraperGenerator.js';
 import { SidewalkGenerator } from './city/SidewalkGenerator.js';
@@ -625,7 +625,9 @@ function gridLine( coord, period, halfWidth ) {
 function createWetAsphaltSurfaceNodes( { rainWetness = float( 0 ), rainWind = vec3( 3, 0, 1 ) } = {} ) {
 
 	const p = positionWorld;
-	const dist = p.distance( cameraPosition );
+	// View-space depth tracks camera distance without binding the shared
+	// cameraPosition uniform (one fewer per-frame node update in the road graph).
+	const dist = positionView.z.negate();
 	const detail = smoothstep( 240, 25, dist );
 	const microFade = smoothstep( 22, 4, dist );
 
@@ -692,7 +694,7 @@ function createWetAsphaltSurfaceNodes( { rainWetness = float( 0 ), rainWind = ve
 	// over substantially — this was the real fix for a reported "car feels
 	// weak/hard to drive in the rain" symptom (driving sweeps across far
 	// more terrain/road than a stationary camera ever does).
-	const puddleDetail = smoothstep( 90, 20, p.distance( cameraPosition ) );
+	const puddleDetail = smoothstep( 90, 20, dist );
 	const puddleResult = Fn( () => {
 
 		const mask = float( 0 ).toVar();
@@ -831,6 +833,42 @@ function createRibbonRoadMaterial( { rainWetness, rainWind } = {} ) {
 	material.normalNode = surface.normalNode;
 
 	return material;
+
+}
+
+export const CAR_PAINT_PALETTE = CAR_COLORS.map( ( [ , color ] ) => color );
+
+export function quantizeCarPaint( paint ) {
+
+	const hex = paint >>> 0;
+	for ( const [ , candidate ] of CAR_COLORS ) {
+
+		if ( hex === candidate ) return candidate;
+
+	}
+
+	const r0 = ( hex >> 16 ) & 255;
+	const g0 = ( hex >> 8 ) & 255;
+	const b0 = hex & 255;
+	let best = CAR_PAINT_PALETTE[ 0 ];
+	let bestDist = Infinity;
+
+	for ( const candidate of CAR_PAINT_PALETTE ) {
+
+		const dr = r0 - ( ( candidate >> 16 ) & 255 );
+		const dg = g0 - ( ( candidate >> 8 ) & 255 );
+		const db = b0 - ( candidate & 255 );
+		const dist = dr * dr + dg * dg + db * db;
+		if ( dist < bestDist ) {
+
+			bestDist = dist;
+			best = candidate;
+
+		}
+
+	}
+
+	return best;
 
 }
 

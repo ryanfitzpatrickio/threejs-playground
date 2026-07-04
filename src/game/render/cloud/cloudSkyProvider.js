@@ -66,6 +66,7 @@ import {
 const DEFAULT_TIME_OF_DAY = 0.72;
 const DEFAULT_SUN_DISTANCE = 1000;
 const TWILIGHT_DEG = 6;
+const WEATHER_LIGHT_SCALE = Object.freeze({ clear: 1, fog: 0.66, overcast: 0.64, rain: 0.5 });
 
 const _windDir = /*@__PURE__*/ new THREE.Vector3();
 const _lastCameraPosition = /*@__PURE__*/ new THREE.Vector3();
@@ -197,23 +198,25 @@ export class CloudSkyProvider {
     const elevation = Math.asin(THREE.MathUtils.clamp(sunDirection.y, -1, 1));
     const elevDeg = THREE.MathUtils.radToDeg(elevation);
     const day = smoothstep(-TWILIGHT_DEG, TWILIGHT_DEG, elevDeg);
-    uSunIntensity.value = this._peakSunIntensity * day;
+    const weatherScale = WEATHER_LIGHT_SCALE[this.weather] ?? 1;
+    uSunIntensity.value = this._peakSunIntensity * day * weatherScale;
     uSkyDarkness.value = 1 - day;
 
     // Cloud lighting helpers: sun tint + ambient sky color, scaled by daylight.
     // M6 refines these from the real transmittance LUT; M2 uses a constant sky
     // blue and the sun color attenuated by the day factor.
-    uSunTint.value.copy(uSunColor.value).multiplyScalar(day);
-    uCloudAmbientColor.value.setRGB(0.5, 0.62, 0.78).multiplyScalar(0.3 + 0.7 * day);
+    uSunTint.value.copy(uSunColor.value).multiplyScalar(day * weatherScale);
+    uCloudAmbientColor.value.setRGB(0.5, 0.62, 0.78)
+      .multiplyScalar((0.18 + 0.82 * day) * weatherScale);
 
     if (this.sun) {
       this.sun.position.copy(sunDirection).multiplyScalar(DEFAULT_SUN_DISTANCE);
       this.sun.target.position.set(0, 0, 0);
       this.sun.color.copy(uSunColor.value);
-      this.sun.intensity = 4.2 * day;
+      this.sun.intensity = 4.2 * day * weatherScale;
     }
     if (this.hemisphere) {
-      this.hemisphere.intensity = 1.6 * (0.15 + 0.85 * day);
+      this.hemisphere.intensity = 1.6 * (0.08 + 0.92 * day) * weatherScale;
     }
   }
 
@@ -250,7 +253,7 @@ export class CloudSkyProvider {
       clear: { coverage: this.config.cloud.shape.coverage, density: this.config.cloud.shape.density },
       overcast: { coverage: 0.8, density: 0.024 },
       fog: { coverage: 0.66, density: 0.021 },
-      rain: { coverage: 0.9, density: 0.028 },
+      rain: { coverage: 0.85, density: 0.024 },
     };
     const profile = profiles[weather] ?? profiles.clear;
     uCloudCoverage.value = profile.coverage;

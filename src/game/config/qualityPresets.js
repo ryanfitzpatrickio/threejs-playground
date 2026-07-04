@@ -33,6 +33,10 @@ const PRESETS = {
       intensity: 4,
       blur: false,
     },
+    // Parallax occlusion mapping (per-fragment height-field raymarch) for rally
+    // road surfaces. Off on low/high — it is ultra-only fragment work, gated like
+    // SSAO. See docs/silhouette-pom-plan.md.
+    parallaxOcclusion: { enabled: false },
     environment: {
       toneMapping: 'ACESFilmic',
       exposure: 1.0,
@@ -89,6 +93,7 @@ const PRESETS = {
     shadowFar: 42,
     // Cached clipmap directional shadows (long range for the open world).
     shadowClipmap: {
+      enabled: true,
       mapSize: 1024,
       firstRadius: 12,
       scaleFactor: 3.0,
@@ -141,6 +146,7 @@ const PRESETS = {
     fogMarchSteps: 6,
     ssr: { enabled: false },
     ssao: { enabled: false },
+    parallaxOcclusion: { enabled: false },
     environment: {
       toneMapping: 'ACESFilmic',
       exposure: 1.0,
@@ -174,15 +180,11 @@ const PRESETS = {
     shadowMapSize: 256,
     shadowFrustumHalf: 10,
     shadowFar: 30,
-    // Cheaper clipmap: smaller maps, fewer/coarser levels, one dynamic level.
+    // Clipmap shadows are the dominant GPU cost in city mode (extra full-scene
+    // shadow-map passes every frame). Low disables them entirely; distant
+    // buildings read fine with hemisphere + aerial perspective only.
     shadowClipmap: {
-      mapSize: 512,
-      firstRadius: 16,
-      scaleFactor: 3.2,
-      maxDistance: 800,
-      levels: 4,
-      dynamicLevels: 1,
-      updateBudget: 1,
+      enabled: false,
     },
 
     // Wilds scene — fewer trees so LQ loads faster.
@@ -192,7 +194,7 @@ const PRESETS = {
     loadRadius: 1,
     unloadRadius: 2,
     workerCount: 2,
-    citySkylineRadius: 4,
+    citySkylineRadius: 2,
     cityFurnitureRadius: 1,
     cityTraversalRadius: 1,
     cityFurniture: {
@@ -244,6 +246,19 @@ PRESETS.ultra = {
     // thread cost in the 2026-07 trace). AO is low-frequency ambient shading;
     // one frame of staleness is invisible and this halves the cost.
     updateInterval: 2,
+  },
+  // Ultra-only: raymarched relief on rally dirt/mud roads. maxLayers is baked
+  // into the shader's loop bound at compile time (it cannot be faded at runtime),
+  // so the material distance-fades the relief `scale` toward 0 instead. `scale`
+  // is relief depth in UV units (rally UV ≈ 1/3.2 per metre, so 0.02 ≈ 6 cm).
+  parallaxOcclusion: {
+    enabled: true,
+    // Relief depth in UV units (rally UV ≈ 1/3.2 per metre). POM on a flat road
+    // is subtle head-on and only reads at grazing angles, so this is set high
+    // enough to be clearly visible while driving; dial toward ~0.03 once tuned.
+    scale: 0.05,
+    minLayers: 8,
+    maxLayers: 32,
   },
   environment: {
     ...PRESETS.high.environment,
@@ -412,12 +427,19 @@ const TERRAIN_CHUNK_SIZE = 32;
  * currently loaded chunks for the given quality preset's load radii.
  */
 export function getRecommendedCameraFar(qualityPreset = {}) {
-  // Use unload radii when present (these define the actually-kept loaded chunks);
-  // fall back to load radii.
-  const cityR = qualityPreset.citySkylineRadius
-    ?? qualityPreset.unloadRadius
+  // Use unload/load radii (actual streamed geometry). Skyline impostors are a
+  // separate far-field layer and must not inflate the camera far plane — doing
+  // so was drawing/sorting out to ~1.5 km on Low while only 3×3 detail chunks
+  // were loaded (~600 m reach).
+  const detailR = qualityPreset.unloadRadius
     ?? qualityPreset.loadRadius
     ?? 2;
+  const skylineR = qualityPreset.citySkylineRadius ?? detailR;
+  // City mode keeps the far plane on loaded detail; skyline impostors use a
+  // separate (already reduced) radius. Open world still extends for skyline.
+  const cityR = qualityPreset.cityTightCameraFar === true
+    ? detailR
+    : Math.max(detailR, skylineR);
   const terrainR = qualityPreset.terrainUnloadRadius ?? qualityPreset.terrainLoadRadius ?? 3;
 
   const cityCenterDist = cityR * Math.max(CITY_CHUNK_STRIDE_X, CITY_CHUNK_STRIDE_Z);

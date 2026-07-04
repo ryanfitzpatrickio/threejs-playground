@@ -36,11 +36,10 @@
  * procedurally synthesized (no `/sounds/lightning.mp3` asset exists or is
  * appropriate to add) — same "no asset" idiom as the rain ambience below.
  *
- * Two different ramp speeds, deliberately: the rain streaks fade in fast
- * (~0.6s, see createRainEffect.js) so weather changes read immediately, while
- * `rainWetness` ramps much slower (up over ~15s, down over ~45s) since
- * puddles/wet paint should visibly lag behind rain starting/stopping rather
- * than pop — real wetness takes time to build up and dry out.
+ * Rain streaks fade in fast (~0.6s, see createRainEffect.js), while
+ * `rainWetness` builds over ~15s. Selecting a non-rain weather clears pooled
+ * surface water immediately so the debug weather state and road appearance do
+ * not disagree; per-vehicle paint still has its own short drying transition.
  */
 
 import * as THREE from 'three';
@@ -49,7 +48,7 @@ import { createLightningBolt } from '../render/createLightningBolt.js';
 import { rainWetness, lightningFlash } from './weatherUniforms.js';
 
 const WETNESS_RISE_TAU = 15; // seconds to approach full wetness while raining
-const WETNESS_FALL_TAU = 45; // seconds to dry back out once rain stops
+const WETNESS_FALL_TAU = 8; // fallback decay if wetness is changed externally
 const FLASH_DECAY_PER_SECOND = 6.0; // reference: `flash = max(0, flash - dt*6.0)`
 const FLASH_COLOR = new THREE.Color(0xdfe8ff); // matches the reference's lightningLight color
 
@@ -62,6 +61,7 @@ export class WeatherSystem {
     this.qualityPreset = {};
     this.rainEffect = null;
     this.rainAudio = null;
+    this.cabinRainAudio = null;
 
     // Lightning — see file header. `lightning` mirrors the reference's exact
     // param defaults (frequency in strikes/min, intensity, thunder volume).
@@ -89,6 +89,7 @@ export class WeatherSystem {
   setWeather(weather = 'clear') {
     const normalized = this.rendererSystem?.setWeather(weather) ?? 'clear';
     this.weather = normalized;
+    this.sceneSystem?.setWeather(normalized);
     this.sceneSystem?.setSceneFogEnabled(normalized === 'fog' || normalized === 'rain');
     this.sceneSystem?.skySystem?.setWeather(normalized);
     this.rendererSystem?.installEnvironment(this.sceneSystem?.scene, this.sceneSystem?.skySystem);
@@ -111,12 +112,16 @@ export class WeatherSystem {
     this.rainEffect?.setIntensity(raining ? 1 : 0);
 
     if (raining) this._rainAudio().resume();
-    else this.rainAudio?.mute(true);
+    else {
+      rainWetness.value = 0;
+      this.rainAudio?.mute(true);
+      this.cabinRainAudio?.update(0);
+    }
 
     return normalized;
   }
 
-  update(delta, focusPosition = null) {
+  update(delta, focusPosition = null, { inVehicle = false } = {}) {
     this.rainEffect?.update(delta);
 
     const raining = this.weather === 'rain';
@@ -125,6 +130,13 @@ export class WeatherSystem {
     const rate = Math.min(1, Math.max(0, delta) / tau);
     rainWetness.value += (target - rainWetness.value) * rate;
     if (Math.abs(rainWetness.value - target) < 0.002) rainWetness.value = target;
+
+    if (raining) {
+      this._rainAudio().setExteriorMix(inVehicle ? 0.14 : 1);
+      this._cabinRainAudio().update(inVehicle ? 1 : 0);
+    } else {
+      this._cabinRainAudio().update(0);
+    }
 
     this._updateLightning(delta, focusPosition, raining);
   }
@@ -136,6 +148,11 @@ export class WeatherSystem {
   _rainAudio() {
     this.rainAudio ??= new RainAmbienceAudio();
     return this.rainAudio;
+  }
+
+  _cabinRainAudio() {
+    this.cabinRainAudio ??= new CabinRainAudio();
+    return this.cabinRainAudio;
   }
 
   _scheduleNextStrike() {
@@ -236,6 +253,8 @@ export class WeatherSystem {
     }
     this.rainAudio?.dispose();
     this.rainAudio = null;
+    this.cabinRainAudio?.dispose();
+    this.cabinRainAudio = null;
     this.thunderAudio?.dispose();
     this.thunderAudio = null;
   }
@@ -251,6 +270,8 @@ class RainAmbienceAudio {
     this.gain = null;
     this.filter = null;
     this.muted = true;
+    this.exteriorMix = 1;
+    this.baseVolume = 0.1;
   }
 
   _ensure() {
@@ -278,18 +299,132 @@ class RainAmbienceAudio {
     this._ensure();
     this.muted = false;
     this.ctx?.resume().catch(() => {});
-    if (this.gain && this.ctx) this.gain.gain.setTargetAtTime(0.1, this.ctx.currentTime, 0.6);
+    this._applyVolume(0.6);
+  }
+
+  setExteriorMix(mix) {
+    this.exteriorMix = THREE.MathUtils.clamp(mix, 0, 1);
+    if (!this.muted) this._applyVolume(0.4);
+  }
+
+  _applyVolume(timeConstant) {
+    if (!this.gain || !this.ctx) return;
+    const target = this.muted ? 0 : this.baseVolume * this.exteriorMix;
+    this.gain.gain.setTargetAtTime(target, this.ctx.currentTime, timeConstant);
   }
 
   mute(state) {
     this.muted = Boolean(state);
-    if (state && this.gain && this.ctx) this.gain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.6);
+    this._applyVolume(0.6);
   }
 
   dispose() {
     try { this.source?.stop(); } catch { /* already stopped */ }
     this.ctx?.close().catch(() => {});
     this.ctx = null;
+  }
+}
+
+const CABIN_RAIN_URLS = [
+  '/audio/weather/rain-cabin-01.mp3',
+  '/audio/weather/rain-cabin-02.mp3',
+];
+
+// Recorded gentle rain on glass/metal — interior cabin patter while driving in rain.
+class CabinRainAudio {
+  constructor() {
+    this.ctx = null;
+    this.output = null;
+    this.buffers = [];
+    this.source = null;
+    this.gain = null;
+    this.lastIndex = -1;
+    this.lastIntensity = 0;
+    this.loadPromise = null;
+  }
+
+  _ensure() {
+    if (this.loadPromise) return this.loadPromise;
+    this.loadPromise = this._load();
+    return this.loadPromise;
+  }
+
+  async _load() {
+    if (typeof window === 'undefined') return;
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) return;
+    this.ctx = new AudioContext();
+    this.output = this.ctx.createGain();
+    this.output.gain.value = 1;
+    this.output.connect(this.ctx.destination);
+    this.buffers = await Promise.all(CABIN_RAIN_URLS.map(async (url) => {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`Failed to load cabin rain audio: ${url}`);
+      return this.ctx.decodeAudioData(await response.arrayBuffer());
+    }));
+  }
+
+  update(intensity) {
+    const amount = THREE.MathUtils.clamp(intensity, 0, 1);
+    const startThreshold = 0.5;
+    const stopThreshold = 0.2;
+
+    if (amount >= startThreshold && this.lastIntensity < startThreshold) {
+      this._ensure().then(() => {
+        this.ctx?.resume().catch(() => {});
+        this._startRandomLoop();
+      }).catch(() => {});
+    }
+
+    if (this.gain && this.ctx) {
+      if (amount >= stopThreshold) {
+        this.gain.gain.setTargetAtTime(
+          amount * 0.42,
+          this.ctx.currentTime,
+          amount > this.lastIntensity ? 0.5 : 0.7,
+        );
+      } else {
+        this.gain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.5);
+      }
+    }
+
+    if (amount < 0.05 && this.source) this._stop();
+    this.lastIntensity = amount;
+  }
+
+  _startRandomLoop() {
+    if (!this.ctx || !this.buffers.length) return;
+    this._stop();
+    let index = Math.floor(Math.random() * this.buffers.length);
+    if (this.buffers.length > 1 && index === this.lastIndex) {
+      index = (index + 1) % this.buffers.length;
+    }
+    this.lastIndex = index;
+    this.source = this.ctx.createBufferSource();
+    this.source.buffer = this.buffers[index];
+    this.source.loop = true;
+    this.gain = this.ctx.createGain();
+    this.gain.gain.value = 0;
+    this.source.connect(this.gain).connect(this.output);
+    this.source.start(0);
+  }
+
+  _stop() {
+    if (!this.source) return;
+    try { this.source.stop(); } catch {}
+    this.source.disconnect();
+    this.gain?.disconnect();
+    this.source = null;
+    this.gain = null;
+  }
+
+  dispose() {
+    this._stop();
+    this.ctx?.close().catch(() => {});
+    this.ctx = null;
+    this.output = null;
+    this.buffers = [];
+    this.loadPromise = null;
   }
 }
 

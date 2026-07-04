@@ -10,6 +10,9 @@ import {
   float,
   vec3,
   vec4,
+  uv,
+  texture,
+  normalMap,
   positionWorld,
   normalWorld,
   normalView,
@@ -43,12 +46,21 @@ const REFERENCE = {
   rippleDensity: 0.2,
 };
 
-function applyWetSurface(material, { baseColorNode, baseRoughness }) {
+function applyWetSurface(material, {
+  baseColorNode,
+  baseRoughness,
+  baseRoughnessNode,
+  baseNormalNode,
+  variant = 'opaque',
+} = {}) {
   const wetness = uniform(0);
   material.wetnessUniform = wetness;
+  const isGlass = variant === 'glass';
 
   const upN = normalWorld.y;
-  const wetBase = wetness.mul(REFERENCE.wetnessPeak).mul(smoothstep(-0.3, 0.6, upN));
+  const wetBase = isGlass
+    ? wetness.mul(REFERENCE.wetnessPeak).mul(float(0.92))
+    : wetness.mul(REFERENCE.wetnessPeak).mul(smoothstep(-0.3, 0.6, upN));
   // The reference's uTopPuddle is a fixed GUI slider (0.7), not gated by
   // uWetness at all — fine in their demo since the model is only ever shown
   // already sitting in active rain. Here the car exists whether it's raining
@@ -56,20 +68,26 @@ function applyWetSurface(material, { baseColorNode, baseRoughness }) {
   // surfaces (hood/roof) show puddle pooling and beading permanently
   // regardless of weather (confirmed: this was exactly the bug — droplets
   // visible on the car with rain off).
-  const topMask = smoothstep(
-    float(REFERENCE.flatThreshold),
-    min(float(REFERENCE.flatThreshold + 0.15), float(1)),
-    upN,
-  ).mul(REFERENCE.topPuddle).mul(wetness);
+  const topMask = isGlass
+    ? float(0)
+    : smoothstep(
+      float(REFERENCE.flatThreshold),
+      min(float(REFERENCE.flatThreshold + 0.15), float(1)),
+      upN,
+    ).mul(REFERENCE.topPuddle).mul(wetness);
+  const beadStrength = isGlass ? REFERENCE.dropletAmount * 1.15 : REFERENCE.dropletAmount;
   const beads = dropletMask(positionWorld, normalWorld, float(REFERENCE.dropletScale))
-    .mul(REFERENCE.dropletAmount)
+    .mul(beadStrength)
     .mul(wetBase);
   const wetAll = clamp(max(wetBase, topMask), 0, 1);
+  const waterDarkness = isGlass ? 0.18 : REFERENCE.waterDarkness;
 
-  material.colorNode = mix(baseColorNode, baseColorNode.mul(float(1).sub(REFERENCE.waterDarkness)), wetAll);
+  material.colorNode = mix(baseColorNode, baseColorNode.mul(float(1).sub(waterDarkness)), wetAll);
 
   const gloss = clamp(max(wetBase.mul(0.7), topMask).add(beads), 0, 1);
-  material.roughnessNode = mix(float(baseRoughness), float(REFERENCE.puddleRoughness), gloss);
+  const wetRoughness = isGlass ? 0.02 : REFERENCE.puddleRoughness;
+  const dryRoughness = baseRoughnessNode ?? float(baseRoughness ?? 0.5);
+  material.roughnessNode = mix(dryRoughness, float(wetRoughness), gloss);
 
   const rippleWorldNormal = mix(
     vec3(0, 1, 0),
@@ -84,16 +102,16 @@ function applyWetSurface(material, { baseColorNode, baseRoughness }) {
     topMask,
   );
   const rippleView = normalize(cameraViewMatrix.mul(vec4(rippleWorldNormal, 0)).xyz);
-  // These materials have no normal map (configureOpaqueSurface clears
-  // bumpMap/normalMap), so the "current normal" the reference mixes against
-  // is just the plain view-space geometry normal, same as `normalView`.
-  material.normalNode = normalize(mix(normalView, rippleView, topMask));
+  const dryNormal = baseNormalNode ?? normalView;
+  material.normalNode = isGlass
+    ? normalView
+    : normalize(mix(dryNormal, rippleView, topMask));
 
   return wetness;
 }
 
 /** Tripo windshield, side, and rear glass shards (node names from muscle-chasis-2). */
-const GLASS_PART_NAMES = new Set([
+const MUSCLE_2_GLASS_PART_NAMES = new Set([
   'tripo_part_10',
   'tripo_part_12',
   'tripo_part_26',
@@ -132,6 +150,16 @@ const GLASS_PART_NAMES = new Set([
   'tripo_part_117',
   'tripo_part_118',
 ]);
+
+const VEHICLE_PART_PROFILES = Object.freeze({
+  'muscle-2': Object.freeze({ glass: MUSCLE_2_GLASS_PART_NAMES }),
+  'subaru-rally': Object.freeze({
+    chassis: new Set(['chasis']),
+    glass: new Set(['glass front', 'rear glass', 'tripo_part_2', 'tripo_part_4', 'tripo_part_9', 'tripo_part_23']),
+    headlightLens: new Set(['tripo_part_11', 'tripo_part_12']),
+    tailLight: new Set(['tripo_part_14', 'tripo_part_15']),
+  }),
+});
 
 export const VEHICLE_OVERLAY_PART = Object.freeze({
   CHASSIS: 'chassis',
@@ -264,11 +292,16 @@ export function createVehicleHeadlightLensMaterial() {
 export function createVehicleGlassMaterial() {
   const material = new MeshStandardNodeMaterial();
   material.name = 'Vehicle glass';
-  material.color.set(0x9cb0c2);
   material.metalness = 0;
-  material.roughness = 0.05;
   material.envMapIntensity = 0.75;
   configureTransparentGlass(material, { opacity: 0.2 });
+
+  applyWetSurface(material, {
+    baseColorNode: colorTSL(0x9cb0c2),
+    baseRoughness: 0.05,
+    variant: 'glass',
+  });
+
   return material;
 }
 
@@ -286,12 +319,31 @@ export function createVehicleDetailMaterial() {
   return material;
 }
 
-export function classifyVehicleOverlayMesh(mesh) {
+export function classifyVehicleOverlayMesh(mesh, profileId = null, { disableGlassDetection = false } = {}) {
   if (isVehicleTailLightMesh(mesh)) return VEHICLE_OVERLAY_PART.TAIL_LIGHT;
   if (isVehicleHeadlightLensMesh(mesh)) return VEHICLE_OVERLAY_PART.HEADLIGHT_LENS;
   const names = collectMeshAncestryNames(mesh);
+  const label = normalizedPartLabel(names);
+  const profile = VEHICLE_PART_PROFILES[profileId];
+  if (profile) {
+    if (names.some((name) => profile.tailLight?.has(name))) return VEHICLE_OVERLAY_PART.TAIL_LIGHT;
+    if (names.some((name) => profile.headlightLens?.has(name))) return VEHICLE_OVERLAY_PART.HEADLIGHT_LENS;
+    if (names.some((name) => profile.glass?.has(name))) {
+      return disableGlassDetection ? VEHICLE_OVERLAY_PART.CHASSIS : VEHICLE_OVERLAY_PART.GLASS;
+    }
+    if (names.some((name) => profile.chassis?.has(name))) return VEHICLE_OVERLAY_PART.CHASSIS;
+  }
 
-  if (names.some((name) => GLASS_PART_NAMES.has(name))) return VEHICLE_OVERLAY_PART.GLASS;
+  // Prefer semantic names when an authored model provides them. Tripo exports
+  // often mix useful labels ("chasis", "glass front") with generic
+  // tripo_part_* nodes, as the Subaru rally shell does.
+  if (/\b(?:glass|window|windshield|windscreen)\b/.test(label)) {
+    return disableGlassDetection ? VEHICLE_OVERLAY_PART.CHASSIS : VEHICLE_OVERLAY_PART.GLASS;
+  }
+  if (/\b(?:chassis|chasis|body shell)\b/.test(label)) return VEHICLE_OVERLAY_PART.CHASSIS;
+  if (names.some((name) => MUSCLE_2_GLASS_PART_NAMES.has(name))) {
+    return disableGlassDetection ? VEHICLE_OVERLAY_PART.CHASSIS : VEHICLE_OVERLAY_PART.GLASS;
+  }
   if (names.includes('tripo_part_0')) return VEHICLE_OVERLAY_PART.CHASSIS;
   return VEHICLE_OVERLAY_PART.DETAIL;
 }
@@ -309,4 +361,104 @@ export function createVehicleOverlayMaterial(partKind) {
     default:
       return createVehicleDetailMaterial();
   }
+}
+
+export const CHASSIS_SURFACE_MODES = Object.freeze(['metallic', 'texture', 'mix']);
+
+export function resolveChassisSurfaceMode({
+  chassisSurfaceMode,
+  useAuthoredTexture = false,
+} = {}) {
+  if (CHASSIS_SURFACE_MODES.includes(chassisSurfaceMode)) return chassisSurfaceMode;
+  return useAuthoredTexture ? 'texture' : 'metallic';
+}
+
+function configureAuthoredMapTexture(mapTexture, { colorSpace = THREE.NoColorSpace } = {}) {
+  if (!mapTexture) return null;
+  mapTexture.colorSpace = colorSpace;
+  mapTexture.anisotropy = Math.max(mapTexture.anisotropy ?? 1, 4);
+  mapTexture.needsUpdate = true;
+  return mapTexture;
+}
+
+/** Keep the GLB's albedo maps but drop the metallic paint response. */
+export function adaptAuthoredChassisMaterial(material) {
+  const source = Array.isArray(material) ? material[0] : material;
+  if (!source?.clone) return createVehicleChassisMaterial();
+  const adapted = source.clone();
+  adapted.name = 'Vehicle chassis (authored texture)';
+  adapted.metalness = 0;
+  adapted.roughness = Math.max(adapted.roughness ?? 0.75, 0.72);
+  adapted.envMapIntensity = Math.min(adapted.envMapIntensity ?? 0.55, 0.65);
+  if (adapted.metalnessMap) adapted.metalnessMap = null;
+  if (adapted.map) configureAuthoredMapTexture(adapted.map, { colorSpace: THREE.SRGBColorSpace });
+  adapted.transparent = false;
+  adapted.opacity = 1;
+  adapted.depthWrite = true;
+  adapted.side = THREE.DoubleSide;
+  return adapted;
+}
+
+/** Authored albedo + normal/roughness maps with dielectric paint and rain response. */
+export function adaptMixedChassisMaterial(material) {
+  const source = Array.isArray(material) ? material[0] : material;
+  if (!source?.map && !source?.color) return createVehicleChassisMaterial();
+
+  const nodeMaterial = new MeshStandardNodeMaterial();
+  nodeMaterial.name = 'Vehicle chassis (authored PBR mix)';
+  nodeMaterial.metalness = 0;
+  nodeMaterial.metalnessNode = float(0);
+  nodeMaterial.envMapIntensity = Math.min(source.envMapIntensity ?? 0.9, 1.05);
+  configureOpaqueSurface(nodeMaterial);
+
+  const uvNode = uv();
+  let baseColorNode = colorTSL(source.color?.getHex?.() ?? 0x1a1e28);
+  if (source.map) {
+    baseColorNode = texture(
+      configureAuthoredMapTexture(source.map, { colorSpace: THREE.SRGBColorSpace }),
+      uvNode,
+    ).rgb;
+  }
+
+  let baseNormalNode = null;
+  if (source.normalMap) {
+    baseNormalNode = normalMap(
+      texture(configureAuthoredMapTexture(source.normalMap), uvNode).rgb,
+    );
+  }
+
+  const roughnessScale = THREE.MathUtils.clamp(source.roughness ?? 0.42, 0.28, 0.58);
+  let baseRoughnessNode = float(roughnessScale);
+  if (source.roughnessMap) {
+    baseRoughnessNode = texture(
+      configureAuthoredMapTexture(source.roughnessMap),
+      uvNode,
+    ).g.mul(float(roughnessScale));
+  }
+
+  nodeMaterial.transparent = false;
+  nodeMaterial.opacity = 1;
+  nodeMaterial.depthWrite = true;
+  nodeMaterial.side = THREE.DoubleSide;
+
+  applyWetSurface(nodeMaterial, {
+    baseColorNode,
+    baseRoughnessNode,
+    baseNormalNode,
+    variant: 'opaque',
+  });
+
+  return nodeMaterial;
+}
+
+export function resolveVehicleOverlayMaterial(partKind, sourceMaterial, {
+  chassisSurfaceMode = 'metallic',
+  useAuthoredTexture = false,
+} = {}) {
+  const mode = resolveChassisSurfaceMode({ chassisSurfaceMode, useAuthoredTexture });
+  if (partKind === VEHICLE_OVERLAY_PART.CHASSIS) {
+    if (mode === 'texture') return adaptAuthoredChassisMaterial(sourceMaterial);
+    if (mode === 'mix') return adaptMixedChassisMaterial(sourceMaterial);
+  }
+  return createVehicleOverlayMaterial(partKind);
 }

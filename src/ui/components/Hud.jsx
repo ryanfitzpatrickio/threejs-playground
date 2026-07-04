@@ -72,6 +72,16 @@ export function Hud(props) {
 
   return (
     <section class="hud" aria-live="polite">
+      <Show when={snapshot().buildingEntry?.prompt}>
+        <div
+          class="hud__enter-prompt"
+          role="status"
+          style="position: absolute; left: 50%; bottom: 24%; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; padding: 8px 16px; background: rgb(22 21 18 / 82%); border: 1px solid rgb(247 244 232 / 22%); border-radius: 999px; color: rgb(247 244 232 / 95%); font-size: 14px; letter-spacing: 0.02em; box-shadow: 0 8px 24px rgb(0 0 0 / 35%); pointer-events: none;"
+        >
+          <kbd style="display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding: 0 5px; background: rgb(247 244 232 / 92%); color: rgb(22 21 18); border-radius: 5px; font-weight: 700; font-size: 12px;">E</kbd>
+          <span>{snapshot().buildingEntry?.action === 'exit' ? 'Exit building' : 'Enter building'}</span>
+        </div>
+      </Show>
       <Show when={drivingVehicle()}>
         <div
           class="hud__speedometer"
@@ -107,6 +117,9 @@ export function Hud(props) {
         <div class="hud__readout">
           <span>{combatLabel() || snapshot().level?.name || 'Base Level'}</span>
           <span>{formatState(snapshot().animation?.state)}</span>
+          <Show when={snapshot().character?.district}>
+            <span style={{ color: '#a0d0ff', marginLeft: '8px', fontSize: '11px' }}>📍 {snapshot().character.district}</span>
+          </Show>
         </div>
       </div>
       </div>

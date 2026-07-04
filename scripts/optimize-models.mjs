@@ -45,6 +45,7 @@ const MODELS = {
   neonblade: 'neonblade.glb',
   climber: 'climber.fbx', // legacy Tripo body; superseded by playernew.fbx
   playernew: 'playernew.fbx', // Mixamo player mesh; produces playernew.glb in public
+  mesh2motionplayer: 'playernew-mesh2motion.glb',
   car: 'car-prop.glb',
   van: 'van-prop.glb',
   musclechassis: 'muscle-chasis.glb',
@@ -60,6 +61,7 @@ const TARGET_SIZES = {
   neonblade: [512, 512],
   climber: [1024, 1024], // Tripo body/face textures
   playernew: [1024, 1024],
+  mesh2motionplayer: [1024, 1024],
   car: [1024, 1024], // street prop — viewed at distance, 1K is plenty
   van: [1024, 1024],
   musclechassis: [1024, 1024],

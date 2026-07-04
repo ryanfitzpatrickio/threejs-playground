@@ -16,6 +16,11 @@ import {
   CITY_STYLES,
   createEmptyWorldMap,
   normalizeWorldMap,
+  normalizeRoad,
+  normalizeRiver,
+  normalizeZone,
+  normalizePoi,
+  normalizeEntity,
   makeId,
 } from '../world/worldMap/worldMapSchema.js';
 import { zoneContains, zoneBounds } from '../world/worldMap/zoneGeometry.js';
@@ -56,6 +61,7 @@ export class WorldMapEditor {
 
     this.roadWidth = 8; // default width for new roads
     this.roadTrackStyle = null; // default GT3 trackside preset for new roads (null = plain)
+    this.roadSurface = null; // null follows track style; otherwise asphalt | dirt
     this.roadElevation = null; // null follows terrain; finite number is fixed world Y
     this.riverWidth = 10; // default width for new rivers
     this.riverDepth = 6; // default depth (carve) for new rivers
@@ -66,6 +72,9 @@ export class WorldMapEditor {
     this.polyDraft = null; // { type, points:[{x,z}] } while drawing a polygon
     this.roadDraft = null; // { points:[{x,z}] } while drawing a road spline
     this.riverDraft = null; // { points:[{x,z}] } while drawing a river spline
+    this.districtDraft = null; // for district drawing
+    this.activeDistrictShape = 'rect'; // 'rect' | 'polygon' | 'circle' | 'triangle'
+    this.districtName = 'District'; // current name for new district
     this.mouseWorld = { x: 0, z: 0 };
     this.spaceDown = false;
 
@@ -268,6 +277,16 @@ export class WorldMapEditor {
       } else if (hit?.kind === 'entity') {
         const entity = this._entityById(hit.id);
         this.drag = { mode: 'move-entity', id: hit.id, grab: world, orig: { x: entity.x, z: entity.z }, before: this._snapshot(), moved: false };
+      } else if (hit?.kind === 'district') {
+        const d = this._districtById(hit.id);
+        if (d) {
+          const orig = (d.shape === 'polygon' || d.shape === 'triangle')
+            ? { shape: d.shape, points: (d.points||[]).map(q=>({...q})) }
+            : d.shape === 'circle'
+            ? { shape:'circle', center: {...(d.center||{x:0,z:0})}, radius: d.radius }
+            : { shape:'rect', rect: {...(d.rect||{})} };
+          this.drag = { mode: 'move-district', id: hit.id, grab: world, orig, before: this._snapshot(), moved: false };
+        }
       }
       this.emitChange();
       this._dirty = true;
@@ -338,6 +357,39 @@ export class WorldMapEditor {
       return;
     }
 
+    if (this.tool === 'district') {
+      const sx = this._snapValue(world.x);
+      const sz = this._snapValue(world.z);
+      const shape = this.activeDistrictShape;
+      if (shape === 'polygon') {
+        if (!this.districtDraft || this.districtDraft.shape !== 'polygon') {
+          this.districtDraft = { shape: 'polygon', points: [], name: this.districtName };
+        }
+        this.districtDraft.points.push({ x: sx, z: sz });
+        this._dirty = true;
+        return;
+      }
+      if (shape === 'triangle') {
+        if (!this.districtDraft || this.districtDraft.shape !== 'triangle') {
+          this.districtDraft = { shape: 'triangle', points: [], name: this.districtName };
+        }
+        this.districtDraft.points.push({ x: sx, z: sz });
+        if (this.districtDraft.points.length >= 3) {
+          this._finishDistrictDraft();
+        }
+        this._dirty = true;
+        return;
+      }
+      if (shape === 'circle') {
+        this.districtDraft = { shape: 'circle', center: { x: sx, z: sz }, radius: 0, name: this.districtName };
+        this.drag = { mode: 'create-district-circle', start: { x: sx, z: sz } };
+        return;
+      }
+      // rect default
+      this.drag = { mode: 'create-district', shape: 'rect', start: { x: sx, z: sz }, cur: { x: sx, z: sz }, name: this.districtName };
+      return;
+    }
+
     // Zone-creation tools (terrain/city/loopout/wilds).
     if (ZONE_TYPES[this.tool]) {
       const sx = this._snapValue(world.x);
@@ -384,6 +436,11 @@ export class WorldMapEditor {
       if (this.polyDraft.points.length > 3) this.polyDraft.points.pop();
       this._closePolyDraft();
     }
+    if (this.districtDraft && (this.districtDraft.shape === 'polygon' || this.districtDraft.shape === 'triangle')) {
+      e.preventDefault();
+      if (this.districtDraft.points.length > 3) this.districtDraft.points.pop();
+      this._finishDistrictDraft();
+    }
   }
 
   _finishRoadDraft() {
@@ -395,7 +452,10 @@ export class WorldMapEditor {
       return;
     }
     this._commit(() => {
-      const road = { id: makeId('r'), points: draft.points, width: this.roadWidth, type: 'road', trackStyle: this.roadTrackStyle, elevation: this.roadElevation };
+      const road = {
+        id: makeId('r'), points: draft.points, width: this.roadWidth, type: 'road',
+        trackStyle: this.roadTrackStyle, surface: this.roadSurface, elevation: this.roadElevation,
+      };
       this.map.roads.push(road);
       this.selection = { kind: 'road', id: road.id };
     });
@@ -418,6 +478,32 @@ export class WorldMapEditor {
       };
       this.map.rivers.push(river);
       this.selection = { kind: 'river', id: river.id };
+    });
+    this.tool = 'select';
+    this.emitChange();
+  }
+
+  _finishDistrictDraft() {
+    const draft = this.districtDraft;
+    this.districtDraft = null;
+    if (!draft) {
+      this._dirty = true;
+      this.emitChange();
+      return;
+    }
+    const name = draft.name || this.districtName || 'District';
+    this._commit(() => {
+      const d = {
+        id: makeId('d'),
+        name,
+        shape: draft.shape,
+        ...(draft.shape === 'rect' && draft.rect ? { rect: draft.rect } : {}),
+        ...( (draft.shape === 'polygon' || draft.shape === 'triangle') && draft.points ? { points: draft.points } : {}),
+        ...(draft.shape === 'circle' && draft.center ? { center: draft.center, radius: draft.radius || 32 } : {}),
+        props: {},
+      };
+      this.map.districts.push(d);
+      this.selection = { kind: 'district', id: d.id };
     });
     this.tool = 'select';
     this.emitChange();
@@ -464,6 +550,13 @@ export class WorldMapEditor {
       this.view.panZ = this.drag.startPan.z - dy;
     } else if (this.drag.mode === 'create') {
       this.drag.cur = { x: this._snapValue(this.mouseWorld.x), z: this._snapValue(this.mouseWorld.z) };
+    } else if (this.drag.mode === 'create-district' || this.drag.mode === 'create-district-circle') {
+      this.drag.cur = { x: this._snapValue(this.mouseWorld.x), z: this._snapValue(this.mouseWorld.z) };
+      if (this.drag.mode === 'create-district-circle' && this.districtDraft) {
+        const dx = this.drag.cur.x - this.drag.start.x;
+        const dz = this.drag.cur.z - this.drag.start.z;
+        this.districtDraft.radius = Math.max(2, Math.hypot(dx, dz));
+      }
     } else if (this.drag.mode === 'move-zone') {
       const zone = this._zoneById(this.drag.id);
       if (zone) {
@@ -566,6 +659,25 @@ export class WorldMapEditor {
         entity.x = this._snapValue(x);
         entity.z = this._snapValue(z);
       }
+    } else if (this.drag.mode === 'move-district') {
+      const d = this._districtById(this.drag.id);
+      if (d) {
+        this.drag.moved = true;
+        let dx = this.mouseWorld.x - this.drag.grab.x;
+        let dz = this.mouseWorld.z - this.drag.grab.z;
+        if (this.snap) { dx = this._snapValue(dx); dz = this._snapValue(dz); }
+        const orig = this.drag.orig;
+        if (orig.shape === 'polygon' || orig.shape === 'triangle') {
+          d.points = orig.points.map((q) => ({ x: q.x + dx, z: q.z + dz }));
+        } else if (orig.shape === 'circle') {
+          d.center = { x: orig.center.x + dx, z: orig.center.z + dz };
+        } else if (orig.shape === 'rect' && orig.rect) {
+          d.rect = {
+            minX: orig.rect.minX + dx, minZ: orig.rect.minZ + dz,
+            maxX: orig.rect.maxX + dx, maxZ: orig.rect.maxZ + dz,
+          };
+        }
+      }
     }
   }
 
@@ -593,7 +705,32 @@ export class WorldMapEditor {
         });
         this.tool = 'select';
       }
-    } else if ((drag.mode === 'move-zone' || drag.mode === 'resize-zone-corner' || drag.mode === 'move-poi' || drag.mode === 'move-road' || drag.mode === 'move-road-point' || drag.mode === 'move-river' || drag.mode === 'move-river-point' || drag.mode === 'move-entity') && drag.moved) {
+    } else if (drag.mode === 'create-district') {
+      const minX = Math.min(drag.start.x, drag.cur.x);
+      const maxX = Math.max(drag.start.x, drag.cur.x);
+      const minZ = Math.min(drag.start.z, drag.cur.z);
+      const maxZ = Math.max(drag.start.z, drag.cur.z);
+      if (maxX - minX >= 4 && maxZ - minZ >= 4) {
+        this._commit(() => {
+          const d = {
+            id: makeId('d'),
+            name: drag.name || this.districtName || 'District',
+            shape: 'rect',
+            rect: { minX, minZ, maxX, maxZ },
+            props: {},
+          };
+          this.map.districts.push(d);
+          this.selection = { kind: 'district', id: d.id };
+        });
+        this.tool = 'select';
+      }
+    } else if (drag.mode === 'create-district-circle' && this.districtDraft) {
+      if (this.districtDraft.radius >= 4) {
+        this._finishDistrictDraft();
+      } else {
+        this.districtDraft = null;
+      }
+    } else if ((drag.mode === 'move-zone' || drag.mode === 'resize-zone-corner' || drag.mode === 'move-poi' || drag.mode === 'move-road' || drag.mode === 'move-road-point' || drag.mode === 'move-river' || drag.mode === 'move-river-point' || drag.mode === 'move-entity' || drag.mode === 'move-district') && drag.moved) {
       // Persist the move/resize as one undo step (the "before" snapshot was captured
       // at drag start; state has already been mutated live during the drag).
       this._pushHistorySnapshotOf(drag.before ?? null);
@@ -628,6 +765,10 @@ export class WorldMapEditor {
     if (this.polyDraft) {
       if (e.key === 'Enter') { e.preventDefault(); this._closePolyDraft(); return; }
       if (e.key === 'Escape') { e.preventDefault(); this.polyDraft = null; this._dirty = true; this.emitChange(); return; }
+    }
+    if (this.districtDraft) {
+      if (e.key === 'Enter') { e.preventDefault(); this._finishDistrictDraft(); return; }
+      if (e.key === 'Escape') { e.preventDefault(); this.districtDraft = null; this._dirty = true; this.emitChange(); return; }
     }
     if (e.code === 'Space') { this.spaceDown = true; return; }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
@@ -683,6 +824,13 @@ export class WorldMapEditor {
       const river = this.map.rivers[i];
       if (distanceToPolyline(sampleCenterline(river.points, 6), world.x, world.z) <= river.width * 0.5 + pickPad) {
         return { kind: 'river', id: river.id };
+      }
+    }
+    // Districts (area click, last drawn wins like zones)
+    for (let i = this.map.districts.length - 1; i >= 0; i -= 1) {
+      const d = this.map.districts[i];
+      if (this._districtContains(d, world.x, world.z)) {
+        return { kind: 'district', id: d.id };
       }
     }
     // Zones with click priority: non-terrain (cities etc) win over terrain zones.
@@ -741,6 +889,28 @@ export class WorldMapEditor {
   _zoneById(id) { return this.map.zones.find((z) => z.id === id) ?? null; }
   _poiById(id) { return this.map.pois.find((p) => p.id === id) ?? null; }
   _entityById(id) { return this.map.entities.find((e) => e.id === id) ?? null; }
+  _districtById(id) { return this.map.districts.find((d) => d.id === id) ?? null; }
+
+  _districtContains(d, x, z) {
+    if (!d) return false;
+    if (d.shape === 'circle') {
+      const c = d.center || {x:0,z:0};
+      const dx = x - c.x; const dz = z - c.z;
+      return (dx*dx + dz*dz) <= ((d.radius||0) * (d.radius||0) + 1e-6);
+    }
+    if (d.shape === 'polygon' || d.shape === 'triangle') {
+      const pts = d.points || [];
+      let inside = false;
+      const n = pts.length;
+      for (let i = 0, j = n-1; i < n; j=i, i++) {
+        const xi = pts[i].x, zi=pts[i].z, xj=pts[j].x, zj=pts[j].z;
+        if (((zi > z) !== (zj > z)) && (x < ((xj - xi) * (z - zi)) / (zj - zi) + xi)) inside = !inside;
+      }
+      return inside;
+    }
+    const r = d.rect;
+    return r && x >= r.minX && x <= r.maxX && z >= r.minZ && z <= r.maxZ;
+  }
 
   // Explicit selection (used by UI lists etc. to target a specific item even
   // if its area is hard to click due to overlaps).
@@ -832,6 +1002,8 @@ export class WorldMapEditor {
         this.map.rivers = this.map.rivers.filter((r) => r.id !== this.selection.id);
       } else if (this.selection.kind === 'entity') {
         this.map.entities = this.map.entities.filter((e) => e.id !== this.selection.id);
+      } else if (this.selection.kind === 'district') {
+        this.map.districts = this.map.districts.filter((d) => d.id !== this.selection.id);
       } else {
         this.map.pois = this.map.pois.filter((p) => p.id !== this.selection.id);
       }
@@ -843,6 +1015,7 @@ export class WorldMapEditor {
   clearAll() {
     this._commit(() => {
       this.map.zones = [];
+      this.map.districts = [];
       this.map.roads = [];
       this.map.rivers = [];
       this.map.pois = [];
@@ -872,6 +1045,17 @@ export class WorldMapEditor {
     if (this.selection?.kind === 'road') {
       const road = this._roadById(this.selection.id);
       if (road) { road.trackStyle = next; this.flushAutosave(); }
+    }
+    this._dirty = true;
+    this.emitChange();
+  }
+
+  setRoadSurface(surface) {
+    const next = surface === 'asphalt' || surface === 'dirt' ? surface : null;
+    this.roadSurface = next;
+    if (this.selection?.kind === 'road') {
+      const road = this._roadById(this.selection.id);
+      if (road) { road.surface = next; this.flushAutosave(); }
     }
     this._dirty = true;
     this.emitChange();
@@ -938,7 +1122,7 @@ export class WorldMapEditor {
   // ----------------------------------------------------------------------
   // Public setters (driven by the controls panel)
   // ----------------------------------------------------------------------
-  setTool(tool) { this.tool = tool; this.polyDraft = null; this.roadDraft = null; this.riverDraft = null; this._dirty = true; this.emitChange(); }
+  setTool(tool) { this.tool = tool; this.polyDraft = null; this.roadDraft = null; this.riverDraft = null; this.districtDraft = null; this._dirty = true; this.emitChange(); }
   setActiveZoneType(type) { if (ZONE_TYPES[type]) { this.activeZoneType = type; this.tool = type; if (this.polyDraft) this.polyDraft = null; } this.emitChange(); }
   setActiveCityStyle(style) { if (CITY_STYLES[style]) this.activeCityStyle = style; this.emitChange(); }
   setDrawShape(shape) { this.drawShape = shape === 'poly' ? 'poly' : 'rect'; if (this.polyDraft) this.polyDraft = null; this._dirty = true; this.emitChange(); }
@@ -988,6 +1172,43 @@ export class WorldMapEditor {
   setActiveEntityGroundMode(mode) {
     if (ENTITY_GROUND_MODES[mode]) this.activeEntityGroundMode = mode;
     this.emitChange();
+  }
+
+  setActiveDistrictShape(shape) {
+    if (['rect', 'polygon', 'circle', 'triangle'].includes(shape)) {
+      this.activeDistrictShape = shape;
+    }
+    this.emitChange();
+  }
+
+  setDistrictName(name) {
+    this.districtName = String(name || 'District').trim() || 'District';
+    this.emitChange();
+  }
+
+  addDistrict(spec = {}) {
+    const name = String(spec.name || this.districtName || 'District').trim() || 'District';
+    const shape = ['rect','polygon','circle','triangle'].includes(spec.shape) ? spec.shape : 'rect';
+    const n = (v, fb=0) => { const x = Number(v); return Number.isFinite(x) ? x : fb; };
+    let d;
+    if (shape === 'circle') {
+      const c = spec.center || {x:0,z:0};
+      d = { id: makeId('d'), name, shape: 'circle', center: {x: n(c.x,0), z: n(c.z,0)}, radius: Math.max(2, n(spec.radius, 32)), props: {} };
+    } else if (shape === 'polygon' || shape === 'triangle') {
+      const pts = (spec.points || []).map(p => ({x: n(p.x,0), z: n(p.z,0)})).filter(p => Number.isFinite(p.x) && Number.isFinite(p.z));
+      if (pts.length < 3) return { success: false, error: 'need 3+ points' };
+      d = { id: makeId('d'), name, shape, points: shape==='triangle' ? pts.slice(0,3) : pts, props: {} };
+    } else {
+      const r = spec.rect;
+      if (!r) return { success: false, error: 'rect required' };
+      d = { id: makeId('d'), name, shape: 'rect', rect: { minX: n(r.minX,0), minZ: n(r.minZ,0), maxX: n(r.maxX,0), maxZ: n(r.maxZ,0) }, props: {} };
+    }
+    this._pushHistory();
+    this.map.districts.push(d);
+    this.selection = { kind: 'district', id: d.id };
+    this._dirty = true;
+    this.emitChange();
+    return { success: true, id: d.id };
   }
 
   // Per-entity property edits (driven by the selection panel).
@@ -1110,6 +1331,17 @@ export class WorldMapEditor {
     this.emitChange();
   }
 
+  importBuiltinRallyScene() {
+    const meta = Scenes.ensureBuiltInRallyScene();
+    this.emitChange();
+    return meta;
+  }
+
+  setSceneDefaultRole(sceneId, role) {
+    Scenes.setSceneDefaultRole(sceneId, role);
+    this.emitChange();
+  }
+
   // ----------------------------------------------------------------------
   // Serialization
   // ----------------------------------------------------------------------
@@ -1122,6 +1354,7 @@ export class WorldMapEditor {
     this.map = normalizeWorldMap(json, Blueprints.getBlueprintIds());
     this.selection = null;
     this._fitToBounds();
+    this._dirty = true;
     this.flushAutosave();
     this.emitChange();
   }
@@ -1180,7 +1413,10 @@ export class WorldMapEditor {
       }
     } else if (this.selection?.kind === 'road') {
       const r = this._roadById(this.selection.id);
-      if (r) selected = { kind: 'road', id: r.id, width: r.width, trackStyle: r.trackStyle ?? null, elevation: r.elevation ?? null };
+      if (r) selected = {
+        kind: 'road', id: r.id, width: r.width, trackStyle: r.trackStyle ?? null,
+        surface: r.surface ?? null, elevation: r.elevation ?? null,
+      };
     } else if (this.selection?.kind === 'river') {
       const rv = this._riverById(this.selection.id);
       if (rv) selected = { kind: 'river', id: rv.id, width: rv.width, depth: rv.depth, oceanLeft: !!rv.oceanLeft, oceanRight: !!rv.oceanRight };
@@ -1202,6 +1438,9 @@ export class WorldMapEditor {
           groundMode: e.groundMode,
         };
       }
+    } else if (this.selection?.kind === 'district') {
+      const d = this._districtById(this.selection.id);
+      if (d) selected = { kind: 'district', id: d.id, name: d.name, shape: d.shape };
     }
     return {
       tool: this.tool,
@@ -1210,6 +1449,8 @@ export class WorldMapEditor {
       activePoiKind: this.activePoiKind,
       activeBlueprintId: this.activeBlueprintId,
       activeEntityGroundMode: this.activeEntityGroundMode,
+      activeDistrictShape: this.activeDistrictShape,
+      districtName: this.districtName,
       blueprints: Blueprints.listBlueprints(),
       drawShape: this.drawShape,
       drawingPoly: Boolean(this.polyDraft),
@@ -1217,6 +1458,7 @@ export class WorldMapEditor {
       drawingRiver: Boolean(this.riverDraft),
       roadWidth: this.roadWidth,
       roadTrackStyle: this.roadTrackStyle,
+      roadSurface: this.roadSurface,
       roadElevation: this.roadElevation,
       riverWidth: this.riverWidth,
       riverDepth: this.riverDepth,
@@ -1238,15 +1480,220 @@ export class WorldMapEditor {
         shape: z.shape || 'rect',
         label: ZONE_TYPES[z.type]?.label ?? z.type,
       })),
+      districts: this.map.districts.map((d) => ({
+        id: d.id,
+        name: d.name,
+        shape: d.shape,
+      })),
       selected,
       canUndo: this.undoStack.length > 0,
       canRedo: this.redoStack.length > 0,
       scenes: Scenes.listScenes(),
       currentSceneId: this.currentSceneId,
+      defaultWorldSceneId: Scenes.getDefaultWorldSceneId(),
+      defaultRallySceneId: Scenes.getDefaultRallySceneId(),
     };
   }
 
   emitChange() { this.onChange(this.getSnapshot()); }
+
+  // ----------------------------------------------------------------------
+  // AI bridge helpers (Codex tools + Grok JSON generation)
+  // getMapSummary is used both for prompts and live tool results.
+  // Mutation helpers perform history + normalize + emit so Codex edits are safe.
+  // ----------------------------------------------------------------------
+  getMapSummary() {
+    const b = this.map.bounds;
+    const width = b.maxX - b.minX;
+    const depth = b.maxZ - b.minZ;
+    const byType = { terrain: 0, city: 0, loopout: 0, wilds: 0 };
+    for (const z of this.map.zones) byType[z.type] = (byType[z.type] ?? 0) + 1;
+
+    const describeRel = (x, z) => {
+      const cx = (b.minX + b.maxX) / 2;
+      const cz = (b.minZ + b.maxZ) / 2;
+      const dx = x - cx;
+      const dz = z - cz;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+      const maxDist = Math.max((b.maxX - b.minX) / 2, (b.maxZ - b.minZ) / 2) || 1;
+      let dirs = [];
+      if (Math.abs(dz) > Math.abs(dx) * 0.4) dirs.push(dz > 0 ? 'south' : 'north');
+      if (Math.abs(dx) > Math.abs(dz) * 0.4) dirs.push(dx > 0 ? 'east' : 'west');
+      let rel = dirs.join('-') || 'center';
+      const norm = dist / maxDist;
+      if (norm < 0.15) rel = 'near center';
+      else if (norm > 0.75) rel += ' edge';
+      else if (norm > 0.45) rel += ' area';
+      return `${rel} (${Math.round(x)}, ${Math.round(z)})`;
+    };
+
+    const pois = this.map.pois.map((p) => ({
+      id: p.id,
+      name: p.name,
+      kind: p.kind,
+      x: p.x,
+      z: p.z,
+      relative: describeRel(p.x, p.z),
+    }));
+
+    return {
+      bounds: { ...b },
+      sizeMeters: { width: Math.round(width), depth: Math.round(depth) },
+      chunkSize: this.map.chunkSize,
+      spawn: { ...this.map.spawn },
+      stats: {
+        zones: this.map.zones.length,
+        roads: this.map.roads.length,
+        rivers: this.map.rivers.length,
+        pois: this.map.pois.length,
+        entities: this.map.entities.length,
+        byType,
+      },
+      zones: this.map.zones.map((z) => ({
+        id: z.id,
+        type: z.type,
+        shape: z.shape || 'rect',
+        rect: z.rect ? { ...z.rect } : undefined,
+        pointsCount: Array.isArray(z.points) ? z.points.length : 0,
+        props: z.props ? { ...z.props } : {},
+      })),
+      roads: this.map.roads.map((r) => ({
+        id: r.id,
+        pointsCount: r.points ? r.points.length : 0,
+        width: r.width,
+        trackStyle: r.trackStyle || null,
+        elevation: r.elevation,
+      })),
+      rivers: this.map.rivers.map((r) => ({
+        id: r.id,
+        pointsCount: r.points ? r.points.length : 0,
+        width: r.width,
+        depth: r.depth,
+        oceanLeft: !!r.oceanLeft,
+        oceanRight: !!r.oceanRight,
+      })),
+      pois,
+      // Human-friendly anchors for AI (includes relative position to help steering)
+      poiAnchors: pois.map((p) => `${p.kind} "${p.name || p.id}" ${p.relative}`),
+      entities: this.map.entities.map((e) => ({
+        id: e.id,
+        name: e.name,
+        blueprintId: e.blueprintId,
+        x: e.x,
+        z: e.z,
+        yaw: e.yaw,
+        scale: e.scale,
+        groundMode: e.groundMode,
+      })),
+      districts: (this.map.districts || []).map((d) => ({
+        id: d.id,
+        name: d.name,
+        shape: d.shape,
+        rect: d.rect ? { ...d.rect } : undefined,
+        pointsCount: d.points ? d.points.length : 0,
+        center: d.center,
+        radius: d.radius,
+      })),
+      availableBlueprints: Blueprints.listBlueprints().map((bp) => ({ id: bp.id, name: bp.name })),
+    };
+  }
+
+  // High level adders used by Codex dynamic tools and as reference for Grok fills.
+  // They push normalized entries, record history, and notify.
+  addRoad(rawPoints, opts = {}) {
+    if (!Array.isArray(rawPoints) || rawPoints.length < 2) return { success: false, error: 'need >=2 points' };
+    this._pushHistory();
+    const points = rawPoints.map((p) => (Array.isArray(p) ? { x: p[0], z: p[1] } : { x: p.x ?? p[0], z: p.z ?? p[1] }));
+    const road = normalizeRoad({
+      points,
+      width: opts.width ?? this.roadWidth,
+      trackStyle: opts.trackStyle ?? this.roadTrackStyle ?? null,
+      surface: opts.surface ?? this.roadSurface ?? null,
+      elevation: opts.elevation ?? this.roadElevation ?? null,
+    });
+    if (!road) return { success: false, error: 'invalid road after normalize' };
+    this.map.roads.push(road);
+    this._dirty = true;
+    this.emitChange();
+    return { success: true, id: road.id, road };
+  }
+
+  addRiver(rawPoints, opts = {}) {
+    if (!Array.isArray(rawPoints) || rawPoints.length < 2) return { success: false, error: 'need >=2 points' };
+    this._pushHistory();
+    const points = rawPoints.map((p) => (Array.isArray(p) ? { x: p[0], z: p[1] } : { x: p.x ?? p[0], z: p.z ?? p[1] }));
+    const river = normalizeRiver({
+      points,
+      width: opts.width ?? this.riverWidth,
+      depth: opts.depth ?? this.riverDepth,
+      oceanLeft: !!opts.oceanLeft,
+      oceanRight: !!opts.oceanRight,
+    });
+    if (!river) return { success: false, error: 'invalid river' };
+    this.map.rivers.push(river);
+    this._dirty = true;
+    this.emitChange();
+    return { success: true, id: river.id };
+  }
+
+  addZone(spec = {}) {
+    this._pushHistory();
+    const z = normalizeZone({
+      type: spec.type || this.activeZoneType || 'terrain',
+      shape: spec.shape || (spec.points ? 'polygon' : 'rect'),
+      rect: spec.rect,
+      points: spec.points,
+      props: spec.props || (spec.cityStyle || spec.seed != null ? { cityStyle: spec.cityStyle, seed: spec.seed } : {}),
+    });
+    if (!z) return { success: false, error: 'bad zone spec' };
+    this.map.zones.push(z);
+    this._dirty = true;
+    this.emitChange();
+    return { success: true, id: z.id };
+  }
+
+  addPoi(spec = {}) {
+    this._pushHistory();
+    const p = normalizePoi({
+      name: spec.name,
+      kind: spec.kind || this.activePoiKind || 'landmark',
+      x: spec.x,
+      z: spec.z,
+    });
+    if (!p) return { success: false, error: 'bad poi' };
+    this.map.pois.push(p);
+    this._dirty = true;
+    this.emitChange();
+    return { success: true, id: p.id };
+  }
+
+  addEntity(spec = {}) {
+    this._pushHistory();
+    const e = normalizeEntity({
+      name: spec.name,
+      blueprintId: spec.blueprintId,
+      x: spec.x,
+      z: spec.z,
+      yaw: spec.yaw,
+      scale: spec.scale,
+      groundMode: spec.groundMode || this.activeEntityGroundMode || 'none',
+    }, Blueprints.getBlueprintIds());
+    if (!e) return { success: false, error: 'bad entity (missing blueprintId or invalid coords?)' };
+    this.map.entities.push(e);
+    this._dirty = true;
+    this.emitChange();
+    return { success: true, id: e.id };
+  }
+
+  setSpawn(x, z, yaw) {
+    this._pushHistory();
+    if (Number.isFinite(x)) this.map.spawn.x = x;
+    if (Number.isFinite(z)) this.map.spawn.z = z;
+    if (Number.isFinite(yaw)) this.map.spawn.yaw = yaw;
+    this._dirty = true;
+    this.emitChange();
+    return { success: true, spawn: { ...this.map.spawn } };
+  }
 
   // ----------------------------------------------------------------------
   // Rendering
@@ -1284,8 +1731,10 @@ export class WorldMapEditor {
     const otherZones = this.map.zones.filter((z) => z.type !== 'terrain');
     for (const zone of terrainZones) this._drawZone(ctx, zone);
     for (const zone of otherZones) this._drawZone(ctx, zone);
+    for (const d of this.map.districts) this._drawDistrict(ctx, d);
     if (this.drag?.mode === 'create') this._drawCreatePreview(ctx);
     if (this.polyDraft) this._drawPolyDraft(ctx);
+    if (this.districtDraft) this._drawDistrictDraft(ctx);
 
     for (const road of this.map.roads) this._drawRoad(ctx, road);
     if (this.roadDraft) this._drawRoadDraft(ctx);
@@ -1395,6 +1844,56 @@ export class WorldMapEditor {
         ctx.stroke();
       }
     }
+  }
+
+  _drawDistrict(ctx, d) {
+    const selected = this.selection?.kind === 'district' && this.selection.id === d.id;
+    ctx.save();
+    ctx.lineWidth = selected ? 2 : 1.5;
+    ctx.strokeStyle = selected ? '#ffeb3b' : '#4fc3f7';
+    ctx.fillStyle = selected ? 'rgba(79,195,247,0.25)' : 'rgba(79,195,247,0.12)';
+    ctx.setLineDash(selected ? [] : [4, 3]);
+
+    if (d.shape === 'circle') {
+      const c = this.worldToScreen(d.center.x, d.center.z);
+      const r = (d.radius || 32) * this.view.zoom;
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    } else if (d.shape === 'polygon' || d.shape === 'triangle') {
+      const pts = d.points || [];
+      if (pts.length >= 3) {
+        ctx.beginPath();
+        const p0 = this.worldToScreen(pts[0].x, pts[0].z);
+        ctx.moveTo(p0.x, p0.y);
+        for (let i = 1; i < pts.length; i += 1) {
+          const s = this.worldToScreen(pts[i].x, pts[i].z);
+          ctx.lineTo(s.x, s.y);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      }
+    } else {
+      const r = d.rect || {minX:0,minZ:0,maxX:0,maxZ:0};
+      const a = this.worldToScreen(r.minX, r.minZ);
+      const c = this.worldToScreen(r.maxX, r.maxZ);
+      ctx.fillRect(a.x, a.y, c.x - a.x, c.y - a.y);
+      ctx.strokeRect(a.x, a.y, c.x - a.x, c.y - a.y);
+    }
+    ctx.setLineDash([]);
+
+    // name label
+    const b = d.rect || (d.center ? {minX: d.center.x - (d.radius||0), minZ: d.center.z - (d.radius||0), maxX: d.center.x + (d.radius||0)} : {minX:0,minZ:0});
+    const lx = (b.minX + (b.maxX || b.minX)) * 0.5;
+    const ly = b.minZ;
+    const ls = this.worldToScreen(lx, ly);
+    ctx.fillStyle = '#e3f2fd';
+    ctx.font = (selected ? 'bold ' : '') + '11px system-ui, sans-serif';
+    ctx.fillText(d.name || 'District', ls.x + 2, ls.y + 12);
+
+    ctx.restore();
   }
 
   _drawRoad(ctx, road) {
@@ -1591,6 +2090,35 @@ export class WorldMapEditor {
       ctx.arc(s.x, s.y, 3, 0, Math.PI * 2);
       ctx.fill();
     }
+  }
+
+  _drawDistrictDraft(ctx) {
+    const d = this.districtDraft;
+    if (!d) return;
+    ctx.save();
+    ctx.strokeStyle = '#4fc3f7';
+    ctx.fillStyle = 'rgba(79,195,247,0.15)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 2]);
+    if (d.shape === 'circle' && d.center && typeof d.radius === 'number') {
+      const c = this.worldToScreen(d.center.x, d.center.z);
+      const r = Math.max(1, d.radius) * this.view.zoom;
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    } else if ((d.shape === 'polygon' || d.shape === 'triangle') && d.points && d.points.length >= 2) {
+      ctx.beginPath();
+      const p0 = this.worldToScreen(d.points[0].x, d.points[0].z);
+      ctx.moveTo(p0.x, p0.y);
+      for (let i = 1; i < d.points.length; i += 1) {
+        const s = this.worldToScreen(d.points[i].x, d.points[i].z);
+        ctx.lineTo(s.x, s.y);
+      }
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    ctx.restore();
   }
 
   _drawCreatePreview(ctx) {

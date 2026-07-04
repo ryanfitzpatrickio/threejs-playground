@@ -52,6 +52,18 @@ import {
 
 const DEFAULT_LIGHTING_MODE = 'hemisphere';
 const DEFAULT_EXPOSURE = 1.0;
+const WEATHER_EXPOSURE_SCALE = Object.freeze({
+  clear: 1,
+  fog: 0.76,
+  overcast: 0.74,
+  rain: 0.72,
+});
+const WEATHER_ENVIRONMENT_SCALE = Object.freeze({
+  clear: 1,
+  fog: 0.68,
+  overcast: 0.62,
+  rain: 0.62,
+});
 // Shared with SkySystem.setWeather/WeatherSystem — the full set of weather
 // states this game recognizes. Kept as a single source of truth here since
 // RendererSystem is the first thing to normalize an incoming weather string.
@@ -77,6 +89,7 @@ export class RendererSystem {
     this.fogMaxDistance = 165; // overwritten in initialize() via getRecommendedFogMaxDistance
     this.environmentRenderTarget = null;
     this.exposure = DEFAULT_EXPOSURE;
+    this.baseExposure = DEFAULT_EXPOSURE;
     this.requestedPostEffectMode = 'ssao';
     this.postPipelinePlan = null;
     // Volumetric sky/cloud provider (set by GameRuntime when SkySystem is in
@@ -144,8 +157,8 @@ export class RendererSystem {
       : toneMappingMode === 'None'
         ? NoToneMapping
         : ACESFilmicToneMapping;
-    this.exposure = environmentPreset.exposure ?? DEFAULT_EXPOSURE;
-    this.renderer.toneMappingExposure = this.exposure;
+    this.baseExposure = environmentPreset.exposure ?? DEFAULT_EXPOSURE;
+    this._applyWeatherExposure();
     this.resizeIfNeeded();
     await this.renderer.init();
     this.defaultLighting = this.renderer.lighting ?? new Lighting();
@@ -181,7 +194,8 @@ export class RendererSystem {
         { size: this.qualityPreset.environment?.environmentMapSize ?? 128 },
       );
       scene.environment = this.environmentRenderTarget.texture;
-      scene.environmentIntensity = this.qualityPreset.environment?.environmentIntensity ?? 0.72;
+      const baseIntensity = this.qualityPreset.environment?.environmentIntensity ?? 0.72;
+      scene.environmentIntensity = baseIntensity * (WEATHER_ENVIRONMENT_SCALE[this.weather] ?? 1);
       scene.environmentRotation.y = 0;
       return scene.environment;
     } finally {
@@ -262,6 +276,7 @@ export class RendererSystem {
         ? 'AgX'
         : this.renderer?.toneMapping === ACESFilmicToneMapping ? 'ACESFilmic' : 'None',
       exposure: this.exposure,
+      baseExposure: this.baseExposure,
       shadows: this.renderer?.shadowMap?.enabled ?? false,
       webgpuAvailable: Boolean(globalThis.navigator?.gpu),
       geometries: info?.memory?.geometries ?? null,
@@ -521,16 +536,23 @@ export class RendererSystem {
     const nextExposure = Number(exposure);
     if (!Number.isFinite(nextExposure) || nextExposure < 0) return this.exposure;
 
-    this.exposure = nextExposure;
-    if (this.renderer) this.renderer.toneMappingExposure = nextExposure;
+    this.baseExposure = nextExposure;
+    this._applyWeatherExposure();
     return this.exposure;
+  }
+
+  _applyWeatherExposure() {
+    const scale = WEATHER_EXPOSURE_SCALE[this.weather] ?? 1;
+    this.exposure = this.baseExposure * scale;
+    if (this.renderer) this.renderer.toneMappingExposure = this.exposure;
   }
 
   setWeather(weather = 'clear') {
     this.weather = WEATHER_STATES.has(weather) ? weather : 'clear';
-    // Rain reuses the existing volumetric height-fog pass for a misty look —
-    // no separate fog code path needed.
-    this.fogEnabled = this.weather === 'fog' || this.weather === 'rain';
+    this._applyWeatherExposure();
+    // Volumetric height fog is for the dedicated fog weather only. Rain uses
+    // scene distance fog (SceneSystem.setSceneFogEnabled) for mist, not this pass.
+    this.fogEnabled = this.weather === 'fog';
     this.invalidatePipeline();
     return this.weather;
   }

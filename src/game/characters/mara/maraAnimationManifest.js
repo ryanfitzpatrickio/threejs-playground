@@ -1,4 +1,36 @@
-export const MARA_MODEL_URL = '/assets/models/playernew.fbx';
+export const MARA_MODEL_URL = '/assets/models/climber.glb';
+
+const INJURED_PACK = '/assets/animation-packs/male-injured-pack';
+
+function injuredLoop(file, { fadeIn = 0.18, timeScale = 1, movementScale = 1 } = {}) {
+  return {
+    url: `${INJURED_PACK}/${file}`,
+    loop: true,
+    retarget: false,
+    useBakedClip: false,
+    rootPosition: 'locked',
+    fadeIn,
+    timeScale,
+    rootMotion: {
+      horizontal: true,
+      movementScale,
+      blend: 0.35,
+      drive: 'locomotion',
+    },
+  };
+}
+
+function injuredPose(file, { loop = true, fadeIn = 0.18, timeScale = 1 } = {}) {
+  return {
+    url: `${INJURED_PACK}/${file}`,
+    loop,
+    retarget: false,
+    useBakedClip: false,
+    rootPosition: 'locked',
+    fadeIn,
+    timeScale,
+  };
+}
 
 export const MARA_ANIMATION_MANIFEST = {
   idle: {
@@ -84,6 +116,28 @@ export const MARA_ANIMATION_MANIFEST = {
       drive: 'locomotion',
     },
   },
+  // Mud-road locomotion. AnimationStateSystem selects these only while Mara is
+  // over a `mud` road and only after the streamed clip is available.
+  mudIdle: injuredPose('injured idle.fbx', { fadeIn: 0.22 }),
+  mudHurtingIdle: injuredPose('injured hurting idle.fbx'),
+  mudStumbleIdle: injuredPose('injured stumble idle.fbx'),
+  mudWaveIdle: injuredPose('injured wave idle.fbx'),
+  mudWalk: injuredLoop('injured walk.fbx', { fadeIn: 0.2 }),
+  mudWalkBack: injuredLoop('injured walk backwards.fbx'),
+  mudWalkTurnLeft: injuredLoop('injured walk left turn.fbx'),
+  mudWalkTurnRight: injuredLoop('injured walk right turn.fbx'),
+  mudTurnLeft: injuredLoop('injured turn left.fbx'),
+  mudTurnRight: injuredLoop('injured turn right.fbx'),
+  mudBackTurnLeft: injuredLoop('injured backwards turn left.fbx'),
+  mudBackTurnRight: injuredLoop('injured backwards turn right.fbx'),
+  mudRun: injuredLoop('injured run.fbx', { fadeIn: 0.16, timeScale: 1.08 }),
+  mudRunBack: injuredLoop('injured run backwards.fbx', { fadeIn: 0.16 }),
+  mudRunTurnLeft: injuredLoop('injured run left turn.fbx', { fadeIn: 0.16 }),
+  mudRunTurnRight: injuredLoop('injured run right turn.fbx', { fadeIn: 0.16 }),
+  mudRunBackTurnLeft: injuredLoop('injured run backwards left turn.fbx', { fadeIn: 0.16 }),
+  mudRunBackTurnRight: injuredLoop('injured run backwards right turn.fbx', { fadeIn: 0.16 }),
+  mudStandingJump: injuredPose('injured standing jump.fbx', { loop: false, fadeIn: 0.08 }),
+  mudRunJump: injuredPose('injured run jump.fbx', { loop: false, fadeIn: 0.07 }),
   ledgeCoverIdle: {
     url: '/assets/animation-packs/ledge-traversal/cover-idle.fbx',
     loop: true,

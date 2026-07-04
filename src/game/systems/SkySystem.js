@@ -1,11 +1,77 @@
 import * as THREE from 'three';
 import { SkyMesh } from 'three/examples/jsm/objects/SkyMesh.js';
 import { CloudSkyProvider } from '../render/cloud/cloudSkyProvider.js';
-import { normalizeCloudMode } from '../render/cloud/cloudConfig.js';
+import { DEFAULT_CLOUD_TYPE, normalizeCloudMode } from '../render/cloud/cloudConfig.js';
 
 const DEFAULT_TIME_OF_DAY = 0.72;
 const DEFAULT_SKY_SCALE = 450000;
 const DEFAULT_SUN_DISTANCE = 1000;
+const DAYLIGHT_START = 0.25; // 06:00
+const DAYLIGHT_END = 0.75; // 18:00
+const WEATHER_LIGHT_SCALE = Object.freeze({
+  clear: 1,
+  fog: 0.66,
+  overcast: 0.64,
+  rain: 0.58,
+});
+const BASE_SKY_DEFAULTS = Object.freeze({
+  turbidity: 3.2,
+  rayleigh: 1.7,
+  mieCoefficient: 0.006,
+  mieDirectionalG: 0.82,
+  cloudCoverage: 0.42,
+  cloudDensity: 0.52,
+  cloudScale: 0.00016,
+  cloudSpeed: 0.000035,
+  cloudElevation: 0.34,
+  sunDiscIntensity: 0.16,
+});
+// Dome-sky (SkyMesh) atmosphere tweaks for non-clear weather. Higher turbidity
+// and lower Rayleigh scatter wash out the midday blue so rain/overcast read grey.
+const WEATHER_SKY_PROFILE = Object.freeze({
+  fog: {
+    turbidity: 6.8,
+    rayleigh: 0.95,
+    mieCoefficient: 0.009,
+    cloudCoverage: 0.72,
+    cloudDensity: 0.86,
+    cloudElevation: 0.58,
+    cloudScale: 0.00011,
+    sunDiscScale: 0.28,
+  },
+  overcast: {
+    turbidity: 8.2,
+    rayleigh: 0.72,
+    mieCoefficient: 0.01,
+    cloudCoverage: 0.9,
+    cloudDensity: 0.92,
+    cloudElevation: 0.7,
+    cloudScale: 0.0001,
+    sunDiscScale: 0.16,
+  },
+  rain: {
+    // Grey overcast without the first pass's near-opaque blanket. Low Rayleigh
+    // kills the midday blue; clouds mask the rest while staying bright enough.
+    turbidity: 8.8,
+    rayleigh: 0.62,
+    mieCoefficient: 0.0115,
+    cloudCoverage: 0.9,
+    cloudDensity: 0.86,
+    cloudElevation: 0.68,
+    cloudScale: 0.0001,
+    sunDiscScale: 0.1,
+  },
+});
+const HEMISPHERE_SKY_COLOR = Object.freeze({
+  fog: 0xb8c2c9,
+  overcast: 0xadb8c0,
+  rain: 0xa8b4bc,
+});
+const SUN_COLOR = Object.freeze({
+  fog: 0xe8ecef,
+  overcast: 0xdde2e6,
+  rain: 0xdce2e8,
+});
 
 // Accepted cloud modes. `volumetric` selects the new sky reference source pipeline
 // (CloudSkyProvider); `dome`/`off` keep the existing SkyMesh path.
@@ -24,6 +90,7 @@ export class SkySystem {
     this.sun = sun;
     this.hemisphere = hemisphere;
     this.config = qualityPreset.environment ?? {};
+    this.weather = 'clear';
     this.timeOfDay = this.config.timeOfDay ?? DEFAULT_TIME_OF_DAY;
     this.dynamicDay = this.config.dynamicDay === true;
     this.dayLengthSeconds = Math.max(60, this.config.dayLengthSeconds ?? 900);
@@ -56,22 +123,28 @@ export class SkySystem {
 
     if (this.provider) {
       this.provider.applySunDirection(this.sunDirection, this.timeOfDay);
-      return this.sunDirection;
-    }
+    } else {
+      this.sky?.sunPosition.value.copy(this.sunDirection).multiplyScalar(DEFAULT_SKY_SCALE * 0.9);
+      const daylight = getSkyDaylightFactor(this.timeOfDay);
+      const weatherScale = WEATHER_LIGHT_SCALE[this.weather] ?? 1;
 
-    this.sky?.sunPosition.value.copy(this.sunDirection).multiplyScalar(DEFAULT_SKY_SCALE * 0.9);
-
-    if (this.sun) {
-      this.sun.position.copy(this.sunDirection).multiplyScalar(DEFAULT_SUN_DISTANCE);
-      this.sun.target.position.set(0, 0, 0);
-      this.sun.color.set(this.config.sunColor ?? 0xffe4b5);
-      this.sun.intensity = this.config.sunIntensity ?? 4.2;
+      if (this.sun) {
+        this.sun.position.copy(this.sunDirection).multiplyScalar(DEFAULT_SUN_DISTANCE);
+        this.sun.target.position.set(0, 0, 0);
+        this.sun.color.set(SUN_COLOR[this.weather] ?? this.config.sunColor ?? 0xffe4b5);
+        this.sun.intensity = (this.config.sunIntensity ?? 4.2) * daylight * weatherScale;
+      }
+      if (this.hemisphere) {
+        this.hemisphere.color.set(
+          HEMISPHERE_SKY_COLOR[this.weather] ?? this.config.hemisphereSkyColor ?? 0xb9d8ff,
+        );
+        this.hemisphere.groundColor.set(this.config.hemisphereGroundColor ?? 0x776653);
+        this.hemisphere.intensity = (this.config.hemisphereIntensity ?? 1.6)
+          * (0.08 + daylight * 0.92)
+          * weatherScale;
+      }
     }
-    if (this.hemisphere) {
-      this.hemisphere.color.set(this.config.hemisphereSkyColor ?? 0xb9d8ff);
-      this.hemisphere.groundColor.set(this.config.hemisphereGroundColor ?? 0x776653);
-      this.hemisphere.intensity = this.config.hemisphereIntensity ?? 1.6;
-    }
+    this.onTimeOfDayChanged?.(this.timeOfDay);
     return this.sunDirection;
   }
 
@@ -106,23 +179,22 @@ export class SkySystem {
       : weather === 'overcast' ? 'overcast'
         : weather === 'rain' ? 'rain'
           : 'clear';
+    this.weather = normalized;
 
     if (this.provider) {
+      if (normalized === 'rain' || normalized === 'overcast') {
+        this.provider.setCloudPreset('stratus');
+      } else if (normalized === 'clear') {
+        this.provider.setCloudPreset(DEFAULT_CLOUD_TYPE);
+      }
       this.provider.setWeather(normalized);
+      this.provider.applySunDirection(this.sunDirection, this.timeOfDay);
       return normalized;
     }
 
     if (!this.sky) return normalized;
-    const cloudsEnabled = this.config.clouds !== 'off';
-    // Rain reads as a fuller overcast than plain 'overcast' — heavier coverage,
-    // same density.
-    this.sky.cloudCoverage.value = !cloudsEnabled
-      ? 0
-      : normalized === 'rain' ? 0.9
-        : normalized === 'overcast' ? 0.82
-          : normalized === 'fog' ? 0.68
-            : this.config.cloudCoverage ?? 0.42;
-    this.sky.cloudDensity.value = (normalized === 'overcast' || normalized === 'rain') ? 0.82 : this.config.cloudDensity ?? 0.52;
+    applyDomeWeatherProfile(this.sky, normalized, this.config);
+    this.setTimeOfDay(this.timeOfDay);
     return normalized;
   }
 
@@ -153,6 +225,7 @@ export class SkySystem {
     environmentSky.name = 'Sky IBL Source';
     environmentSky.scale.setScalar(50);
     environmentSky.sunPosition.value.copy(this.sunDirection).multiplyScalar(45);
+    applyDomeWeatherProfile(environmentSky, this.weather, this.config);
     environmentSky.showSunDisc.value = false;
     environmentSky.frustumCulled = false;
     environmentScene.add(environmentSky);
@@ -185,30 +258,80 @@ export class SkySystem {
   }
 }
 
+function resolveSkyDefaults(config) {
+  return {
+    turbidity: config.turbidity ?? BASE_SKY_DEFAULTS.turbidity,
+    rayleigh: config.rayleigh ?? BASE_SKY_DEFAULTS.rayleigh,
+    mieCoefficient: config.mieCoefficient ?? BASE_SKY_DEFAULTS.mieCoefficient,
+    mieDirectionalG: config.mieDirectionalG ?? BASE_SKY_DEFAULTS.mieDirectionalG,
+    cloudCoverage: config.cloudCoverage ?? BASE_SKY_DEFAULTS.cloudCoverage,
+    cloudDensity: config.cloudDensity ?? BASE_SKY_DEFAULTS.cloudDensity,
+    cloudScale: config.cloudScale ?? BASE_SKY_DEFAULTS.cloudScale,
+    cloudSpeed: config.cloudSpeed ?? BASE_SKY_DEFAULTS.cloudSpeed,
+    cloudElevation: config.cloudElevation ?? BASE_SKY_DEFAULTS.cloudElevation,
+    sunDiscIntensity: config.sunDiscIntensity ?? BASE_SKY_DEFAULTS.sunDiscIntensity,
+  };
+}
+
+function applyDomeWeatherProfile(sky, weather, config) {
+  const base = resolveSkyDefaults(config);
+  const cloudsEnabled = config.clouds !== 'off';
+  const profile = WEATHER_SKY_PROFILE[weather];
+
+  sky.mieDirectionalG.value = base.mieDirectionalG;
+  sky.cloudSpeed.value = base.cloudSpeed;
+
+  if (!profile || !cloudsEnabled) {
+    sky.turbidity.value = base.turbidity;
+    sky.rayleigh.value = base.rayleigh;
+    sky.mieCoefficient.value = base.mieCoefficient;
+    sky.cloudCoverage.value = cloudsEnabled ? base.cloudCoverage : 0;
+    sky.cloudDensity.value = base.cloudDensity;
+    sky.cloudScale.value = base.cloudScale;
+    sky.cloudElevation.value = base.cloudElevation;
+    sky.showSunDisc.value = base.sunDiscIntensity;
+    return;
+  }
+
+  sky.turbidity.value = profile.turbidity ?? base.turbidity;
+  sky.rayleigh.value = profile.rayleigh ?? base.rayleigh;
+  sky.mieCoefficient.value = profile.mieCoefficient ?? base.mieCoefficient;
+  sky.cloudCoverage.value = profile.cloudCoverage ?? base.cloudCoverage;
+  sky.cloudDensity.value = profile.cloudDensity ?? base.cloudDensity;
+  sky.cloudScale.value = profile.cloudScale ?? base.cloudScale;
+  sky.cloudElevation.value = profile.cloudElevation ?? base.cloudElevation;
+  sky.showSunDisc.value = base.sunDiscIntensity * (profile.sunDiscScale ?? 1);
+}
+
 function createConfiguredSky(config, includeClouds = false) {
   const sky = new SkyMesh();
-  sky.turbidity.value = config.turbidity ?? 3.2;
-  sky.rayleigh.value = config.rayleigh ?? 1.7;
-  sky.mieCoefficient.value = config.mieCoefficient ?? 0.006;
-  sky.mieDirectionalG.value = config.mieDirectionalG ?? 0.82;
-  sky.cloudCoverage.value = includeClouds && config.clouds !== 'off' ? config.cloudCoverage ?? 0.42 : 0;
-  sky.cloudDensity.value = config.cloudDensity ?? 0.52;
-  sky.cloudScale.value = config.cloudScale ?? 0.00016;
-  sky.cloudSpeed.value = config.cloudSpeed ?? 0.000035;
-  sky.cloudElevation.value = config.cloudElevation ?? 0.34;
+  const base = resolveSkyDefaults(config);
+  sky.turbidity.value = base.turbidity;
+  sky.rayleigh.value = base.rayleigh;
+  sky.mieCoefficient.value = base.mieCoefficient;
+  sky.mieDirectionalG.value = base.mieDirectionalG;
+  sky.cloudCoverage.value = includeClouds && config.clouds !== 'off' ? base.cloudCoverage : 0;
+  sky.cloudDensity.value = base.cloudDensity;
+  sky.cloudScale.value = base.cloudScale;
+  sky.cloudSpeed.value = base.cloudSpeed;
+  sky.cloudElevation.value = base.cloudElevation;
   // SkyMesh's physical disc is intentionally extremely bright. Keep enough HDR
   // energy for a defined sun and bloom without washing out the horizon.
-  sky.showSunDisc.value = config.sunDiscIntensity ?? 0.16;
+  sky.showSunDisc.value = base.sunDiscIntensity;
+  // The sky is the source behind atmospheric fog, not geometry to be fogged.
+  // Fogging this camera-far mesh replaces the entire horizon with the scene fog
+  // colour, which is especially obvious as a flat bright sheet at rainy night.
+  sky.material.fog = false;
   return sky;
 }
 
 function computeSunDirection(timeOfDay, target) {
-  // Daylight spans 06:00–18:00. The azimuth advances with time while elevation
-  // follows a smooth solar arc. Values outside daylight remain just below horizon.
-  const daylight = THREE.MathUtils.clamp((timeOfDay - 0.25) / 0.5, 0, 1);
-  const elevation = Math.sin(daylight * Math.PI) * THREE.MathUtils.degToRad(58)
-    - THREE.MathUtils.degToRad(4);
-  const azimuth = THREE.MathUtils.degToRad(70 + daylight * 190);
+  // Full 24-hour solar arc: sunrise 06:00, zenith at noon, sunset 18:00,
+  // nadir at midnight. The previous clamped arc held the sun at -4 degrees for
+  // the whole night, leaving overcast skies in permanent bright twilight.
+  const solarPhase = (wrap01(timeOfDay) - DAYLIGHT_START) * Math.PI * 2;
+  const elevation = Math.sin(solarPhase) * THREE.MathUtils.degToRad(58);
+  const azimuth = THREE.MathUtils.degToRad(70) + solarPhase;
   const horizontal = Math.cos(elevation);
   return target.set(
     Math.sin(azimuth) * horizontal,
@@ -217,10 +340,27 @@ function computeSunDirection(timeOfDay, target) {
   ).normalize();
 }
 
+export function getSkyDaylightFactor(timeOfDay) {
+  const solarPhase = (wrap01(timeOfDay) - DAYLIGHT_START) * Math.PI * 2;
+  const elevationDegrees = Math.sin(solarPhase) * 58;
+  return smoothstep(-6, 6, elevationDegrees);
+}
+
+function smoothstep(min, max, value) {
+  const t = THREE.MathUtils.clamp((value - min) / (max - min), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
 function wrap01(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return DEFAULT_TIME_OF_DAY;
   return ((number % 1) + 1) % 1;
+}
+
+/** True between 06:00 and 18:00 on the normalized time-of-day clock. */
+export function isDirectionalSunDaytime(timeOfDay) {
+  const t = wrap01(timeOfDay);
+  return t >= DAYLIGHT_START && t < DAYLIGHT_END;
 }
 
 function round3(value) {

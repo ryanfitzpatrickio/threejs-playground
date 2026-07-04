@@ -15,6 +15,7 @@
  *     bounds: { minX, minZ, maxX, maxZ },
  *     spawn:  { x, z, yaw },
  *     zones:  [ { id, type, shape:'rect', rect:{minX,minZ,maxX,maxZ}, props:{} } ],
+ *     districts: [ { id, name, shape:'rect'|'polygon'|'circle'|'triangle', rect?, points?, center?, radius?, props:{} } ],
  *     pois:   [ { id, name, kind, x, z } ],
  *     entities: [ { id, name, blueprintId, x, z, yaw, scale, groundMode } ],
  *     createdAt
@@ -22,6 +23,7 @@
  */
 
 import { zoneContains } from './zoneGeometry.js';
+import { normalizeRoadSurface } from './roadSurface.js';
 
 export const WORLD_MAP_VERSION = 1;
 export const WORLDMAP_STORAGE_KEY = 'dreamfall:worldmap:autosave';
@@ -83,6 +85,9 @@ export const ENTITY_GROUND_MODE_ORDER = ['none', 'merge', 'platform'];
 
 export const DEFAULT_ROAD_WIDTH = 8;
 
+// Districts are named areas for LLM guidance + in-game name popups (GTA style)
+export const DISTRICT_SHAPES = ['rect', 'polygon', 'circle', 'triangle'];
+
 // Rivers carve terrain DOWN into a channel (inverse of a road). `width` is the
 // surface span; `depth` is how far the channel bed drops below the natural surface.
 export const DEFAULT_RIVER_WIDTH = 10;
@@ -96,6 +101,7 @@ export function createEmptyWorldMap() {
     bounds: { minX: -512, minZ: -512, maxX: 512, maxZ: 512 },
     spawn: { x: 0, z: 0, yaw: 0 },
     zones: [],
+    districts: [],
     roads: [],
     rivers: [],
     pois: [],
@@ -117,7 +123,7 @@ function num(value, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function normalizeRect(raw) {
+export function normalizeRect(raw) {
   if (!raw || typeof raw !== 'object') return null;
   let minX = num(raw.minX, NaN);
   let minZ = num(raw.minZ, NaN);
@@ -142,7 +148,7 @@ function normalizePoints(raw) {
   return points.length >= 3 ? points : null;
 }
 
-function normalizeZone(raw) {
+export function normalizeZone(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const type = ZONE_TYPES[raw.type] ? raw.type : 'terrain';
   const id = typeof raw.id === 'string' && raw.id ? raw.id : makeId('z');
@@ -163,7 +169,7 @@ function normalizeZone(raw) {
   return { id, type, shape: 'rect', rect, props };
 }
 
-function normalizePoi(raw) {
+export function normalizePoi(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const x = num(raw.x, NaN);
   const z = num(raw.z, NaN);
@@ -205,6 +211,72 @@ export function normalizeEntity(raw, knownBlueprintIds = null) {
   };
 }
 
+export function normalizeDistrict(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = typeof raw.id === 'string' && raw.id ? raw.id : makeId('d');
+  const name = (typeof raw.name === 'string' && raw.name ? raw.name : 'District').trim() || 'District';
+  let shape = DISTRICT_SHAPES.includes(raw.shape) ? raw.shape : 'rect';
+
+  if (shape === 'circle') {
+    const c = raw.center || {};
+    const cx = num(c.x, 0);
+    const cz = num(c.z, 0);
+    const radius = Math.max(1, num(raw.radius, 32));
+    return { id, name, shape: 'circle', center: { x: cx, z: cz }, radius, props: raw.props && typeof raw.props === 'object' ? { ...raw.props } : {} };
+  }
+
+  if (shape === 'polygon' || shape === 'triangle') {
+    const pts = [];
+    for (const p of Array.isArray(raw.points) ? raw.points : []) {
+      const px = num(p?.x, NaN);
+      const pz = num(p?.z, NaN);
+      if (Number.isFinite(px) && Number.isFinite(pz)) pts.push({ x: px, z: pz });
+    }
+    if (pts.length < 3) return null;
+    const finalPts = shape === 'triangle' ? pts.slice(0, 3) : pts;
+    return { id, name, shape, points: finalPts, props: raw.props && typeof raw.props === 'object' ? { ...raw.props } : {} };
+  }
+
+  // rect default
+  const rect = normalizeRect(raw.rect);
+  if (!rect) return null;
+  return { id, name, shape: 'rect', rect, props: raw.props && typeof raw.props === 'object' ? { ...raw.props } : {} };
+}
+
+export function districtContains(d, x, z) {
+  if (!d) return false;
+  if (d.shape === 'circle') {
+    const c = d.center;
+    const dx = x - c.x;
+    const dz = z - c.z;
+    return (dx * dx + dz * dz) <= (d.radius * d.radius + 1e-6);
+  }
+  if (d.shape === 'polygon' || d.shape === 'triangle') {
+    // reuse point in poly logic (simple raycast)
+    const pts = d.points || [];
+    let inside = false;
+    const n = pts.length;
+    for (let i = 0, j = n - 1; i < n; j = i, i += 1) {
+      const xi = pts[i].x, zi = pts[i].z;
+      const xj = pts[j].x, zj = pts[j].z;
+      const intersects = (zi > z) !== (zj > z) && (x < ((xj - xi) * (z - zi)) / (zj - zi) + xi);
+      if (intersects) inside = !inside;
+    }
+    return inside;
+  }
+  const r = d.rect;
+  if (!r) return false;
+  return x >= r.minX && x <= r.maxX && z >= r.minZ && z <= r.maxZ;
+}
+
+export function districtAtPoint(map, x, z) {
+  const ds = map?.districts ?? [];
+  for (let i = ds.length - 1; i >= 0; i -= 1) {
+    if (districtContains(ds[i], x, z)) return ds[i];
+  }
+  return null;
+}
+
 // Exported so the 3D Map Builder can validate blueprint-project roads with the
 // exact same rules as world-map roads (≥2 finite points, width clamp, type, id).
 export function normalizeRoad(raw) {
@@ -229,6 +301,8 @@ export function normalizeRoad(raw) {
     // Optional GT3-style trackside cross-section preset (curb/shoulder/wall/…).
     // null/absent → a plain road. See trackCrossSection.js for valid names.
     trackStyle: typeof raw.trackStyle === 'string' && raw.trackStyle ? raw.trackStyle : null,
+    // Optional material override. null follows the track-style default.
+    surface: normalizeRoadSurface(raw.surface),
     // null/absent follows terrain; a finite value pins the entire road to that
     // world-space height.
     elevation: Number.isFinite(elevation) ? elevation : null,
@@ -298,6 +372,10 @@ export function normalizeWorldMap(json, knownBlueprintIds = null) {
     ? json.entities.map((e) => normalizeEntity(e, knownBlueprintIds)).filter(Boolean)
     : [];
 
+  const districts = Array.isArray(json.districts)
+    ? json.districts.map(normalizeDistrict).filter(Boolean)
+    : [];
+
   return {
     version: WORLD_MAP_VERSION,
     name: typeof json.name === 'string' && json.name ? json.name : base.name,
@@ -305,6 +383,7 @@ export function normalizeWorldMap(json, knownBlueprintIds = null) {
     bounds,
     spawn,
     zones,
+    districts,
     roads,
     rivers,
     pois,

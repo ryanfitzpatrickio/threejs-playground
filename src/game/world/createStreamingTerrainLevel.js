@@ -26,16 +26,19 @@ import { zoneContains, zoneDistanceOutside, zoneBounds } from '../../world/world
 import {
   buildRoadProfile,
   applyRoadCorridorHeight,
+  findNearestRoadPoint,
   TUNNEL_INTERIOR_HEIGHT,
 } from '../../world/worldMap/roadProfile.js';
 import { buildRiverProfile, applyRiverCorridorHeight } from '../../world/worldMap/riverProfile.js';
 import { createTerrainBiomeMaterial } from '../materials/createTerrainBiomeMaterial.js';
 import { createZoneForest } from './createZoneForest.js';
-import { createRoadworks } from './createRoadworks.js';
+import { createRoadworks, ROAD_SURFACE_LIFT } from './createRoadworks.js';
 import { createTracksideLayers } from './createTracksideLayers.js';
 import { createRiverworks } from './createRiverworks.js';
 import { createBlueprintEntities, collectBlueprintRoads, collectBlueprintRivers, collectBlueprintTerrainTexture } from './createBlueprintEntities.js';
 import { getGroundHeightAt as colliderGroundHeightAt } from './createBaseLevel.js';
+import { createMudDeformField } from './mudDeformField.js';
+import { surfaceForRoad } from '../../world/worldMap/roadSurface.js';
 
 const DEFAULT_LOAD_RADIUS = 3;
 
@@ -99,7 +102,7 @@ const BIOME_MARGIN = 48;
 // below 0" (canyons) eases in rather than stepping at the zone edge.
 const ELEVATION_MARGIN = 24;
 
-export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = null, flattenZones = [] } = {}) {
+export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = null, flattenZones = [], levelMode = 'city' } = {}) {
   const loadRadius = qualityPreset.terrainLoadRadius ?? DEFAULT_LOAD_RADIUS;
   const unloadRadius = qualityPreset.terrainUnloadRadius ?? loadRadius + 1;
   const maxChunkBuildsPerFrame = qualityPreset.terrainChunkBuildsPerFrame ?? DEFAULT_CHUNK_BUILDS_PER_FRAME;
@@ -600,11 +603,34 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
       // Match the Map Builder editor: roads conform to terrain grade faithfully
       // (tiny smoothing, no grade clamp) so a blueprint road placed on a hill
       // matches its editor preview instead of sinking below the spline.
-      smoothRadius: 2,
+      // Finer 1 m samples (was 2 m) so curves read smooth, not faceted; smoothRadius
+      // doubled to 4 to keep the same ~10 m metre-window (it counts in samples).
+      sampleSpacing: 0.5,
+      smoothRadius: 8,
       maxGrade: Infinity,
     });
     roadCorridor = roadProfile.corridorAt;
   }
+
+  // Rally mud deform field (docs/rally-mud-tread-plan.md). Constructed ONLY in
+  // rally mode AND only when the map actually contains a mud-surface road — every
+  // other mode (and mud-less rally maps) leaves `mudField` null so getGroundHeightAt,
+  // BaseVehicle, and the deform texture all cost zero. See the scope guarantee.
+  const hasMudRoad = levelMode === 'rally' && allRoads.some((r) => surfaceForRoad(r) === 'mud');
+  // Deep, churned, PERSISTENT ruts: FINE cells (0.15 m) so a skinny tyre-width
+  // trough still has ~2 cells of falloff across it (crisp, not a one-cell spike),
+  // a wide (~115 m) footprint so a run of tracks stays behind the car, and long
+  // decay so ruts linger for ~40 s instead of melting in a few seconds.
+  const mudField = hasMudRoad
+    ? createMudDeformField({
+      maxDepth: 0.25,
+      cellSize: 0.15,
+      resolution: 1024,
+      depthTau: 40,
+      treadTau: 22,
+      wetnessTau: 16,
+    })
+    : null;
 
   // Rivers: build the carve profile + water surface AFTER roads + blueprints (so
   // each river trenches the final graded surface) but BEFORE the initial ring is
@@ -627,7 +653,7 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
   }
 
   if (roadProfile) {
-    roadworks = createRoadworks({ profile: roadProfile, sampleHeight: sampleShapedHeight });
+    roadworks = createRoadworks({ profile: roadProfile, sampleHeight: sampleShapedHeight, mudField });
     group.add(roadworks.group);
     // GT3-style trackside stack (curbs/shoulders/walls) for roads with a trackStyle.
     // Its wall colliders go into level.colliders so the vehicle is contained.
@@ -676,6 +702,10 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
       zones: wildsZones,
       sampleHeight: sampleShapedHeight,
       forestCount: qualityPreset.wildsForestCount,
+      // These profiles contain both map-authored vectors and blueprint-local
+      // vectors after their placement transform into world coordinates.
+      roadCorridor,
+      riverCorridor,
     });
     if (forest.group) group.add(forest.group);
   }
@@ -708,6 +738,10 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
     ropes: [],
     geometryIndex,
     spawnPoint,
+    // Rally mud deformation field (null unless this is a rally map with a mud
+    // road). VehicleSystem stamps tyre ruts into it and decays it per frame;
+    // getGroundHeightAt (above) folds it into the analytic surface.
+    mudField,
     // Heightfields for these are built at physics init; streaming handles the rest.
     terrainChunks: initialEntries.filter((entry) => entry.physicsActive).map(terrainChunkPayload),
 
@@ -852,8 +886,34 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
         });
         if (bpY > ground) ground = bpY;
       }
+      // Vehicle spawn: the paved ribbon (and deck colliders on bridges) sit
+      // ROAD_SURFACE_LIFT above the graded terrain heightfield. Characters walk
+      // the heightfield; a rigid chassis must clear the actual drivable surface.
+      if (options.preferRoadSurface && centerCorridor?.weight > 0.5 && centerCorridor.grounded) {
+        ground = Math.max(ground, centerCorridor.roadY + ROAD_SURFACE_LIFT);
+      }
+      // Rally mud ruts sink the analytic surface so the character/vehicle ground
+      // query follows the tyre troughs. Null (and zero) everywhere but a stamped
+      // mud corridor in rally mode, so this is inert elsewhere.
+      if (mudField) {
+        const sink = mudField.sampleDepthAt(position.x, position.z);
+        if (sink > 0) ground -= sink;
+      }
       return ground;
     },
+
+    // A corridor includes a six-metre terrain feather beyond the visible ribbon.
+    // Vehicle surfaces intentionally change only on the full-strength road deck;
+    // the feather and surrounding terrain are off-road.
+    getRoadSurfaceAt: (x, z) => {
+      const corridor = roadCorridor?.(x, z);
+      return corridor?.withinRoad !== false && corridor?.weight >= 0.999
+        ? (corridor.surface ?? 'asphalt')
+        : null;
+    },
+
+    findNearestRoadPoint: (x, z, options) =>
+      roadProfile ? findNearestRoadPoint(roadProfile, x, z, options) : null,
 
     // Guarantee a physics heightfield exists under `position` without forcing a
     // complete visual chunk/BatchedMesh attachment outside the streaming budget.

@@ -118,7 +118,12 @@ try {
     // none have a stale baked matrix (validateFrozenMatrices recomputes parent*
     // local and compares). -1 = validator unavailable.
     let frozenMeshes = 0;
-    dbg.getScene().traverse((o) => { if (o.isMesh && o.matrixWorldAutoUpdate === false) frozenMeshes += 1; });
+    let staticMeshes = 0;
+    dbg.getScene().traverse((o) => {
+      if (!o.isMesh) return;
+      if (o.matrixWorldAutoUpdate === false) frozenMeshes += 1;
+      if (o.static === true) staticMeshes += 1;
+    });
     let frozenMismatches = -1;
     try { frozenMismatches = geometryIndex?.validateFrozenMatrices?.() ?? -1; } catch { frozenMismatches = -2; }
 
@@ -136,7 +141,7 @@ try {
         parityProbed,
         parityMismatches,
       },
-      matrix: { frozenMeshes, frozenMismatches },
+      matrix: { frozenMeshes, staticMeshes, frozenMismatches },
     };
   });
 
@@ -167,9 +172,15 @@ try {
   assert.equal(result.collider.parityMismatches, 0,
     `index ground-height parity (${result.collider.parityMismatches}/${result.collider.parityProbed} mismatches)`);
 
-  // P3: frozen static matrices.
+  // P3: frozen static matrices + Three static draw hint.
   assert.ok(result.matrix.frozenMeshes > 0, `static chunk meshes frozen (${result.matrix.frozenMeshes})`);
+  assert.ok(result.matrix.staticMeshes > 0, `city meshes marked static (${result.matrix.staticMeshes})`);
   assert.equal(result.matrix.frozenMismatches, 0, 'no stale baked world matrices');
+
+  // Furniture batching: city-wide instanced pools (not per-chunk furniture draws).
+  assert.ok(result.city.furniture?.meshes > 0, 'global furniture batch meshes');
+  assert.ok(result.city.furniture.drawCalls <= 20,
+    `furniture draw calls batched (${result.city.furniture?.drawCalls})`);
 
   // P1/P2: heap RETAINED growth across forced GCs (stable, unlike raw
   // usedJSHeapSize which swings with time-since-last-GC). Always reported. The

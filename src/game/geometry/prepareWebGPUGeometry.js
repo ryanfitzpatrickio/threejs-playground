@@ -74,3 +74,62 @@ export function flattenObjectForWebGPU(root) {
     }
   });
 }
+
+/**
+ * Remove or repair render objects that would make WebGPU create a zero-byte
+ * vertex uniform buffer. Three r185 stores small InstancedMesh matrices and
+ * skinning matrices in uniform buffers; WebGPU rejects a binding whose backing
+ * typed array has byteLength 0.
+ *
+ * A zero-capacity InstancedMesh can never receive instances, so removing it is
+ * lossless. A skeleton with bones is repairable by rebuilding boneMatrices; an
+ * empty skeleton is not renderable and is removed as well.
+ */
+export function sanitizeWebGPUVertexBuffers(root, { warn = console.warn } = {}) {
+  const removed = [];
+  const repaired = [];
+  if (!root?.traverse) return { removed, repaired };
+
+  const candidates = [];
+  root.traverse((object) => candidates.push(object));
+
+  for (const object of candidates) {
+    const instanceBytes = object.isInstancedMesh
+      ? (object.instanceMatrix?.array?.byteLength ?? 0)
+      : null;
+    if (instanceBytes === 0) {
+      removed.push(describeObject(object));
+      object.removeFromParent();
+      continue;
+    }
+
+    if (!object.isSkinnedMesh) continue;
+    const skeleton = object.skeleton;
+    const boneCount = skeleton?.bones?.length ?? 0;
+    if (boneCount === 0) {
+      removed.push(describeObject(object));
+      object.removeFromParent();
+      continue;
+    }
+
+    const expectedBytes = boneCount * 16 * Float32Array.BYTES_PER_ELEMENT;
+    if (skeleton.boneMatrices?.byteLength !== expectedBytes) {
+      skeleton.init();
+      skeleton.update();
+      repaired.push(describeObject(object));
+    }
+  }
+
+  if (removed.length > 0) {
+    warn(`[webgpu] Removed ${removed.length} zero-buffer render object(s): ${removed.join(', ')}`);
+  }
+  if (repaired.length > 0) {
+    warn(`[webgpu] Rebuilt ${repaired.length} invalid skinning buffer(s): ${repaired.join(', ')}`);
+  }
+
+  return { removed, repaired };
+}
+
+function describeObject(object) {
+  return object?.name || `${object?.type ?? 'Object3D'}#${object?.id ?? '?'}`;
+}

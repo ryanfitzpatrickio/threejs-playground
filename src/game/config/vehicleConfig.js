@@ -28,6 +28,9 @@ export const GROUND_VEHICLE_MAX_SPEED_MS = (200 * 1609.344) / 3600; // 200 mph �
 export const DEFAULT_VEHICLE_CONFIG = {
   domain: VEHICLE_DOMAINS.GROUND,
 
+  // Layered in-cabin engine audio profile ('bac' | 'boxer'). See engineProfiles.js.
+  engineProfile: 'bac',
+
   // Chassis collider + inertia. `density` drives mass (mass = density * volume) unless
   // `massOverride` is set. Friction is intentionally low; lateral grip is modelled
   // explicitly per-domain so the collider doesn't fight the drive model on slopes.
@@ -94,7 +97,7 @@ export const DEFAULT_VEHICLE_CONFIG = {
       offset: [-0.48, 0.4, 0.5],
       facing: 0,
       isDriver: true,
-      handGrip: { offset: [-0.48, 0.62, -0.04], spacing: 0.34 },
+      handGrip: { offset: [-0.48, 0.74, -0.04], spacing: 0.34 },
     },
     {
       name: 'front-passenger',
@@ -303,6 +306,52 @@ export const DEFAULT_VEHICLE_CONFIG = {
     maxSpeed: GROUND_VEHICLE_MAX_SPEED_MS, // 150 mph soft cap (drive force tapers past this)
     maxReverseSpeed: 9,
     rollingResistance: 0.65, // passive forward drag rate (1/s)
+    // Garage "Traction" stat (0.4–1.0). 0.55 = authored dirt/mud profiles unchanged;
+    // higher = more grip and less rolling drag on loose surfaces (faster in mud/dirt).
+    traction: 0.55,
+
+    // Surface profiles are sampled from the level road corridor under the
+    // chassis. Friction values are absolute controller settings; the remaining
+    // fields scale the baseline ground tune.
+    surfaces: {
+      asphalt: {
+        frictionSlip: 2.0,
+        sideFrictionStiffness: 0.9,
+        powerOversteerScale: 1,
+        handbrakeRearGripScale: 0.1,
+        rollingResistanceScale: 1,
+        gripLerp: 4,
+      },
+      dirt: {
+        frictionSlip: 1.15,
+        sideFrictionStiffness: 0.5,
+        powerOversteerScale: 1.6,
+        handbrakeRearGripScale: 0.05,
+        rollingResistanceScale: 1.4,
+        gripLerp: 4,
+      },
+      offroad: {
+        frictionSlip: 0.9,
+        sideFrictionStiffness: 0.4,
+        powerOversteerScale: 1.35,
+        handbrakeRearGripScale: 0.04,
+        rollingResistanceScale: 1.7,
+        gripLerp: 3.2,
+      },
+      // Rally mud: the lowest-grip, draggiest profile — the car BOGS and squirms.
+      // Very low longitudinal grip → wheelspin under power (mud flies); very low
+      // side grip → the tail steps out easily; heavy rolling drag → it feels like
+      // wading, bleeding speed the moment you're off the throttle; slow gripLerp
+      // so it wallows into a wet patch instead of snapping to the new grip.
+      mud: {
+        frictionSlip: 0.55,
+        sideFrictionStiffness: 0.22,
+        powerOversteerScale: 2.4,
+        handbrakeRearGripScale: 0.02,
+        rollingResistanceScale: 2.5,
+        gripLerp: 3.0,
+      },
+    },
 
     lateralGrip: 8.5, // body-level sideways slip cancellation (1/s, x mass)
     // RWD rear-axle trim rate (1/s) — applied per rear wheel, scaled by rearGripScale.
@@ -344,6 +393,113 @@ export const DEFAULT_VEHICLE_CONFIG = {
       wheelSteerAngle: 0.6, // max front-wheel visual yaw (rad), ~34°
       steeringWheelTurn: 2.4, // max steering-wheel spin (rad), ~137° each way
     },
+
+    // Rally dirt-dust rooster tail (TireEffects.DirtDustSystem). CPU-simulated
+    // particle pool rendered as GPU billboards (InstancedMesh + TSL). Every knob
+    // here is read once at TireEffects construction; mergeConfig deep-merges, so
+    // a rally build can override e.g. { dust: { color: { mid: [...] } } } without
+    // restating the whole block. Color triples are linear RGB consumed directly
+    // by the shader's colorNode — tune by eye in a real browser.
+    dust: {
+      poolSize: 6000, // instanced-quad count == CPU pool size (fixed at first frame)
+      textureSize: 96, // puff gradient resolution (CanvasTexture)
+      emitAllWheelsAbove: 0.55, // also emit from front axle above this slip intensity
+      emitRate: {
+        base: 8, // particles/s baseline when moving on a loose surface
+        perSpeed: 0.85, // * min(speed, speedCap)
+        speedCap: 38,
+        perIntensity: 28, // * slip/brake/handbrake intensity (0..1)
+        driftBoost: 14, // added when lateralSpeed > driftThreshold
+        driftThreshold: 3,
+        maxPerFrame: 10,
+        burstAtIntensity: 0.72, // extra puffs per emit slot above this slip
+        burstParticles: 2,
+      },
+      life: { min: 0.95, max: 2.35 }, // seconds
+      size: { baseMin: 0.55, baseMax: 1.05, ageGrow: 1.85 }, // metres; final = base*(1+age*ageGrow)
+      buoyancy: 0.95, // initial upward accel (m/s^2), decays with age
+      gravity: 0.52, // downward accel (m/s^2) that takes over as buoyancy fades
+      drag: 0.65, // horizontal velocity decay (1/s)
+      turbulence: 0.2, // per-particle sin-wobble amplitude (m/s)
+      color: {
+        fresh: [0.42, 0.29, 0.17], // dark brown (~#6b4a2b) — just kicked up
+        mid: [0.72, 0.60, 0.42], // tan (~#b89a6c)
+        old: [0.85, 0.80, 0.72], // pale (~#d8cdb8) — dispersing
+      },
+      drift: {
+        fanScale: 0.18, // lateralSpeed → sideways plume bias
+        coneWiden: 1.4, // extra random spread when drifting
+        smoothstart: 2, // smoothstep(lateralSpeed) range
+        smoothend: 8,
+      },
+      spin: {
+        roostScale: 0.05, // rear slipRatio → backward roost boost
+        upBias: 0.68, // rear slipRatio → upward kick boost
+      },
+      opacity: { peak: 1.0, fadePow: 1.35 }, // death fade via scale + material opacity
+
+      // Rally MUD spray profile (docs/rally-mud-tread-plan.md §8). A partial
+      // override deep-merged onto the dust config above and used only while
+      // `surface === 'mud'` (DirtDustSystem swaps to it, no forked system):
+      // darker, heavier, shorter-lived — ballistic clods that arc and fall,
+      // not billowing dust. Bigger initial size, little age-grow.
+      // Mud throws discrete CLODS, not a smoke plume: small, opaque, hard-edged
+      // dark specks that arc and fall (heavy gravity, no buoyancy, no age-grow),
+      // and FEW of them so they never haze over the ruts. DirtDustSystem also
+      // swaps to a hard clod texture on mud so nothing reads as smoke.
+      mud: {
+        clod: true, // render with the hard clod texture, not the soft puff
+        life: { min: 0.35, max: 0.7 }, // short — flick up and splat back down
+        buoyancy: 0.0, // no rise at all
+        gravity: 3.2, // heavy, ballistic
+        drag: 0.35,
+        turbulence: 0.22,
+        emitRate: {
+          base: 15, perSpeed: 2.0, speedCap: 30, perIntensity: 80,
+          driftBoost: 40, driftThreshold: 3, maxPerFrame: 30,
+          burstAtIntensity: 0.6, burstParticles: 2,
+        },
+        size: { baseMin: 0.12, baseMax: 0.28, ageGrow: 0.0 }, // small, no billow
+        color: {
+          fresh: [0.22, 0.15, 0.09], // wet brown clod — lighter than before, still darker than dirt dust
+          mid: [0.32, 0.22, 0.13],
+          old: [0.42, 0.30, 0.20],
+        },
+        opacity: { peak: 1.0, fadePow: 0.6 }, // stay solid, then blink out
+        // Fine wet streaks are rendered in a second instanced pool. Emission
+        // rises with road speed and throttle, while width/lifetime fall with
+        // speed so a fast car leaves a thin spray rather than an opaque cloud.
+        liquid: {
+          poolSize: 6000,
+          emitRate: { base: 120, perSpeed: 20, perThrottle: 550, speedCap: 46, maxPerFrame: 120 },
+          life: { min: 0.3, max: 0.72, speedThin: 0.6 },
+          size: {
+            widthMin: 0.1, widthMax: 0.24, lengthMin: 0.16, lengthMax: 0.4,
+            speedThin: 0.7, sheetEvery: 4, sheetWidth: 2.8, sheetLength: 1.55,
+          },
+          // angularVelocity * wheelRadius drives the tangential throw. Rear
+          // wheels fire almost straight back; fronts fan 45° back/out with only
+          // a small lift so the spray clears the sill without shooting skyward.
+          launch: {
+            tangentialScale: 0.28, speedScale: 0.07,
+            rearYawDeg: 6, frontYawDeg: 45,
+            rearElevationDeg: 9, frontElevationDeg: 6,
+            // Wide per-particle fan so rear roost reads chaotic, not a single hose.
+            randomYawDeg: 24, randomElevationDeg: 18, randomSpeedScale: 0.55,
+            randomLateral: 0.42, randomUpKick: 0.95, rearFanDeg: 34,
+            inheritVelocity: 0.02,
+            // The visual mud ribbon is 0.28 m above the terrain collider.
+            visualSurfaceLift: 0.3, spawnLift: 0.1,
+          },
+          breakup: { delay: 0.075, fragments: 3, speedScale: 0.82, spread: 0.7, sizeScale: 0.42, life: 0.32 },
+          gravity: 11.5,
+          drag: 0.9,
+          turbulence: 0.42,
+          color: { fresh: [0.20, 0.13, 0.07], old: [0.36, 0.25, 0.16] },
+          opacity: 0.72,
+        },
+      },
+    },
   },
 
   // ---- AIR: arcade flight ------------------------------------------------------
@@ -379,6 +535,49 @@ export const DEFAULT_VEHICLE_CONFIG = {
 // `size`, `wheels`, `seats`, etc.
 export function createVehicleConfig(overrides = {}) {
   return mergeConfig(DEFAULT_VEHICLE_CONFIG, overrides);
+}
+
+/** Neutral garage traction — authored dirt/mud surface tables apply as-is. */
+export const LOOSE_SURFACE_TRACTION_BASELINE = 0.55;
+
+const LOOSE_GROUND_SURFACES = new Set(['dirt', 'mud', 'offroad']);
+
+/**
+ * Scale a loose-surface profile (dirt/mud/offroad) by the garage traction stat.
+ * Higher traction → more longitudinal grip, less rolling drag, closer to asphalt pace.
+ */
+export function applyLooseSurfaceTraction(profile, asphaltProfile, traction = LOOSE_SURFACE_TRACTION_BASELINE) {
+  if (!profile) return profile;
+  const asphalt = asphaltProfile ?? DEFAULT_VEHICLE_CONFIG.ground.surfaces.asphalt;
+  const blend = THREE.MathUtils.clamp(
+    (Number(traction) - LOOSE_SURFACE_TRACTION_BASELINE) / 0.45,
+    -0.35,
+    1,
+  );
+  if (Math.abs(blend) < 1e-4) return profile;
+
+  const lerp = (from, to, t) => from + (to - from) * t;
+  if (blend > 0) {
+    return {
+      ...profile,
+      frictionSlip: lerp(profile.frictionSlip, asphalt.frictionSlip, blend * 0.72),
+      sideFrictionStiffness: lerp(profile.sideFrictionStiffness, asphalt.sideFrictionStiffness, blend * 0.5),
+      rollingResistanceScale: lerp(profile.rollingResistanceScale, 1, blend * 0.58),
+      powerOversteerScale: lerp(profile.powerOversteerScale, 1, blend * 0.22),
+    };
+  }
+  const worsen = -blend;
+  return {
+    ...profile,
+    frictionSlip: profile.frictionSlip * (1 - worsen * 0.32),
+    sideFrictionStiffness: profile.sideFrictionStiffness * (1 - worsen * 0.28),
+    rollingResistanceScale: profile.rollingResistanceScale * (1 + worsen * 0.38),
+    powerOversteerScale: profile.powerOversteerScale * (1 + worsen * 0.18),
+  };
+}
+
+export function isLooseGroundSurface(surface) {
+  return LOOSE_GROUND_SURFACES.has(surface);
 }
 
 function mergeConfig(base, override) {

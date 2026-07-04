@@ -33,7 +33,9 @@ const RELEASE_FREE_FALL_SECONDS = 0.4;
 const INPUT_THRESHOLD = 0.12;
 const LINE_WIDTH = 0.045;
 const LINE_SEGMENTS = 12;
-// Free-floating grapple target cursor — shows where pressing E (or middle-click) will currently land.
+// Free-floating grapple target cursor — shown only while holding the aim
+// modifier (Alt). The raycast fan is throttled so driving / on-foot idle
+// costs nothing unless the player is actively lining up a swing.
 const CURSOR_RECOMPUTE_INTERVAL = 0.09; // seconds between candidate raycast searches
 const CURSOR_FOLLOW_LERP = 16;          // smoothing rate as the best target jumps buildings
 const CURSOR_RADIUS = 1.1;              // outer ring radius (world units)
@@ -110,6 +112,7 @@ export class HookSwingSystem {
     this.cursorOpacity = 0;
     this.recomputeTimer = 0;
     this.cachedCandidate = null;
+    this.hookAimActive = false;
     this.cursorDebug = {
       visible: false,
       opacity: 0,
@@ -163,6 +166,14 @@ export class HookSwingSystem {
     character.hookSwingCooldown = Math.max(0, (character.hookSwingCooldown ?? 0) - delta);
     this.lastCandidate = null;
 
+    if (character.vehicle?.active) {
+      if (character.hookSwing?.active) {
+        this.detachAll({ character });
+      }
+      this.endHookPreview({ delta });
+      return movement;
+    }
+
     const blocked =
       character.hang?.active ||
       character.wallRun?.active ||
@@ -174,28 +185,47 @@ export class HookSwingSystem {
       if (character.hookSwing?.active) {
         this.detachAll({ character });
       }
-      this.updateCursor({ candidate: null, delta });
+      this.endHookPreview({ delta });
       return movement;
     }
 
     if (character.hookSwing?.active) {
-      this.updateCursor({ candidate: null, delta });
+      this.endHookPreview({ delta });
       return this.updateActiveSwing({ delta, input, movement, character, level, camera });
     }
 
-    // Realtime grapple target: locate the current best candidate (throttled) and
-    // drive the floating cursor so the player can see where E will take them as
-    // they move past buildings at different heights and speeds.
-    const candidate = this.refreshCandidate({ level, camera, character, delta, force: input.hookFirePressed });
+    const aiming = input.hookAimHeld === true;
+    if (!aiming && this.hookAimActive) {
+      this.cachedCandidate = null;
+      this.candidateHold = 0;
+      this.recomputeTimer = 0;
+    }
+    this.hookAimActive = aiming;
 
-    this.lastCandidate = candidate
-      ? {
-          distance: Number(candidate.distance.toFixed(3)),
-          heightAbove: Number((candidate.heightAbovePlayer ?? 0).toFixed(3)),
-          mesh: candidate.meshName ?? null,
-          normalY: Number(candidate.normal.y.toFixed(3)),
+    // Grapple target search + reticle only run while holding the aim modifier.
+    // Firing (E / middle-click) still runs a one-shot full search on press.
+    if (!aiming) {
+      this.updateCursor({ candidate: null, delta });
+      if (input.hookFirePressed) {
+        const candidate = this.refreshCandidate({ level, camera, character, delta, force: true });
+        this.lastCandidate = candidate ? summarizeCandidate(candidate) : null;
+        if (canFireHook({ input, movement, character }) && candidate) {
+          this.fireHook({ character, candidate, movement, camera });
+          return this.overrideMovement({ movement, character, moving: false });
         }
-      : null;
+      }
+      return movement;
+    }
+
+    const candidate = this.refreshCandidate({
+      level,
+      camera,
+      character,
+      delta,
+      force: input.hookFirePressed,
+    });
+
+    this.lastCandidate = candidate ? summarizeCandidate(candidate) : null;
 
     this.updateCursor({ candidate, delta, camera, character });
 
@@ -209,6 +239,14 @@ export class HookSwingSystem {
 
     this.fireHook({ character, candidate, movement, camera });
     return this.overrideMovement({ movement, character, moving: false });
+  }
+
+  endHookPreview({ delta }) {
+    this.hookAimActive = false;
+    this.cachedCandidate = null;
+    this.candidateHold = 0;
+    this.recomputeTimer = 0;
+    this.updateCursor({ candidate: null, delta });
   }
 
   // Throttled candidate search: reuse the cached result between intervals so the
@@ -1064,6 +1102,15 @@ function createHookEntry({ anchor, distance, swingTangent, character }) {
     ropeDirection: new THREE.Vector3(0, -1, 0),
     socketPoint: new THREE.Vector3(),
     attachTime: performance.now() * 0.001,
+  };
+}
+
+function summarizeCandidate(candidate) {
+  return {
+    distance: Number(candidate.distance.toFixed(3)),
+    heightAbove: Number((candidate.heightAbovePlayer ?? 0).toFixed(3)),
+    mesh: candidate.meshName ?? null,
+    normalY: Number(candidate.normal.y.toFixed(3)),
   };
 }
 

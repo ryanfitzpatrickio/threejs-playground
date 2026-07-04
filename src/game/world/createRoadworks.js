@@ -18,10 +18,18 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { disposeObject3D } from '../utils/disposeObject3D.js';
 import { createRibbonRoadMaterial } from '../../three-addons/generators/CityGenerator.js';
+import { createRallySurfaceMaterial, loadRallyRutAtlas, loadRallySurfaceSet } from '../materials/rallySurfaceTextures.js';
 import { rainWetness, rainWind } from '../systems/weatherUniforms.js';
 import { BRIDGE_THRESH } from '../../world/worldMap/roadProfile.js';
 import { buildRibbonFrame, offsetPoint } from '../../world/worldMap/trackFrame.js';
 import { chunkGeometriesByGrid } from '../utils/chunkGeometryByGrid.js';
+import { surfaceForRoad } from '../../world/worldMap/roadSurface.js';
+import { getQualityPreset, getQualityLevel } from '../config/qualityPresets.js';
+
+// Parallax occlusion mapping for rally surfaces is quality-gated (ultra-only).
+// Read once at module load — the dirt material below is a build-once singleton,
+// matching the existing pattern for the other module-level road materials.
+const rallyParallaxOcclusion = getQualityPreset(getQualityLevel()).parallaxOcclusion ?? null;
 
 // Chunk size (metres) the merged ribbon geometry is split into so Three.js's
 // default per-mesh frustum culling can skip whole chunks that are off-screen —
@@ -30,6 +38,7 @@ import { chunkGeometriesByGrid } from '../utils/chunkGeometryByGrid.js';
 const RIBBON_CHUNK_SIZE = 128;
 
 const RIBBON_LIFT = 0.10;   // sit the ribbon cleanly above the graded terrain
+export const ROAD_SURFACE_LIFT = RIBBON_LIFT;
 const DECK_THICK = 0.6;
 // Vertical skirt dropped from each road edge so the ribbon reads as a solid slab
 // instead of a paper-thin plane. Top of the skirt is flush with the ribbon surface.
@@ -47,6 +56,8 @@ const PIER_HALF = 0.7;
 // attribute (world-space asphalt, so it still tiles seamlessly). Built once.
 const roadMaterial = createRibbonRoadMaterial({ rainWetness, rainWind });
 roadMaterial.side = THREE.DoubleSide;
+const dirtRoadMaterial = createRallySurfaceMaterial(loadRallySurfaceSet('dirt'), { rainWetness, rainWind, parallaxOcclusion: rallyParallaxOcclusion });
+dirtRoadMaterial.side = THREE.DoubleSide;
 const pierMaterial = new THREE.MeshStandardMaterial({ color: 0x555154, roughness: 0.9, metalness: 0.04 });
 const intersectionPaintMaterial = new THREE.MeshStandardMaterial({
   color: 0xd8d5ca,
@@ -57,15 +68,220 @@ const intersectionPaintMaterial = new THREE.MeshStandardMaterial({
   polygonOffsetUnits: -2,
 });
 
-export function createRoadworks({ profile, sampleHeight }) {
+// POM marches in tangent space, so the rally ribbon meshes need a `tangent`
+// attribute. THREE.computeTangents() requires an index, but chunkGeometriesByGrid
+// emits non-indexed triangle soup — add a trivial sequential index first (POM
+// reads the resulting per-vertex tangents; it does not need shared-vertex
+// indexing). One-time, static geometry, only when POM is enabled.
+function ensureRibbonTangents(geom) {
+  if (!geom.getAttribute('uv') || !geom.getAttribute('normal')) return;
+  if (!geom.index) {
+    const count = geom.attributes.position.count;
+    const idx = new Uint32Array(count);
+    for (let i = 0; i < count; i += 1) idx[i] = i;
+    geom.setIndex(new THREE.BufferAttribute(idx, 1));
+  }
+  geom.computeTangents();
+}
+
+function roadHash(roadIndex, sampleIndex, salt) {
+  const x = Math.sin((roadIndex + 1) * 91.17 + sampleIndex * 17.31 + salt * 11.7) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+// Lateral columns across a MUD road ribbon. The lean 2-vert edge strip can't hold
+// a rut between the wheels; interior columns give the mud material's vertex
+// displacement geometry to actually push down into a trough. Denser (was 42) so a
+// TIGHT ~0.4 m rut still lands on ~2 columns and reads as a crisp channel instead
+// of a smeared dip. Odd so a column lands on the centreline.
+const MUD_RIBBON_COLUMNS = 73;
+const ROAD_UV_LENGTH = 3.2;
+
+// Mud roads sit as a slightly-proud "soft mud" layer: the flat ribbon is lifted
+// this much extra, and the vertex sink pushes ruts back down THROUGH that lift so
+// a full-depth rut bottoms out around the underlying road/terrain height instead
+// of dipping BELOW it (which would let the light terrain poke through the trough).
+// Kept small: this lift is also how far a resting tyre "sinks" into the flat mud,
+// so too much buries the car to its axles.
+const MUD_RIBBON_LIFT_EXTRA = 0.18;
+// Metres a full-depth (normalized 1.0) rut displaces the ribbon down. Sized to the
+// available headroom (base lift + extra) so rut bottoms land at ~terrain height.
+export const MUD_VISUAL_SINK = RIBBON_LIFT + MUD_RIBBON_LIFT_EXTRA;
+
+// Soft mud shoulders. Other roads drop a VERTICAL side skirt (SIDE_DEPTH), which on
+// a mud road leaves a hard step where the proud ribbon (lifted the amounts above)
+// meets the lower surrounding terrain — a visible seam. Instead a mud edge rolls
+// off as a rounded berm: it flares outward while easing DOWN below the sampled
+// ground, so the lift folds into the terrain and reads as a mound of mud piled
+// along the road rather than a cut edge.
+const MUD_SHOULDER_WIDTH = 1.4;   // lateral roll-off distance (m) beyond the edge
+const MUD_SHOULDER_COLUMNS = 5;   // verts across the shoulder (col 0 = welded edge)
+const MUD_SHOULDER_TUCK = 0.22;   // metres the outer rim sinks below terrain
+
+// Build a rolled mud shoulder for one road edge. Column 0 welds exactly to the
+// ribbon's (jittered) outer edge vertex at the raised mud surface; the remaining
+// columns flare outward by MUD_SHOULDER_WIDTH while easing down (smoothstep, so the
+// top stays flat like a mound crest and the base rounds into the ground) to
+// MUD_SHOULDER_TUCK below the terrain sampled at each column, burying the seam.
+function buildMudShoulderGeometry({
+  frame, roadY, n, half, arc, roadIndex, edge, side, intersectionMask, sampleHeight,
+}) {
+  const S = MUD_SHOULDER_COLUMNS;
+  const positions = new Float32Array(n * S * 3);
+  const roadMark = new Float32Array(n * S * 3);
+  const roadIntersection = new Float32Array(n * S);
+  const uvs = new Float32Array(n * S * 2);
+  for (let i = 0; i < n; i += 1) {
+    const yTop = roadY[i] + RIBBON_LIFT + MUD_RIBBON_LIFT_EXTRA;
+    for (let k = 0; k < S; k += 1) {
+      const tk = k / (S - 1); // 0 at the road edge → 1 at the outer rim
+      const vi = i * S + k;
+      const o = vi * 3;
+      let px;
+      let pz;
+      let py;
+      if (k === 0) {
+        // Weld to the ribbon's outer edge vertex so there is no crack/overlap.
+        px = edge[i].x;
+        pz = edge[i].z;
+        py = yTop;
+      } else {
+        const p = offsetPoint(frame, i, side * (half + tk * MUD_SHOULDER_WIDTH));
+        px = p.x;
+        pz = p.z;
+        const ground = sampleHeight(px, pz) - MUD_SHOULDER_TUCK;
+        const s = tk * tk * (3 - 2 * tk); // smoothstep ease
+        py = yTop + (ground - yTop) * s;
+      }
+      positions[o] = px;
+      positions[o + 1] = py;
+      positions[o + 2] = pz;
+      roadMark[o] = side * half; // clamp marking coord to the edge (mud has no lanes)
+      roadMark[o + 1] = arc[i];
+      roadMark[o + 2] = half;
+      roadIntersection[vi] = intersectionMask?.[i] ?? 1;
+      uvs[vi * 2] = tk;
+      uvs[vi * 2 + 1] = arc[i] / ROAD_UV_LENGTH;
+    }
+  }
+  const indices = [];
+  for (let i = 0; i < n - 1; i += 1) {
+    for (let k = 0; k < S - 1; k += 1) {
+      const a = i * S + k;
+      const b = a + 1;
+      const c = (i + 1) * S + k;
+      const d = c + 1;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geom.setAttribute('roadMark', new THREE.BufferAttribute(roadMark, 3));
+  geom.setAttribute('roadIntersection', new THREE.BufferAttribute(roadIntersection, 1));
+  geom.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  geom.setIndex(indices);
+  geom.computeVertexNormals();
+  return geom;
+}
+
+// Build a laterally dense ribbon (C columns across) for a mud road, filling
+// edgeL/edgeR from the outer columns (skirts + colliders reuse them). Same
+// roadMark(signed lateral, arc, half-width) + roadIntersection attributes the
+// lean ribbon carries, so it merges into the same material.
+function buildDenseRibbonGeometry({ frame, roadY, n, half, arc, roadIndex, intersectionMask, edgeL, edgeR }) {
+  const C = MUD_RIBBON_COLUMNS;
+  const positions = new Float32Array(n * C * 3);
+  const roadMark = new Float32Array(n * C * 3);
+  const roadIntersection = new Float32Array(n * C);
+  const uvs = new Float32Array(n * C * 2);
+  for (let i = 0; i < n; i += 1) {
+    const y = roadY[i] + RIBBON_LIFT + MUD_RIBBON_LIFT_EXTRA;
+    const jitterL = (roadHash(roadIndex, i, 1) - 0.5) * 0.34;
+    const jitterR = (roadHash(roadIndex, i, 2) - 0.5) * 0.34;
+    for (let j = 0; j < C; j += 1) {
+      // +half (left edge) → -half (right edge); edges carry the loose jitter.
+      const t = j / (C - 1);
+      let lat = half - t * 2 * half;
+      if (j === 0) lat = half + jitterL;
+      else if (j === C - 1) lat = -half - jitterR;
+      const p = offsetPoint(frame, i, lat);
+      const vi = i * C + j;
+      const o = vi * 3;
+      positions[o] = p.x;
+      positions[o + 1] = y;
+      positions[o + 2] = p.z;
+      roadMark[o] = lat;
+      roadMark[o + 1] = arc[i];
+      roadMark[o + 2] = half;
+      roadIntersection[vi] = intersectionMask?.[i] ?? 1;
+      uvs[vi * 2] = t;
+      uvs[vi * 2 + 1] = arc[i] / ROAD_UV_LENGTH;
+      if (j === 0) edgeL[i] = { x: p.x, z: p.z };
+      else if (j === C - 1) edgeR[i] = { x: p.x, z: p.z };
+    }
+  }
+  const indices = [];
+  for (let i = 0; i < n - 1; i += 1) {
+    for (let j = 0; j < C - 1; j += 1) {
+      const a = i * C + j;
+      const b = a + 1;
+      const c = (i + 1) * C + j;
+      const d = c + 1;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geom.setAttribute('roadMark', new THREE.BufferAttribute(roadMark, 3));
+  geom.setAttribute('roadIntersection', new THREE.BufferAttribute(roadIntersection, 1));
+  geom.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  geom.setIndex(indices);
+  geom.computeVertexNormals();
+  return geom;
+}
+
+export function createRoadworks({ profile, sampleHeight, mudField = null }) {
   const group = new THREE.Group();
   group.name = 'Roadworks';
   group.userData.noCollision = true;
 
   const colliders = [];
   const ribbonGeoms = [];
+  const dirtRibbonGeoms = [];
+  const mudRibbonGeoms = [];
   const pierMatrices = [];
   const paintGeoms = [];
+
+  // Mud roads get their OWN lazily-built material (same dirt textures + the deform
+  // node), NOT the shared module-level `dirtRoadMaterial` — so world-mode dirt
+  // roads stay byte-for-byte unchanged (scope guarantee). Built once, only if a
+  // mud ribbon actually exists (rally maps with a mud road).
+  let mudRoadMaterial = null;
+  const getMudRoadMaterial = () => {
+    if (mudRoadMaterial) return mudRoadMaterial;
+    const tex = mudField?.ensureTexture?.() ?? null;
+    const footprint = mudField?.footprint ?? 0;
+    mudRoadMaterial = createRallySurfaceMaterial(loadRallySurfaceSet('dirt'), {
+      rainWetness,
+      rainWind,
+      deformTexture: tex,
+      orientationTexture: mudField?.orientationTexture ?? null,
+      deformTilesPerMetre: mudField?.deformTilesPerMetre ?? null,
+      rutAtlas: loadRallyRutAtlas('rut'),
+      heavyRutAtlas: loadRallyRutAtlas('rut-heavy'),
+      mudSurface: true,
+      parallaxOcclusion: rallyParallaxOcclusion,
+      // Real geometric ruts: displace the dense ribbon down by the deform depth,
+      // faded to zero beyond the (torus-wrapped) footprint around the car. Sized
+      // to the ribbon's lift headroom so ruts bottom out at ~terrain height.
+      deformSinkScale: MUD_VISUAL_SINK,
+      deformCenter: mudField?.centerUniform ?? null,
+      deformFadeNear: footprint * 0.35,
+      deformFadeFar: footprint * 0.47,
+    });
+    mudRoadMaterial.side = THREE.DoubleSide;
+    return mudRoadMaterial;
+  };
 
   // Scratch for building the pitched-deck orientation (avoids per-segment allocs).
   const _dir = new THREE.Vector3();
@@ -77,6 +293,12 @@ export function createRoadworks({ profile, sampleHeight }) {
   profile.roads.forEach((b, roadIndex) => {
     const { samples, n, half, roadY, terrainY, grounded } = b;
     const forceDeckCollider = b.road?.trackStyle === 'tunnel';
+    const surf = surfaceForRoad(b.road);
+    const isMud = surf === 'mud';
+    // Mud is a loose surface like dirt (edge jitter, matte PBR); it just also
+    // routes to the deform-textured mud material.
+    const isLoose = surf === 'dirt' || isMud;
+    const targetRibbonGeoms = isMud ? mudRibbonGeoms : (isLoose ? dirtRibbonGeoms : ribbonGeoms);
 
     // Per-sample ribbon edge points (left/right of centerline). Cached so both the
     // ribbon mesh and the deck colliders fit the *actual* rotated road footprint —
@@ -95,14 +317,26 @@ export function createRoadworks({ profile, sampleHeight }) {
 
     // Ribbon: a strip of left/right verts per sample. `roadMark` carries the
     // marking coordinate per vertex: (signed lateral metres, arc length, half-width).
+    // Mud roads instead build a laterally DENSE ribbon so the mud material can
+    // displace real ruts; edgeL/edgeR still come from its outer columns.
+    if (isMud) {
+      const geom = buildDenseRibbonGeometry({
+        frame, roadY, n, half, arc, roadIndex,
+        intersectionMask: b.intersectionMask, edgeL, edgeR,
+      });
+      targetRibbonGeoms.push(geom);
+    } else {
     const positions = new Float32Array(n * 2 * 3);
     const roadMark = new Float32Array(n * 2 * 3);
     const roadIntersection = new Float32Array(n * 2);
+    const uvs = new Float32Array(n * 2 * 2);
     for (let i = 0; i < n; i += 1) {
       const y = roadY[i] + RIBBON_LIFT;
       // u = +half → left edge, -half → right edge (matches the old perpendicular).
-      const eL = offsetPoint(frame, i, half);
-      const eR = offsetPoint(frame, i, -half);
+      const edgeJitterL = isLoose ? (roadHash(roadIndex, i, 1) - 0.5) * 0.34 : 0;
+      const edgeJitterR = isLoose ? (roadHash(roadIndex, i, 2) - 0.5) * 0.34 : 0;
+      const eL = offsetPoint(frame, i, half + edgeJitterL);
+      const eR = offsetPoint(frame, i, -half - edgeJitterR);
       const lx = eL.x;
       const lz = eL.z;
       const rx = eR.x;
@@ -125,6 +359,10 @@ export function createRoadworks({ profile, sampleHeight }) {
       roadMark[o + 5] = half;
       roadIntersection[i * 2] = b.intersectionMask?.[i] ?? 1;
       roadIntersection[i * 2 + 1] = b.intersectionMask?.[i] ?? 1;
+      uvs[i * 4] = 0;
+      uvs[i * 4 + 1] = arc[i] / ROAD_UV_LENGTH;
+      uvs[i * 4 + 2] = 1;
+      uvs[i * 4 + 3] = arc[i] / ROAD_UV_LENGTH;
     }
     const indices = [];
     for (let i = 0; i < n - 1; i += 1) {
@@ -135,10 +373,25 @@ export function createRoadworks({ profile, sampleHeight }) {
     geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geom.setAttribute('roadMark', new THREE.BufferAttribute(roadMark, 3));
     geom.setAttribute('roadIntersection', new THREE.BufferAttribute(roadIntersection, 1));
+    geom.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
     geom.setIndex(indices);
     geom.computeVertexNormals();
-    ribbonGeoms.push(geom);
+    targetRibbonGeoms.push(geom);
+    }
 
+    // Mud roads: the proud ribbon rolls off each edge as a rounded berm that tucks
+    // under the terrain (see buildMudShoulderGeometry) instead of a vertical skirt,
+    // so the lift seam folds into the ground rather than reading as a cut step.
+    if (isMud) {
+      targetRibbonGeoms.push(buildMudShoulderGeometry({
+        frame, roadY, n, half, arc, roadIndex, edge: edgeL, side: 1,
+        intersectionMask: b.intersectionMask, sampleHeight,
+      }));
+      targetRibbonGeoms.push(buildMudShoulderGeometry({
+        frame, roadY, n, half, arc, roadIndex, edge: edgeR, side: -1,
+        intersectionMask: b.intersectionMask, sampleHeight,
+      }));
+    } else {
     // Side skirts: a vertical strip dropped from each edge (left and right), top
     // flush with the ribbon surface, bottom SIDE_DEPTH below. Gives the road slab
     // visible thickness from the side.
@@ -148,6 +401,7 @@ export function createRoadworks({ profile, sampleHeight }) {
       // shader paints nothing on them; they still need the attribute to merge.
       const sideMark = new Float32Array(n * 2 * 3);
       const sideIntersection = new Float32Array(n * 2);
+      const sideUvs = new Float32Array(n * 2 * 2);
       const lat = edge === edgeL ? half : -half;
       for (let i = 0; i < n; i += 1) {
         const topYi = roadY[i] + RIBBON_LIFT;
@@ -166,6 +420,10 @@ export function createRoadworks({ profile, sampleHeight }) {
         sideMark[o + 5] = half;
         sideIntersection[i * 2] = 0;
         sideIntersection[i * 2 + 1] = 0;
+        sideUvs[i * 4] = arc[i] / ROAD_UV_LENGTH;
+        sideUvs[i * 4 + 1] = 0;
+        sideUvs[i * 4 + 2] = arc[i] / ROAD_UV_LENGTH;
+        sideUvs[i * 4 + 3] = 1;
       }
       const sideIdx = [];
       for (let i = 0; i < n - 1; i += 1) {
@@ -176,9 +434,11 @@ export function createRoadworks({ profile, sampleHeight }) {
       sideGeom.setAttribute('position', new THREE.BufferAttribute(sidePos, 3));
       sideGeom.setAttribute('roadMark', new THREE.BufferAttribute(sideMark, 3));
       sideGeom.setAttribute('roadIntersection', new THREE.BufferAttribute(sideIntersection, 1));
+      sideGeom.setAttribute('uv', new THREE.BufferAttribute(sideUvs, 2));
       sideGeom.setIndex(sideIdx);
       sideGeom.computeVertexNormals();
-      ribbonGeoms.push(sideGeom);
+      targetRibbonGeoms.push(sideGeom);
+    }
     }
 
     // Bridged spans → deck colliders + piers.
@@ -280,8 +540,14 @@ export function createRoadworks({ profile, sampleHeight }) {
   // guarantees a level driving surface while the leveled road profiles ease every
   // connected approach onto it.
   for (const intersection of profile.intersections ?? []) {
-    ribbonGeoms.push(createIntersectionSurface(intersection));
-    paintGeoms.push(...createIntersectionPaint(intersection));
+    // Junction pads use the shared dirt look for any loose (dirt/mud) approach —
+    // no deform on the flat pad in v1; paint only on paved approaches.
+    const loose = intersection.connections?.some((connection) => {
+      const s = surfaceForRoad(profile.roads[connection.roadIndex]?.road);
+      return s === 'dirt' || s === 'mud';
+    });
+    (loose ? dirtRibbonGeoms : ribbonGeoms).push(createIntersectionSurface(intersection));
+    if (!loose) paintGeoms.push(...createIntersectionPaint(intersection));
   }
 
   if (ribbonGeoms.length > 0) {
@@ -294,6 +560,36 @@ export function createRoadworks({ profile, sampleHeight }) {
       geom.computeBoundingSphere();
       const mesh = new THREE.Mesh(geom, roadMaterial);
       mesh.name = `Road Ribbon ${key}`;
+      mesh.receiveShadow = true;
+      mesh.castShadow = false;
+      group.add(mesh);
+    }
+  }
+
+  if (dirtRibbonGeoms.length > 0) {
+    const chunks = chunkGeometriesByGrid(dirtRibbonGeoms, RIBBON_CHUNK_SIZE);
+    for (const g of dirtRibbonGeoms) g.dispose();
+    for (const [key, geom] of chunks) {
+      geom.computeBoundingSphere();
+      // Only when enabled, so default (non-ultra) road geometry is unchanged.
+      if (rallyParallaxOcclusion?.enabled) ensureRibbonTangents(geom);
+      const mesh = new THREE.Mesh(geom, dirtRoadMaterial);
+      mesh.name = `Dirt Rally Road Ribbon ${key}`;
+      mesh.receiveShadow = true;
+      mesh.castShadow = false;
+      group.add(mesh);
+    }
+  }
+
+  if (mudRibbonGeoms.length > 0) {
+    const material = getMudRoadMaterial();
+    const chunks = chunkGeometriesByGrid(mudRibbonGeoms, RIBBON_CHUNK_SIZE);
+    for (const g of mudRibbonGeoms) g.dispose();
+    for (const [key, geom] of chunks) {
+      geom.computeBoundingSphere();
+      if (rallyParallaxOcclusion?.enabled) ensureRibbonTangents(geom);
+      const mesh = new THREE.Mesh(geom, material);
+      mesh.name = `Mud Rally Road Ribbon ${key}`;
       mesh.receiveShadow = true;
       mesh.castShadow = false;
       group.add(mesh);
@@ -363,6 +659,7 @@ function createIntersectionSurface(intersection) {
   const positions = new Float32Array(vertexCount * 3);
   const roadMark = new Float32Array(vertexCount * 3);
   const roadIntersection = new Float32Array(vertexCount);
+  const uvs = new Float32Array(vertexCount * 2);
   const y = intersection.y + RIBBON_LIFT + 0.008;
   positions[0] = intersection.x;
   positions[1] = y;
@@ -373,6 +670,8 @@ function createIntersectionSurface(intersection) {
     positions[offset] = intersection.x + Math.cos(angle) * intersection.radius;
     positions[offset + 1] = y;
     positions[offset + 2] = intersection.z + Math.sin(angle) * intersection.radius;
+    uvs[(i + 1) * 2] = Math.cos(angle) * 0.5 + 0.5;
+    uvs[(i + 1) * 2 + 1] = Math.sin(angle) * 0.5 + 0.5;
   }
   const indices = [];
   for (let i = 0; i < sides; i += 1) indices.push(0, ((i + 1) % sides) + 1, i + 1);
@@ -380,6 +679,7 @@ function createIntersectionSurface(intersection) {
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   geometry.setAttribute('roadMark', new THREE.BufferAttribute(roadMark, 3));
   geometry.setAttribute('roadIntersection', new THREE.BufferAttribute(roadIntersection, 1));
+  geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
   geometry.setIndex(indices);
   geometry.computeVertexNormals();
   return geometry;

@@ -3,7 +3,11 @@ import { createMaraModel } from '../characters/mara/createMaraModel.js';
 import { createMaraFbxModel } from '../characters/mara/createMaraFbxModel.js';
 import { createGreatSword } from '../characters/mara/createGreatSword.js';
 import { createWingsuit } from '../characters/mara/createWingsuit.js';
+import { createProceduralJacket } from '../characters/mara/createProceduralJacket.js';
+import { createMesh2MotionPlayerModel } from '../characters/player/createMesh2MotionPlayerModel.js';
+import { getPlayerModelProfile } from '../characters/player/playerModelProfiles.js';
 import { attachJacketCloth, disposeJacketCloth } from '../characters/mara/attachJacketCloth.js';
+import { isJacketExperimentsEnabled, resolveJacketMode } from '../characters/mara/jacketConfig.js';
 import { disposeObject3D } from '../utils/disposeObject3D.js';
 import { GAME_CONFIG } from '../config/gameConfig.js';
 
@@ -70,11 +74,28 @@ export class CharacterSystem {
   // Call this *after* the renderer is initialized (WebGPU required).
   async attachJacketCloth(renderer) {
     if (!this.character) return;
+    const jacketMode = resolveJacketMode();
+    if (jacketMode === 'off') {
+      return;
+    }
+    if (jacketMode === 'procedural') {
+      const rig = createProceduralJacket(this.character);
+      if (rig?.group) {
+        this.character.proceduralJacket = rig;
+        this.character.group.parent?.add(rig.group);
+      }
+      return;
+    }
+
     try {
       await attachJacketCloth(this.character, renderer);
     } catch (err) {
       console.warn('[jacket] attachJacketCloth failed:', err);
     }
+  }
+
+  updateProceduralJacket(delta) {
+    this.character?.proceduralJacket?.update?.(delta);
   }
 
   // Attach the great sword to the right hand bone. The glTF and FBX rigs both have
@@ -121,6 +142,14 @@ export class CharacterSystem {
       : null;
     return {
       source: this.character?.source ?? 'loading',
+      modelId: this.character?.modelId ?? null,
+      skeletonSource: this.character?.skeletonSource ?? null,
+      jacketMode: isJacketExperimentsEnabled()
+        ? (this.character?.proceduralJacket ? 'procedural' : (this.character?.jacketCloth ? 'cloth' : resolveJacketMode()))
+        : 'off',
+      clothEditor: isJacketExperimentsEnabled()
+        ? (this.character?.clothColliderEditor?.snapshot?.() ?? null)
+        : null,
       swordSource: sword?.source ?? null,
       sword: swordDebug,
       animation: this.character?.animationController?.snapshot?.() ?? null,
@@ -129,6 +158,16 @@ export class CharacterSystem {
       maxHealth: this.character?.maxHealth ?? 1,
       hitReaction: this.character?.hitReaction ?? null,
       sway: this.character?.sway ?? 0,
+      district: (() => {
+        try {
+          const p = this.character?.group?.position;
+          if (p && this.level && typeof this.level.getDistrictAt === 'function') {
+            const d = this.level.getDistrictAt(p.x, p.z);
+            return d ? (d.name || 'District') : null;
+          }
+        } catch {}
+        return null;
+      })(),
       speed: this.character?.speed ?? 0,
       verticalVelocity: this.character?.verticalVelocity ?? 0,
       collisionHeight: this.character?.collisionHeight ?? null,
@@ -247,6 +286,9 @@ export class CharacterSystem {
       this.character.wingsuitRig.group.removeFromParent();
     }
 
+    this.character.proceduralJacket?.dispose?.();
+    this.character.proceduralJacket = null;
+
     // Clean up jacket cloth sim + mesh
     try {
       disposeJacketCloth(this.character);
@@ -260,12 +302,33 @@ export class CharacterSystem {
 }
 
 async function loadBestMaraModel() {
+  const profile = getPlayerModelProfile(resolvePlayerModelId());
+
   try {
-    return await createMaraFbxModel();
+    if (profile.format === 'glb' && profile.skeletonSource === 'mesh2motion') {
+      return await createMesh2MotionPlayerModel(profile);
+    }
+
+    return await createMaraFbxModel({
+      modelUrl: profile.url,
+      modelId: profile.id,
+      skeletonSource: profile.skeletonSource,
+    });
   } catch (error) {
-    console.warn('Falling back to procedural Mara model after model load failed.', error);
+    console.warn(`Falling back to procedural Mara model after ${profile.id} failed to load.`, error);
     return createMaraModel();
   }
+}
+
+function resolvePlayerModelId() {
+  if (typeof window !== 'undefined') {
+    const requested = new URLSearchParams(window.location.search).get('playerModel');
+    if (requested) {
+      return requested;
+    }
+  }
+
+  return GAME_CONFIG.character.playerModel;
 }
 
 function nextFrame() {

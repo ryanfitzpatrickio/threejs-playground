@@ -6,7 +6,7 @@ import {
 	Shape
 } from 'three/webgpu';
 
-import { cameraPosition, color, float, floor, Fn, fract, fwidth, If, mix, mx_noise_float, normalView, normalWorldGeometry, positionView, positionWorld, sin, smoothstep } from 'three/tsl';
+import { color, float, floor, Fn, fract, fwidth, If, mix, mx_noise_float, normalView, normalWorldGeometry, positionView, positionWorld, sin, smoothstep } from 'three/tsl';
 
 /**
  * Generates the raised sidewalk for a city's blocks: per block, a rounded-corner concrete
@@ -200,7 +200,7 @@ function createSidewalkMaterial() {
 	// and expansion joints scored on a grid both ways
 
 	const p = positionWorld;
-	const detail = smoothstep( 200, 18, p.distance( cameraPosition ) );
+	const detail = smoothstep( 200, 18, positionView.z.negate() );
 
 	const panel = 1.5; // flag size ( ~5 ft NYC sidewalk flags )
 	const panelHash = fract( sin( floor( p.x.div( panel ) ).mul( 127.1 ).add( floor( p.z.div( panel ) ).mul( 311.7 ) ) ).mul( 43758.5453 ) );
@@ -231,7 +231,7 @@ function createCurbMaterial() {
 	// flags — with a fine speckle, segment joints every ~1.5 m and a grimier road-facing face
 
 	const p = positionWorld;
-	const detail = smoothstep( 200, 18, p.distance( cameraPosition ) );
+	const detail = smoothstep( 200, 18, positionView.z.negate() );
 
 	const tone = mx_noise_float( p.mul( 0.6 ) ).mul( 0.5 ).add( 0.5 );
 	const stone = mix( color( 0x46463f ), color( 0x5c5c54 ), tone ).add( detailNoise( p, detail, 18, 0.05 ).mul( detail ) ); // dark cool granite, fine speckle

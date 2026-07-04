@@ -131,6 +131,9 @@ MIT — see [LICENSE](LICENSE).
 
 ## Development Notes
 
+- Player models are selected by source-skeleton profile. The default is `mesh2motion`; use `?playerModel=mixamo` or `?playerModel=mesh2motion` to test either rig and its compatible animation routes.
+- Use the in-game **Cloth** button to fit bone-attached collider spheres against the live jacket simulation. Profiles autosave per player model and can be imported/exported as JSON.
+- Jacket setup uses two independent weight systems. Mesh2Motion skeletal weights are transferred automatically from the fitted jacket to the nearest player-body triangles; `clothWeight` uses `0` for simulated vertices and `1` for vertices pinned to skinning. The runtime generates a bone-aware mask when that attribute is absent.
 - Editor data (`data/dreamfall.db`, autosaves, your maps) lives in `data/` and is gitignored.
 - The repository contains a large number of animation and model assets. Initial clone may take a while.
 - Many diagnostic scripts live under `scripts/`. Most are for development/debugging specific systems.

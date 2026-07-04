@@ -12,6 +12,7 @@
  */
 
 import { buildRoadIntersections } from './roadIntersections.js';
+import { surfaceForRoad } from './roadSurface.js';
 
 const SAMPLE_SPACING = 2;     // metres between centerline samples
 const SMOOTH_RADIUS = 16;     // moving-average half-window (samples) → ~64 m window
@@ -35,6 +36,14 @@ export const TUNNEL_PORTAL_LENGTH = 14;
 // open portal cutting, so the headwall stays visible through the full portal zone).
 const TUNNEL_PORTAL_BURY_BLEND = 8;
 
+// Uniform Catmull-Rom basis, one axis. Shared by the arc-length probe and the
+// emit loop so they can't drift.
+function crAxis(a, b, c, d, t, t2, t3) {
+  return 0.5 * ((2 * b) + (-a + c) * t +
+    (2 * a - 5 * b + 4 * c - d) * t2 +
+    (-a + 3 * b - 3 * c + d) * t3);
+}
+
 // Centripetal Catmull-Rom through control points (clamped endpoints).
 function catmull(points, out, spacing = SAMPLE_SPACING) {
   const n = points.length;
@@ -42,18 +51,26 @@ function catmull(points, out, spacing = SAMPLE_SPACING) {
   const P = (i) => points[Math.max(0, Math.min(n - 1, i))];
   for (let i = 0; i < n - 1; i += 1) {
     const p0 = P(i - 1), p1 = P(i), p2 = P(i + 1), p3 = P(i + 2);
-    const segLen = Math.hypot(p2.x - p1.x, p2.z - p1.z);
-    const steps = Math.max(1, Math.round(segLen / spacing));
+    // Step by the curve's TRUE arc length, not the straight chord between control
+    // points: on a tight bend the spline bulges well past its chord, so a
+    // chord-based count under-tessellates exactly where facets show most. Probe
+    // the segment coarsely, sum the chords, then divide by the target spacing.
+    let arc = 0, px = p1.x, pz = p1.z;
+    const PROBE = 8;
+    for (let k = 1; k <= PROBE; k += 1) {
+      const t = k / PROBE, t2 = t * t, t3 = t2 * t;
+      const x = crAxis(p0.x, p1.x, p2.x, p3.x, t, t2, t3);
+      const z = crAxis(p0.z, p1.z, p2.z, p3.z, t, t2, t3);
+      arc += Math.hypot(x - px, z - pz);
+      px = x; pz = z;
+    }
+    const steps = Math.max(1, Math.round(arc / spacing));
     for (let s = 0; s < steps; s += 1) {
-      const t = s / steps;
-      const t2 = t * t, t3 = t2 * t;
-      const x = 0.5 * ((2 * p1.x) + (-p0.x + p2.x) * t +
-        (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 +
-        (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3);
-      const z = 0.5 * ((2 * p1.z) + (-p0.z + p2.z) * t +
-        (2 * p0.z - 5 * p1.z + 4 * p2.z - p3.z) * t2 +
-        (-p0.z + 3 * p1.z - 3 * p2.z + p3.z) * t3);
-      out.push({ x, z });
+      const t = s / steps, t2 = t * t, t3 = t2 * t;
+      out.push({
+        x: crAxis(p0.x, p1.x, p2.x, p3.x, t, t2, t3),
+        z: crAxis(p0.z, p1.z, p2.z, p3.z, t, t2, t3),
+      });
     }
   }
   out.push({ x: points[n - 1].x, z: points[n - 1].z });
@@ -102,13 +119,19 @@ export function buildRoadProfile({
   isCity = () => false,
   smoothRadius = SMOOTH_RADIUS,
   maxGrade = MAX_GRADE,
+  // Metres between centerline samples. Finer spacing → the ribbon follows the
+  // spline (and terrain) more smoothly on curves at the cost of more verts. The
+  // vertical smoothing window (`smoothRadius`) is counted in SAMPLES, so a caller
+  // that halves this should roughly double smoothRadius to keep the same
+  // metre-window, or the road will hug terrain bumps more tightly.
+  sampleSpacing = SAMPLE_SPACING,
 }) {
   const built = [];
 
   for (const road of roads) {
     if (!road?.points || road.points.length < 2) continue;
     const samples = [];
-    catmull(road.points, samples);
+    catmull(road.points, samples, sampleSpacing);
     const n = samples.length;
     if (n < 2) continue;
 
@@ -272,7 +295,16 @@ export function buildRoadProfile({
       if (w <= 0 || w < bestWeight || (w === bestWeight && d >= bestDist)) continue;
       bestWeight = w;
       bestDist = d;
-      best = { roadY: intersection.y, grounded: true, half: intersection.radius, tunnel: false, portalDist: Infinity, withinRoad: true };
+      const connectedRoad = built[intersection.connections?.[0]?.roadIndex]?.road;
+      best = {
+        roadY: intersection.y,
+        grounded: true,
+        half: intersection.radius,
+        tunnel: false,
+        portalDist: Infinity,
+        withinRoad: true,
+        surface: surfaceForRoad(connectedRoad),
+      };
     }
 
     for (let ring = 0; ring <= cellRange; ring += 1) {
@@ -321,6 +353,7 @@ export function buildRoadProfile({
                 tunnel: b.road?.trackStyle === 'tunnel',
                 portalDist,
                 withinRoad: rawT >= -1e-6 && rawT <= 1 + 1e-6,
+                surface: surfaceForRoad(b.road),
               };
             }
           }
@@ -335,6 +368,7 @@ export function buildRoadProfile({
       tunnel: !!best.tunnel,
       withinRoad: best.withinRoad !== false,
       portalDist: best.portalDist ?? Infinity,
+      surface: best.surface ?? 'asphalt',
       weight: Math.max(0, Math.min(1, bestWeight)),
     };
   };
@@ -382,4 +416,54 @@ export function applyRoadCorridorHeight(h, corridor, bridgeClearance) {
     return h * (1 - corridor.weight) + corridor.roadY * corridor.weight;
   }
   return Math.min(h, corridor.roadY - bridgeClearance);
+}
+
+/**
+ * Nearest drivable point on any authored road centerline (world XZ).
+ * Returns { x, z, y, rotationY, distance } or null when nothing is in range.
+ */
+export function findNearestRoadPoint(profile, x, z, { maxDistance = 160 } = {}) {
+  const built = profile?.roads;
+  if (!built?.length) return null;
+
+  const maxDistSq = maxDistance * maxDistance;
+  let best = null;
+
+  for (const road of built) {
+    const { samples, n, roadY } = road;
+    if (!samples || n < 2) continue;
+    for (let seg = 0; seg < n - 1; seg += 1) {
+      const a = samples[seg];
+      const c = samples[seg + 1];
+      const abx = c.x - a.x;
+      const abz = c.z - a.z;
+      const lenSq = abx * abx + abz * abz;
+      if (lenSq < 1e-6) continue;
+      const t = Math.max(0, Math.min(1, ((x - a.x) * abx + (z - a.z) * abz) / lenSq));
+      const px = a.x + abx * t;
+      const pz = a.z + abz * t;
+      const dx = x - px;
+      const dz = z - pz;
+      const distSq = dx * dx + dz * dz;
+      if (distSq > maxDistSq) continue;
+      if (!best || distSq < best.distSq) {
+        best = {
+          x: px,
+          z: pz,
+          y: roadY[seg] + (roadY[seg + 1] - roadY[seg]) * t,
+          distSq,
+          rotationY: Math.atan2(-abx, -abz),
+        };
+      }
+    }
+  }
+
+  if (!best) return null;
+  return {
+    x: best.x,
+    z: best.z,
+    y: best.y,
+    rotationY: best.rotationY,
+    distance: Math.sqrt(best.distSq),
+  };
 }

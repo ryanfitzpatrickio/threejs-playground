@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { color, floor, fract, mix, positionWorld, sin, step, varying } from 'three/tsl';
-import { CityGenerator, createRoadMaterial } from '../../three-addons/generators/CityGenerator.js';
+import { CityGenerator, createRoadMaterial, quantizeCarPaint } from '../../three-addons/generators/CityGenerator.js';
 import { rainWetness, rainWind } from '../systems/weatherUniforms.js';
 import { createSkyscraperMaterial } from '../../three-addons/generators/city/SkyscraperGenerator.js';
 import { SidewalkGenerator } from '../../three-addons/generators/city/SidewalkGenerator.js';
@@ -114,6 +114,8 @@ export function buildSkeletonColliderData({
   cityStyle = 'downtown',
   cityZone = null,
   chunkKey = '0:0',
+  chunkX = 0,
+  chunkZ = 0,
   originX = 0,
   originZ = 0,
   furniture = null,
@@ -140,7 +142,9 @@ export function buildSkeletonColliderData({
       minZ: originZ - roadD * 0.5,
       maxZ: originZ + roadD * 0.5,
     }, chunkKey, 'Generator City Road Collider'),
-    ...layoutData.sidewalks.filter((s) => insideZone(s.collider)).map((s) => s.collider),
+    ...layoutData.sidewalks
+      .filter((s) => shouldKeepSidewalk(cityZone, s.collider, chunkX, chunkZ))
+      .map((s) => s.collider),
     ...layoutData.buildings.filter((b) => insideZone(b.collider)).flatMap((b) => [b.collider, createRoofFloorCollider(b.collider)]),
   ];
 
@@ -159,9 +163,10 @@ export function createGeneratorCityLevel({
   includeDebugOverlay = true,
   furniture = null,
   extractTraversal = true,
+  castShadows = true,
 } = {}) {
   if (cityStyle !== 'downtown') {
-    return buildLowRiseDistrict({ seed, cityStyle, cityZone, chunkKey, chunkX, chunkZ, originX, originZ, geometry: true, includeDebugOverlay, extractTraversal });
+    return buildLowRiseDistrict({ seed, cityStyle, cityZone, chunkKey, chunkX, chunkZ, originX, originZ, geometry: true, includeDebugOverlay, extractTraversal, castShadows });
   }
   const city = new CityGenerator({ ...CITY_PARAMETERS, seed, ...(furniture ? { furniture } : {}) });
   const group = new THREE.Group();
@@ -209,7 +214,7 @@ export function createGeneratorCityLevel({
     cityGroup.getObjectByName('StreetFurniture')?.removeFromParent();
     city.furniturePlacements.cars = [];
   } else {
-    tagFurnitureMeshes(cityGroup);
+    tagFurnitureMeshes(cityGroup, castShadows);
   }
 
   const layoutData = buildCollisionLayout(city.layout, seed, city.parameters, {
@@ -235,14 +240,11 @@ export function createGeneratorCityLevel({
     keptBuildings.push(building);
     buildingMeshes.push(allBuildingMeshes[index]);
   });
-  const keptSidewalks = cityZone
-    ? layoutData.sidewalks.filter((sidewalk) => rectInsideZone(cityZone, sidewalk.collider))
-    : layoutData.sidewalks;
-  if (cityZone) {
-    // Slab/curb instances were placed one per block in the same (bx,bz) order
-    // as layoutData.sidewalks — compact them down to the in-zone blocks.
-    filterSidewalkInstances(cityGroup, layoutData.sidewalks.map((sidewalk) => rectInsideZone(cityZone, sidewalk.collider)));
-  }
+  const sidewalkKeep = layoutData.sidewalks.map((sidewalk) => shouldKeepSidewalk(cityZone, sidewalk.collider, chunkX, chunkZ));
+  const keptSidewalks = layoutData.sidewalks.filter((_, index) => sidewalkKeep[index]);
+  // Slab/curb instances were placed one per block in the same (bx,bz) order
+  // as layoutData.sidewalks — compact them down to owned, in-zone blocks.
+  filterSidewalkInstances(cityGroup, sidewalkKeep);
   for (const mesh of buildingMeshes) mesh.userData.materialRole = 'buildingMaterial';
   const colliders = [
     ...createRoadSurfaceColliders(cityZone, {
@@ -274,7 +276,7 @@ export function createGeneratorCityLevel({
   // for streaming, so main thread never does the heavy per-vertex work). Now merge
   // the building VISUALS into one mesh — they share one material — to cut ~24 draw
   // calls per chunk down to 1. Falls back to individual meshes if the merge fails.
-  mergeBuildingVisuals(cityGroup, buildingMeshes, buildingMaterial, chunkKey);
+  mergeBuildingVisuals(cityGroup, buildingMeshes, buildingMaterial, chunkKey, castShadows);
 
   const traversalBuildings = keptBuildings;
   const traversal = extractTraversal
@@ -321,6 +323,9 @@ export function serializeGeneratorCityChunk(chunk) {
   chunk.group.updateMatrixWorld(true);
   chunk.group.traverse((object) => {
     if (!object.isMesh || !object.geometry?.isBufferGeometry) {
+      return;
+    }
+    if (object.isInstancedMesh && object.count <= 0) {
       return;
     }
 
@@ -408,6 +413,10 @@ export function createGeneratorCityChunkFromPayload(payload) {
   };
 
   for (const meshPayload of payload.meshes ?? []) {
+    if (meshPayload.instanced && meshPayload.count <= 0) {
+      continue;
+    }
+
     const geometry = deserializeGeometry(meshPayload.geometry);
     const material = materialForMeshPayload(meshPayload, materials);
 
@@ -715,7 +724,7 @@ function collectBuildingMeshes(cityGroup) {
 // separately (copied into collider.physicsMesh) and are unaffected. If the
 // merge throws (e.g. mismatched vertex attributes), we keep the individual
 // meshes — no regression, just no win.
-function mergeBuildingVisuals(cityGroup, buildingMeshes, material, chunkKey) {
+function mergeBuildingVisuals(cityGroup, buildingMeshes, material, chunkKey, castShadows = true) {
   if (buildingMeshes.length < 2) {
     return;
   }
@@ -760,7 +769,7 @@ function mergeBuildingVisuals(cityGroup, buildingMeshes, material, chunkKey) {
   const mergedMesh = new THREE.Mesh(merged, material);
   mergedMesh.name = `Merged Skyscrapers ${chunkKey}`;
   mergedMesh.userData.materialRole = 'buildingMaterial';
-  mergedMesh.castShadow = true;
+  mergedMesh.castShadow = castShadows;
   mergedMesh.receiveShadow = true;
   cityGroup.add(mergedMesh);
 }
@@ -817,12 +826,15 @@ const FURNITURE_MATERIAL_FACTORIES = {
 
 function getFurnitureMaterial(payload) {
   const role = payload.materialRole;
+  const paint = role === 'furnitureCar'
+    ? quantizeCarPaint(payload.furniturePaint ?? 0x74787c)
+    : null;
   const key = role === 'furnitureCar'
-    ? `${role}:${payload.furnitureBodyType}:${payload.furniturePaint}`
+    ? `${role}:${payload.furnitureBodyType ?? 'sedan'}:${paint}`
     : role;
   if (!furnitureMaterials.has(key)) {
     const material = role === 'furnitureCar'
-      ? createCarMaterialForType(payload.furniturePaint ?? 0x74787c, payload.furnitureBodyType ?? 'sedan')
+      ? createCarMaterialForType(paint, payload.furnitureBodyType ?? 'sedan')
       : FURNITURE_MATERIAL_FACTORIES[role]?.();
     if (!material) return getSidewalkMaterials().slab;
     furnitureMaterials.set(key, material);
@@ -831,7 +843,7 @@ function getFurnitureMaterial(payload) {
   return furnitureMaterials.get(key);
 }
 
-function tagFurnitureMeshes(cityGroup) {
+function tagFurnitureMeshes(cityGroup, castShadows = true) {
   const furniture = cityGroup.getObjectByName('StreetFurniture');
   furniture?.traverse((mesh) => {
     if (!mesh.isMesh) return;
@@ -839,7 +851,7 @@ function tagFurnitureMeshes(cityGroup) {
     mesh.userData.materialRole = `furniture${mesh.name.replace(/[^A-Za-z0-9]/g, '')}`;
     mesh.layers.set(CITY_FURNITURE_LAYER);
     // Only large furniture makes a useful clipmap-shadow contribution.
-    mesh.castShadow = mesh.name === 'Car' || mesh.name === 'StreetTrees';
+    mesh.castShadow = castShadows && (mesh.name === 'Car' || mesh.name === 'StreetTrees');
   });
 }
 
@@ -892,6 +904,48 @@ function assertTowerCollisionLockstep(towers, buildings, originX, originZ) {
 // Compact the slab/curb InstancedMeshes down to the blocks whose keep flag is
 // set (flags are in the generator's (bx,bz) block order, one instance each).
 const _sidewalkInstanceMatrix = new THREE.Matrix4();
+
+function sidewalkBelongsToChunk(collider, chunkX, chunkZ, strideX, strideZ) {
+  const centerX = (collider.minX + collider.maxX) * 0.5;
+  const centerZ = (collider.minZ + collider.maxZ) * 0.5;
+  return Math.round(centerX / strideX) === chunkX && Math.round(centerZ / strideZ) === chunkZ;
+}
+
+// Full-block instanced sidewalks cannot be width-trimmed like clipped asphalt.
+// Reject blocks unless essentially their entire footprint lies inside the zone
+// (same conservative rule as clippedSurfaceCells for roads). Inset slightly so
+// the curb ring (which reaches the block bbox) does not bleed past polygon edges.
+function sidewalkKeepInZone(zone, collider) {
+  if (!zone) return true;
+  const margin = 0.15;
+  const test = {
+    minX: collider.minX + margin,
+    maxX: collider.maxX - margin,
+    minZ: collider.minZ + margin,
+    maxZ: collider.maxZ - margin,
+  };
+  if (test.maxX <= test.minX || test.maxZ <= test.minZ) return false;
+  if (zone.shape === 'rect') {
+    return rectInsideZone(zone, test);
+  }
+  const cells = clippedSurfaceCells(zone, test);
+  if (cells.length === 0) return false;
+  const blockArea = (test.maxX - test.minX) * (test.maxZ - test.minZ);
+  let clippedArea = 0;
+  for (const cell of cells) {
+    clippedArea += (cell.maxX - cell.minX) * (cell.maxZ - cell.minZ);
+  }
+  return clippedArea >= blockArea * 0.98;
+}
+
+function shouldKeepSidewalk(cityZone, collider, chunkX, chunkZ) {
+  const stride = getCityStride();
+  if (!sidewalkBelongsToChunk(collider, chunkX, chunkZ, stride.x, stride.z)) {
+    return false;
+  }
+  return sidewalkKeepInZone(cityZone, collider);
+}
+
 function filterSidewalkInstances(cityGroup, keep) {
   const sidewalkGroup = cityGroup.getObjectByName('Sidewalk');
 
@@ -899,7 +953,7 @@ function filterSidewalkInstances(cityGroup, keep) {
     return;
   }
 
-  for (const mesh of sidewalkGroup.children) {
+  for (const mesh of sidewalkGroup.children.slice()) {
     if (!mesh.isInstancedMesh) continue;
     let write = 0;
     for (let read = 0; read < mesh.count; read += 1) {
@@ -910,13 +964,18 @@ function filterSidewalkInstances(cityGroup, keep) {
       }
       write += 1;
     }
+    if (write === 0) {
+      mesh.removeFromParent();
+      continue;
+    }
+
     mesh.count = write;
     mesh.instanceMatrix.needsUpdate = true;
     mesh.computeBoundingSphere();
   }
 }
 
-function buildLowRiseDistrict({ seed, cityStyle, cityZone = null, chunkKey, chunkX = 0, chunkZ = 0, originX, originZ, geometry, includeDebugOverlay = true, extractTraversal = true }) {
+function buildLowRiseDistrict({ seed, cityStyle, cityZone = null, chunkKey, chunkX = 0, chunkZ = 0, originX, originZ, geometry, includeDebugOverlay = true, extractTraversal = true, castShadows = true }) {
   const city = new CityGenerator({ ...CITY_PARAMETERS, seed });
   const layout = city.layout;
   const floorW = layout.cityW + layout.street;
@@ -1023,7 +1082,7 @@ function buildLowRiseDistrict({ seed, cityStyle, cityZone = null, chunkKey, chun
       const mesh = new THREE.Mesh(merged, materials[role] ?? materials.concrete);
       mesh.name = `${cityStyle} ${role} ${chunkKey}`;
       mesh.userData.materialRole = role;
-      mesh.castShadow = !['asphalt', 'parking', 'lawn', 'concrete', 'marking'].includes(role);
+      mesh.castShadow = castShadows && !['asphalt', 'parking', 'lawn', 'concrete', 'marking'].includes(role);
       mesh.receiveShadow = true;
       group.add(mesh);
     }
@@ -1093,6 +1152,7 @@ function createRoadSurfaceColliders(zone, rect, chunkKey, namePrefix) {
     width: cell.maxX - cell.minX,
     depth: cell.maxZ - cell.minZ,
     vaultable: false,
+    surface: 'asphalt',
     chunkKey,
   }));
 }

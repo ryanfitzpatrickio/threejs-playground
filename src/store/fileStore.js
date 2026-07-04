@@ -106,7 +106,11 @@ export function readState() {
 }
 
 export function writeState(patch) {
-  state = { ...state, ...patch };
+  state = { ...state };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) delete state[key];
+    else state[key] = value;
+  }
   notifyStoreRevision();
   queuePersist('state', '_', state, { debounce: false });
 }
@@ -467,6 +471,9 @@ export async function initFileStore() {
 
   await loadDevStore();
   initialized = true;
+
+  const { ensureBuiltInRallyScene } = await import('../world/worldMap/worldMapScenes.js');
+  ensureBuiltInRallyScene();
 
   if (typeof window !== 'undefined' && !listenersRegistered) {
     listenersRegistered = true;

@@ -53,18 +53,14 @@ async function verifyViewport({ name, viewport, deviceScaleFactor, isMobile }) {
   );
   await page.waitForFunction(() => {
     const character = globalThis.__DREAMFALL_DEBUG__?.snapshot?.()?.character;
-    return (
-      (character?.source === 'fbx' || character?.source === 'glb') &&
-      character.animation?.availableStates?.includes('walk') &&
-      character.animation?.availableStates?.includes('strafeLeft') &&
-      character.animation?.availableStates?.includes('turnRight') &&
-      character.animation?.availableStates?.includes('jumpMoving') &&
-      character.animation?.availableStates?.includes('freeFall') &&
-      character.animation?.availableStates?.includes('land') &&
-      character.animation?.availableStates?.includes('freeHang') &&
-      character.animation?.availableStates?.includes('bracedHang') &&
-      character.animation?.availableStates?.includes('freeHangClimb')
-    );
+    if (character?.source !== 'fbx' && character?.source !== 'glb') return false;
+
+    const available = character.animation?.availableStates ?? [];
+    const required = character.skeletonSource === 'mesh2motion'
+      ? ['idle', 'walk', 'jog', 'sprint', 'brace', 'jumpMoving', 'freeFall', 'land']
+      : ['walk', 'strafeLeft', 'turnRight', 'jumpMoving', 'freeFall', 'land', 'freeHang', 'bracedHang', 'freeHangClimb'];
+
+    return required.every((state) => available.includes(state));
   });
   await page.waitForFunction(() => {
     const snapshot = globalThis.__DREAMFALL_DEBUG__?.snapshot?.();

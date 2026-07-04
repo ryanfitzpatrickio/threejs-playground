@@ -42,6 +42,7 @@ const CONTROL_SECTIONS = [
     title: 'Abilities',
     items: [
       ['T', 'Telekinesis (hold to grab & orbit, release to throw)'],
+      ['Hold Alt', 'Show grapple target (raycast preview)'],
       ['E or middle-click', 'Fire grappling hook (double-tap E to yank with 2 hooks)'],
       ['Space (while hooked)', 'Release hook'],
       ['F', 'Mount / dismount horse'],

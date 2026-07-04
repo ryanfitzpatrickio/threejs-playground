@@ -416,6 +416,7 @@ export function collectBlueprintRoads(worldMap) {
         // blueprint renders as a bare plain road once placed in the world — the
         // field survives inside the blueprint project but was silently dropped here.
         trackStyle: typeof road.trackStyle === 'string' && road.trackStyle ? road.trackStyle : null,
+        surface: typeof road.surface === 'string' && road.surface ? road.surface : null,
         // Fixed elevations are currently world-space, matching world-map roads.
         elevation: Number.isFinite(Number(road.elevation)) && road.elevation !== null
           ? Number(road.elevation)

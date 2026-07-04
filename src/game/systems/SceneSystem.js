@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { CachedClipmapShadowNode } from '../render/CachedClipmapShadowNode.js';
 import { getRecommendedSceneFog } from '../config/qualityPresets.js';
-import { SkySystem } from './SkySystem.js';
+import { getSkyDaylightFactor, SkySystem, isDirectionalSunDaytime } from './SkySystem.js';
 import { CITY_FURNITURE_LAYER } from '../render/renderLayers.js';
 
 // Fixed offset from the shadow target to the sun. Keeping this constant while we
@@ -13,6 +13,13 @@ const SUN_INTENSITY = 3.8;
 const DAY_BACKGROUND = 0xdfeeea;
 const CLUSTERED_BACKGROUND = 0x07111a;
 const DAY_FOG = 0xdfeeea;
+const WEATHER_FOG = Object.freeze({
+  clear: 0x9eb4ba,
+  fog: 0x98a6a8,
+  overcast: 0x819195,
+  rain: 0x697b80,
+});
+const NIGHT_FOG = 0x08121a;
 const CLUSTERED_FOG = 0x07111a;
 const DEFAULT_LIGHTING_MODE = 'hemisphere';
 const NIGHT_HEMISPHERE_INTENSITY = 0.28;
@@ -38,6 +45,9 @@ export class SceneSystem {
       ? { near: qualityPreset.sceneFogNear ?? 82, far: qualityPreset.sceneFogFar }
       : getRecommendedSceneFog(qualityPreset);
     this._sceneFog = new THREE.Fog(DAY_FOG, fog.near, fog.far);
+    this.weather = qualityPreset.environment?.weather ?? 'clear';
+    this._fogColorScratch = new THREE.Color();
+    this._fogDayColorScratch = new THREE.Color();
     this.scene.fog = qualityPreset.environment?.weather === 'fog' ? this._sceneFog : null;
 
     const hemisphere = new THREE.HemisphereLight(0xf6fbf5, 0x7f7664, HEMISPHERE_INTENSITY);
@@ -76,15 +86,20 @@ export class SceneSystem {
     // Cached clipmap directional shadows: concentric texel-snapped levels around the
     // camera out to ~km, replacing the short follow-frustum so distant terrain casts
     // shadows. Camera is set later (after CameraSystem init) via setShadowCamera.
-    this.clipmapShadow = new CachedClipmapShadowNode(sun, {
-      mapSize: shadowSize,
-      firstRadius: 12,
-      scaleFactor: 2.6,
-      maxDistance: 1200,
-      dynamicLevels: 1,
-      updateBudget: 1,
-      ...(qualityPreset.shadowClipmap ?? {}),
-    }).attach();
+    // Low disables this entirely — each active level can re-render the whole city
+    // into a shadow map every frame and was the main source of ~45 ms hitches.
+    const clipmapConfig = qualityPreset.shadowClipmap ?? {};
+    this.clipmapShadow = clipmapConfig.enabled === false
+      ? null
+      : new CachedClipmapShadowNode(sun, {
+        mapSize: shadowSize,
+        firstRadius: 12,
+        scaleFactor: 2.6,
+        maxDistance: 1200,
+        dynamicLevels: 1,
+        updateBudget: 1,
+        ...clipmapConfig,
+      }).attach();
 
     this.hemisphere = hemisphere;
     this.sun = sun;
@@ -93,6 +108,13 @@ export class SceneSystem {
       hemisphere,
       qualityPreset,
     });
+    this._sunUserEnabled = true;
+    this.skySystem.onTimeOfDayChanged = (timeOfDay) => {
+      this.syncSunVisibilityForTimeOfDay(timeOfDay);
+      this.syncFogColorForTimeOfDay(timeOfDay);
+    };
+    this.syncSunVisibilityForTimeOfDay(this.skySystem.timeOfDay);
+    this.syncFogColorForTimeOfDay(this.skySystem.timeOfDay);
     this.lightingMode = DEFAULT_LIGHTING_MODE;
     this.applyLightingMode();
     this.shadowFrustumWidth = Math.abs(sun.shadow.camera.left) + Math.abs(sun.shadow.camera.right);
@@ -193,7 +215,7 @@ export class SceneSystem {
       this.skySystem?.setVisible(true);
       this.scene.background = null;
       this.skySystem?.setTimeOfDay(this.skySystem.timeOfDay);
-      this.scene.fog?.color.setHex(DAY_FOG);
+      this.syncFogColorForTimeOfDay(this.skySystem?.timeOfDay ?? 0.72);
       this.streetLightGroup.visible = false;
       this.setStreetLightCount(0);
     }
@@ -220,14 +242,36 @@ export class SceneSystem {
     return this.snapshot();
   }
 
+  setWeather(weather = 'clear') {
+    this.weather = Object.hasOwn(WEATHER_FOG, weather) ? weather : 'clear';
+    this.syncFogColorForTimeOfDay(this.skySystem?.timeOfDay ?? 0.72);
+    return this.weather;
+  }
+
+  syncFogColorForTimeOfDay(timeOfDay) {
+    if (!this._sceneFog || this.lightingMode === 'clustered') return;
+    const daylight = getSkyDaylightFactor(timeOfDay);
+    const dayColor = WEATHER_FOG[this.weather] ?? WEATHER_FOG.clear;
+    this._fogDayColorScratch.setHex(dayColor);
+    this._fogColorScratch.setHex(NIGHT_FOG).lerp(this._fogDayColorScratch, daylight);
+    this._sceneFog.color.copy(this._fogColorScratch);
+  }
+
   setStreetLightsVisible(enabled) {
     if (this.streetLightGroup) this.streetLightGroup.visible = enabled;
     if (!enabled) this.setStreetLightCount(0);
     return this.snapshot();
   }
 
+  syncSunVisibilityForTimeOfDay(timeOfDay) {
+    if (!this.sun) return;
+    const daytime = isDirectionalSunDaytime(timeOfDay);
+    this.sun.visible = this._sunUserEnabled && daytime;
+  }
+
   setSunEnabled(enabled) {
-    if (this.sun) this.sun.visible = enabled;
+    this._sunUserEnabled = Boolean(enabled);
+    this.syncSunVisibilityForTimeOfDay(this.skySystem?.timeOfDay ?? 0.72);
     return this.snapshot();
   }
 
@@ -243,6 +287,7 @@ export class SceneSystem {
       clusteredTestLightCount: this.streetLightsActive,
       sceneFogEnabled: Boolean(this.scene.fog),
       streetLightsVisible: this.streetLightGroup?.visible ?? false,
+      sunUserEnabled: this._sunUserEnabled ?? true,
       sunVisible: sun ? sun.visible : true,
       hemisphereVisible: this.hemisphere ? this.hemisphere.visible : true,
       streetLights: {

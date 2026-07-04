@@ -1,10 +1,12 @@
 import * as THREE from 'three';
 import { FrameLoop } from './FrameLoop.js';
 import { FrameStats } from './FrameStats.js';
+import { AllocationSampler } from './AllocationSampler.js';
 import { RenderRateLimiter } from './RenderRateLimiter.js';
 import { AnimationStateSystem } from '../systems/AnimationStateSystem.js';
 import { CameraSystem } from '../systems/CameraSystem.js';
 import { CharacterSystem } from '../systems/CharacterSystem.js';
+import { resolveJacketMode } from '../characters/mara/jacketConfig.js';
 import { CombatSystem } from '../systems/CombatSystem.js';
 import { EnemySystem } from '../systems/EnemySystem.js';
 import { CrowdSystem } from '../systems/CrowdSystem.js';
@@ -13,6 +15,8 @@ import { DestructiblePropSystem } from '../systems/DestructiblePropSystem.js';
 import { HorseSystem, HORSE_GROUND_OFFSET } from '../systems/HorseSystem.js';
 import { InputSystem } from '../systems/InputSystem.js';
 import { LevelSystem } from '../systems/LevelSystem.js';
+import { BuildingEntrySystem } from '../systems/BuildingEntrySystem.js';
+import { createOfficeInteriorLevel } from '../world/office/createOfficeInteriorLevel.js';
 import { LedgeHangSystem } from '../systems/LedgeHangSystem.js';
 import { LedgeTraversalSystem } from '../systems/LedgeTraversalSystem.js';
 import { MovementSystem } from '../systems/MovementSystem.js';
@@ -36,14 +40,38 @@ import { VehicleDamageSystem } from '../systems/VehicleDamageSystem.js';
 import { WeatherSystem } from '../systems/WeatherSystem.js';
 import { computeRunOverHits, computeRunOverLaunch } from '../vehicles/runOver.js';
 import { BaseVehicle } from '../vehicles/BaseVehicle.js';
-import { getActiveGarageBuild, vehicleOptionsFromGarageBuild } from '../vehicles/garageBuilds.js';
+import { spawnVehicleOptions } from '../vehicles/garageBuilds.js';
 import { getActiveWorldMapSync } from '../../world/worldMap/worldMapScenes.js';
+import { sanitizeWebGPUVertexBuffers } from '../geometry/prepareWebGPUGeometry.js';
+import { applyCityLevelOverrides } from '../config/cityPerformance.js';
+
+// Office interiors live persistently far below the map, one slot per building,
+// built lazily on first entry and cached for the session. Entering is then a pure
+// teleport (no rebuild / no material recompile) — the swap only reassigns the
+// LevelSystem facade pointer. See _enterBuilding/_exitBuilding.
+const OFFICE_INTERIOR_OWNER = 'office-interior';
+const INTERIOR_BASE_Y = -1000;
+const INTERIOR_SLOT_SPACING = 300;
+const INTERIOR_SLOTS_PER_ROW = 24;
+
+// Deterministic seed for a building's interior so the same building regenerates
+// the same office each time (P1 WFC will consume it).
+function buildingSeed(building) {
+  const key = `${building?.name ?? ''}:${Math.round(building?.minX ?? 0)}:${Math.round(building?.minZ ?? 0)}`;
+  let h = 2166136261;
+  for (let i = 0; i < key.length; i += 1) {
+    h ^= key.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0) || 1;
+}
 
 export class GameRuntime {
-  constructor({ canvas, qualityPreset = {}, onSnapshot, levelMode = 'city' }) {
+  constructor({ canvas, qualityPreset = {}, qualityLevel = 'high', onSnapshot, levelMode = 'city' }) {
     this.canvas = canvas;
-    this.qualityPreset = qualityPreset;
-    this.levelMode = ['world', 'wilds'].includes(levelMode) ? levelMode : 'city';
+    this.levelMode = ['world', 'wilds', 'rally'].includes(levelMode) ? levelMode : 'city';
+    this.qualityLevel = qualityLevel;
+    this.qualityPreset = applyCityLevelOverrides(qualityPreset, qualityLevel, this.levelMode);
     this.onSnapshot = onSnapshot ?? (() => {});
     this.frameLoop = new FrameLoop((timeMs) => this.update(timeMs));
     this.lastSnapshotAt = 0;
@@ -60,6 +88,13 @@ export class GameRuntime {
     this.cameraSystem = new CameraSystem();
     this.inputSystem = new InputSystem({ target: canvas });
     this.levelSystem = new LevelSystem();
+    this.buildingEntrySystem = new BuildingEntrySystem();
+    // Active office-interior session (null when outside). Set by _enterBuilding.
+    this.insideBuilding = null;
+    // Persistent interiors, keyed by building seed; built once, kept resident
+    // below the map and reused (hidden when outside).
+    this._interiorCache = new Map();
+    this._interiorSlotCount = 0;
     this.characterSystem = new CharacterSystem();
     this.combatSystem = new CombatSystem();
     this.enemySystem = new EnemySystem();
@@ -93,6 +128,7 @@ export class GameRuntime {
     this.vehicleDamageSystem = new VehicleDamageSystem();
     this.weatherSystem = new WeatherSystem();
     this.frameStats = new FrameStats();
+    this.allocationSampler = new AllocationSampler();
     this.postCutSlowMoTimer = 0;
     this.renderCap60 = Boolean(qualityPreset.renderCap60);
     this.renderRateLimiter = new RenderRateLimiter(60);
@@ -113,6 +149,16 @@ export class GameRuntime {
     if (this.disposed) {
       return;
     }
+    // Rally starts at midday under rain. Bake sky + IBL with the overcast
+    // profile before the first environment capture so startup matches the live
+    // weather (setWeather below still wires rain VFX/audio).
+    if (this.levelMode === 'rally') {
+      this.sceneSystem.skySystem?.setTimeOfDay?.(0.5);
+      this.sceneSystem.skySystem?.setWeather?.('rain');
+      this.sceneSystem.setWeather?.('rain');
+      this.sceneSystem.setSceneFogEnabled?.(true);
+      this.rendererSystem.setWeather?.('rain');
+    }
     this.rendererSystem.installEnvironment(this.sceneSystem.scene, this.sceneSystem.skySystem);
     // Hand the volumetric sky/cloud provider (if active) to the renderer so its
     // cloud composite can be inserted into the post pipeline.
@@ -123,6 +169,9 @@ export class GameRuntime {
       levelSystem: this.levelSystem,
       qualityPreset: this.qualityPreset,
     });
+    if (this.levelMode === 'rally') {
+      this.weatherSystem.setWeather('rain');
+    }
 
     this.cameraSystem.initialize(this.sceneSystem.scene, this.qualityPreset);
     this.sceneSystem.skySystem?.attachToCamera?.(this.cameraSystem.camera);
@@ -167,9 +216,11 @@ export class GameRuntime {
       return;
     }
 
-    // Jacket cloth (three-simplecloth on WebGPU). Must be after renderer init.
-    // Gracefully no-ops if no jacket.fbx or non-WebGPU renderer.
-    await this.characterSystem.attachJacketCloth(this.rendererSystem.renderer);
+    // Jacket cloth (three-simplecloth on WebGPU). Skipped when jacketExperiments is off
+    // (see gameConfig); ?jacket=cloth still forces it on for one-off tuning.
+    if (resolveJacketMode() !== 'off') {
+      await this.characterSystem.attachJacketCloth(this.rendererSystem.renderer);
+    }
 
     this.coreSceneReady = true;
     this._triggerShaderPrewarm();
@@ -203,37 +254,32 @@ export class GameRuntime {
       }
     }
 
-    await this.horseSystem.load(this.sceneSystem.scene, {
-      position: horseSpawnPosition(character?.group.position, this.levelSystem),
-      getGroundHeightAt: (position) => horseGroundHeight(this.levelSystem, position),
-    });
-    if (this.disposed) {
-      return;
-    }
+    // Rally has purpose-built roadside crowds and starts focused on driving;
+    // omit the horse, combat enemies, ambient ring, and destructible city props.
+    if (this.levelMode !== 'rally') {
+      await this.horseSystem.load(this.sceneSystem.scene, {
+        position: horseSpawnPosition(character?.group.position, this.levelSystem),
+        getGroundHeightAt: (position) => horseGroundHeight(this.levelSystem, position),
+      });
+      if (this.disposed) return;
 
-    await this.enemySystem.load(this.sceneSystem.scene, {
-      playerPosition: character?.group.position,
-      level: this.levelSystem,
-    });
-    if (this.disposed) {
-      return;
-    }
+      await this.enemySystem.load(this.sceneSystem.scene, {
+        playerPosition: character?.group.position,
+        level: this.levelSystem,
+      });
+      if (this.disposed) return;
 
-    // CrowdSystem load after enemy (reuses soldier pattern), before prop. Static ring uses player pos + level ground.
-    await this.crowdSystem.load(this.sceneSystem.scene, {
-      level: this.levelSystem,
-      playerPosition: character?.group.position ?? new THREE.Vector3(),
-    });
-    if (this.disposed) {
-      return;
-    }
+      await this.crowdSystem.load(this.sceneSystem.scene, {
+        level: this.levelSystem,
+        playerPosition: character?.group.position ?? new THREE.Vector3(),
+      });
+      if (this.disposed) return;
 
-    await this.propSystem.load(this.sceneSystem.scene, {
-      playerPosition: character?.group.position,
-      level: this.levelSystem,
-    });
-    if (this.disposed) {
-      return;
+      await this.propSystem.load(this.sceneSystem.scene, {
+        playerPosition: character?.group.position,
+        level: this.levelSystem,
+      });
+      if (this.disposed) return;
     }
 
     await this.physicsSystem.initialize({
@@ -254,6 +300,7 @@ export class GameRuntime {
       scene: this.sceneSystem.scene,
       level: this.levelSystem,
       weatherSystem: this.weatherSystem,
+      vehicleDamageSystem: this.vehicleDamageSystem,
     });
     // Fixed-step hooks: interpolation pose capture and vehicle integration once
     // per physics tick.
@@ -272,9 +319,13 @@ export class GameRuntime {
     if (isCollisionTestMap(worldMap)) {
       await spawnCollisionTestVehicles(this.vehicleSystem);
     } else {
-      const carPosition = carSpawnPosition(this.horseSystem, character?.group.position);
-      const carYaw = this.horseSystem.group?.rotation.y ?? 0;
-      const garageVehicleOptions = vehicleOptionsFromGarageBuild(getActiveGarageBuild());
+      const carPosition = this.levelMode === 'rally'
+        ? new THREE.Vector3(-129, 0, 136)
+        : carSpawnPosition(this.horseSystem, character?.group.position);
+      const carYaw = this.levelMode === 'rally'
+        ? -Math.PI / 4
+        : (this.horseSystem.group?.rotation.y ?? 0);
+      const garageVehicleOptions = spawnVehicleOptions(this.levelMode);
       await this.vehicleSystem.spawnVehicle({
         vehicle: new BaseVehicle({
           ...garageVehicleOptions,
@@ -352,6 +403,10 @@ export class GameRuntime {
     const warmup = this.levelSystem.level?.createPipelineWarmupGroup?.() ?? null;
 
     try {
+      // compileAsync turns small instance/skeleton arrays into vertex uniform
+      // buffers. WebGPU rejects zero-byte bindings, so strip impossible empty
+      // render objects before Three builds the asynchronous render list.
+      sanitizeWebGPUVertexBuffers(scene);
       if (renderer && typeof renderer.compileAsync === 'function' && scene && camera) {
         await renderer.compileAsync(scene, camera);
       }
@@ -428,7 +483,27 @@ export class GameRuntime {
       if (timeMs - this.lastSnapshotAt > 120) this.emitSnapshot(timeMs);
       return;
     }
-    this.weatherSystem.update(delta, character.group.position);
+    // Building enter/exit. Handled before the movement/hook pipeline so the E
+    // press is consumed here (returning early skips the hook fire this frame; the
+    // input edge is already cleared by getState()). `prompt` is last frame's
+    // detection — one frame stale is imperceptible.
+    if (this.insideBuilding) {
+      // Exit the same way you entered: return to the interior door and press E.
+      this.insideBuilding.atDoor = this._isAtInteriorDoor(character);
+      if (this.insideBuilding.atDoor && input.hookFirePressed) {
+        this._exitBuilding(character);
+        this.emitSnapshot();
+        return;
+      }
+    } else if (this.buildingEntrySystem.state.prompt && input.hookFirePressed) {
+      this._enterBuilding(character);
+      this.emitSnapshot();
+      return;
+    }
+
+    this.weatherSystem.update(delta, character.group.position, {
+      inVehicle: Boolean(this.vehicleSystem?.activeVehicle),
+    });
 
     if (input.collisionDebugPressed) {
       this.levelSystem.toggleCollisionDebug();
@@ -454,13 +529,6 @@ export class GameRuntime {
         this.queueStreamingCompile(streamingChanges.addedChunks.map((chunk) => chunk.group));
       }
 
-      // Drain the geometry-index BVH warmup queue (budgeted, cheapest-first).
-      // The raycast path skips tree-less meshes entirely (hook/ledge queries
-      // would otherwise brute-force millions of triangles), so meshes stay
-      // grapple-invisible until this builds their tree — streamed city chunks
-      // arrive with a worker-built tree and skip the queue.
-      this.levelSystem.warmupGeometryRaycasts();
-
       // Drive the shadow volume to follow the player (the sun is otherwise locked to
       // the origin, so shadows disappear once you walk away from spawn). Placed here
       // so both render paths (cut-mode + normal) are covered by one call; the one-frame
@@ -476,7 +544,7 @@ export class GameRuntime {
     this.frameStats.start('bvh');
     this.levelSystem.warmupGeometryRaycasts({
       maxMs: streamingActive ? 1 : 2,
-      maxCount: streamingActive ? 1 : 2,
+      maxCount: streamingActive ? 2 : 8,
     });
     this.frameStats.endSection();
 
@@ -594,6 +662,7 @@ export class GameRuntime {
       input: gameplayInput,
       character,
       level: this.levelSystem,
+      camera: this.cameraSystem.camera,
     });
     gameplayInput = routedVehicle.input ?? gameplayInput;
 
@@ -719,22 +788,28 @@ export class GameRuntime {
       input: gameplayInput,
       movement,
       character,
+      level: this.levelSystem,
     });
     this.frameStats.endSection();
 
-    // Wingsuit membrane: drive the pinned cloth mesh from final bone poses (after
-    // animation, so the skeleton is settled for the frame).
+    // Bone-driven visuals read final bone poses after animation has settled.
     this.frameStats.start('wingsuit');
     this.wingsuitSystem.update({ delta: scaledDelta, character });
     this.frameStats.endSection();
 
-    // Jacket cloth simulation (three-simplecloth). Update *after* the animation mixer
-    // has written the current bone matrices so the cloth can read the live body pose.
-    if (character?.jacketCloth?.update) {
-      try {
-        character.jacketCloth.update(scaledDelta);
-      } catch (e) {
-        // Fail-soft; cloth is purely visual.
+    if (resolveJacketMode() !== 'off') {
+      this.frameStats.start('jacket');
+      this.characterSystem.updateProceduralJacket(scaledDelta);
+      this.frameStats.endSection();
+
+      // Jacket cloth simulation (three-simplecloth). Update *after* the animation mixer
+      // has written the current bone matrices so the cloth can read the live body pose.
+      if (character?.jacketCloth?.update) {
+        try {
+          character.jacketCloth.update(scaledDelta);
+        } catch (e) {
+          // Fail-soft; cloth is purely visual.
+        }
       }
     }
 
@@ -821,6 +896,14 @@ export class GameRuntime {
       this.cameraSystem.resize(viewport);
     });
 
+    // Detect a nearby enterable building (on-foot only) and raise the HUD prompt.
+    this.buildingEntrySystem.update({
+      level: this.levelSystem.level,
+      position: character.group.position,
+      camera: this.cameraSystem.camera,
+      enabled: !this.vehicleSystem?.activeVehicle && this.mountSystem?.state !== 'mounted',
+    });
+
     if (this.sceneSystem.skySystem?.update(delta, this.cameraSystem?.camera)) {
       this.rendererSystem.installEnvironment(this.sceneSystem.scene, this.sceneSystem.skySystem);
     }
@@ -872,6 +955,7 @@ export class GameRuntime {
 
     for (const root of roots) {
       if (!root) continue;
+      sanitizeWebGPUVertexBuffers(root);
       if (renderer?.compileAsync && camera) {
         // Hide the chunk group until its render pipelines/materials are pre-warmed.
         // This prevents the next renderer.render() from stalling on first-seen
@@ -909,6 +993,100 @@ export class GameRuntime {
     drain();
   }
 
+  // Teleport the character AND shift the chase camera by the same delta, so the
+  // framing stays continuous across a large (pocket) teleport instead of the
+  // camera flying across the world to catch up.
+  _teleportPlayer(character, target) {
+    const shiftX = target.x - character.group.position.x;
+    const shiftY = target.y - character.group.position.y;
+    const shiftZ = target.z - character.group.position.z;
+    character.group.position.set(target.x, target.y, target.z);
+    const cam = this.cameraSystem?.camera;
+    if (cam) cam.position.set(cam.position.x + shiftX, cam.position.y + shiftY, cam.position.z + shiftZ);
+    if (this.cameraSystem?.smoothedTarget) {
+      this.cameraSystem.smoothedTarget.set(
+        this.cameraSystem.smoothedTarget.x + shiftX,
+        this.cameraSystem.smoothedTarget.y + shiftY,
+        this.cameraSystem.smoothedTarget.z + shiftZ,
+      );
+    }
+  }
+
+  // Build-or-reuse the interior for a building. Built once (at a fresh slot far
+  // below the map), then kept resident + hidden and cached for the session, so
+  // re-entering the same building costs nothing.
+  _getOrBuildInterior(building, door) {
+    const key = buildingSeed(building);
+    const cached = this._interiorCache.get(key);
+    if (cached) return cached;
+
+    const slot = this._interiorSlotCount;
+    this._interiorSlotCount += 1;
+    const origin = {
+      x: (slot % INTERIOR_SLOTS_PER_ROW) * INTERIOR_SLOT_SPACING,
+      y: INTERIOR_BASE_Y,
+      z: Math.floor(slot / INTERIOR_SLOTS_PER_ROW) * INTERIOR_SLOT_SPACING,
+    };
+    const interior = createOfficeInteriorLevel({
+      width: Math.max(8, door.footprint.width - 1.5),
+      depth: Math.max(8, door.footprint.depth - 1.5),
+      doorFacade: door.facade,
+      origin,
+      seed: key,
+    });
+    interior.group.visible = false;
+    this.sceneSystem.scene.add(interior.group);
+    for (const collider of interior.colliders) {
+      this.physicsSystem.createStaticCollider(collider, `${OFFICE_INTERIOR_OWNER}-${slot}`);
+    }
+    this._interiorCache.set(key, interior);
+    return interior;
+  }
+
+  _enterBuilding(character) {
+    const entry = this.buildingEntrySystem.state;
+    const exteriorLevel = this.levelSystem.level;
+    if (!entry.building || !entry.doorAnchor || !exteriorLevel || this.insideBuilding) return;
+
+    const interior = this._getOrBuildInterior(entry.building, entry.doorAnchor);
+    interior.group.visible = true;
+    exteriorLevel.group.visible = false;
+
+    this.insideBuilding = {
+      interior,
+      exteriorLevel,
+      returnPosition: character.group.position.clone(),
+      enteredAt: performance.now(),
+    };
+    // Facade over the interior so ground/blocking/streaming queries use it. The
+    // interior's colliders already live in the physics world (below the map).
+    this.levelSystem.level = interior;
+    this._teleportPlayer(character, interior.spawnPoint);
+  }
+
+  // True when the player is standing in the interior doorway (where the exit
+  // prompt shows). The spawn point sits a step further in than this zone, so you
+  // never spawn already "at the door".
+  _isAtInteriorDoor(character) {
+    const inside = this.insideBuilding;
+    if (!inside) return false;
+    const t = inside.interior.exitTrigger;
+    const p = character.group.position;
+    return p.x >= t.minX && p.x <= t.maxX && p.z >= t.minZ && p.z <= t.maxZ;
+  }
+
+  _exitBuilding(character) {
+    const inside = this.insideBuilding;
+    if (!inside) return;
+    // Keep the interior resident (hidden) so re-entry is free — just swap the
+    // facade back, reveal the exterior, and teleport up.
+    inside.interior.group.visible = false;
+    inside.exteriorLevel.group.visible = true;
+    this.levelSystem.level = inside.exteriorLevel;
+    this._teleportPlayer(character, inside.returnPosition);
+    this.insideBuilding = null;
+  }
+
   emitSnapshot(timeMs = performance.now()) {
     this.lastSnapshotAt = timeMs;
     this.onSnapshot(this.snapshot());
@@ -921,6 +1099,8 @@ export class GameRuntime {
     for (const vehicle of this.vehicleSystem?.vehicles ?? []) {
       vehicle.engineAudio?.mute?.(this._visibilityPaused);
       vehicle.tireEffects?.mute?.(this._visibilityPaused);
+      vehicle.exteriorIdleAudio?.mute?.(this._visibilityPaused);
+      vehicle.crashAudio?.mute?.(this._visibilityPaused);
     }
   }
 
@@ -943,16 +1123,88 @@ export class GameRuntime {
     this.emitSnapshot();
   }
 
+  cycleVehicleCameraMode() {
+    if (!this.vehicleSystem?.activeVehicle) {
+      return this.snapshot();
+    }
+    this.cameraSystem.cycleVehicleCameraMode();
+    this.emitSnapshot();
+    return this.snapshot();
+  }
+
+  getClothColliderEditorSnapshot() {
+    return this.characterSystem.character?.clothColliderEditor?.snapshot?.() ?? null;
+  }
+
+  setClothColliderEditorEnabled(enabled) {
+    if (enabled && document.pointerLockElement === this.canvas) {
+      document.exitPointerLock?.();
+    }
+    const snapshot = this.characterSystem.character?.clothColliderEditor?.setEnabled?.(enabled) ?? null;
+    this.emitSnapshot();
+    return snapshot;
+  }
+
+  selectClothCollider(id) {
+    const snapshot = this.characterSystem.character?.clothColliderEditor?.select?.(id) ?? null;
+    this.emitSnapshot();
+    return snapshot;
+  }
+
+  addClothCollider(spec) {
+    const snapshot = this.characterSystem.character?.clothColliderEditor?.add?.(spec) ?? null;
+    this.emitSnapshot();
+    return snapshot;
+  }
+
+  updateClothCollider(id, patch) {
+    const snapshot = this.characterSystem.character?.clothColliderEditor?.update?.(id, patch) ?? null;
+    this.emitSnapshot();
+    return snapshot;
+  }
+
+  updateJacketSocketTransform(patch) {
+    const snapshot = this.characterSystem.character?.clothColliderEditor?.updateJacketTransform?.(patch) ?? null;
+    this.emitSnapshot();
+    return snapshot;
+  }
+
+  removeClothCollider(id) {
+    const snapshot = this.characterSystem.character?.clothColliderEditor?.remove?.(id) ?? null;
+    this.emitSnapshot();
+    return snapshot;
+  }
+
+  async resetJacketCloth() {
+    const snapshot = await this.characterSystem.character?.clothColliderEditor?.resetCloth?.();
+    this.emitSnapshot();
+    return snapshot ?? null;
+  }
+
+  importClothColliderProfile(profile) {
+    const snapshot = this.characterSystem.character?.clothColliderEditor?.importProfile?.(profile) ?? null;
+    this.emitSnapshot();
+    return snapshot;
+  }
+
+  exportClothColliderProfile() {
+    return this.characterSystem.character?.clothColliderEditor?.exportProfile?.() ?? null;
+  }
+
   snapshot() {
     const playerObj = this.characterSystem.character?.group?.position;
     return {
       stage: this.stage,
       prewarm: this._cityPrewarmProgress,
       frame: this.frameStats.summary(),
+      allocation: this.allocationSampler.status(),
       player: playerObj
         ? { x: playerObj.x, z: playerObj.z, yaw: this.cameraSystem.yaw ?? 0 }
         : null,
       level: this.levelSystem.snapshot(),
+      buildingEntry: this.insideBuilding
+        ? { prompt: this.insideBuilding.atDoor === true, action: 'exit' }
+        : { ...this.buildingEntrySystem.snapshot(), action: 'enter' },
       physics: this.physicsSystem.snapshot(),
       ledgeHang: this.ledgeHangSystem.snapshot(),
       ledgeTraversal: this.ledgeTraversalSystem.snapshot(this.characterSystem.character),
@@ -1074,6 +1326,13 @@ export class GameRuntime {
         }
         return { totalMeshes, totalTriangles: Math.round(totalTriangles), tally };
       },
+      // City furniture batching: one instanced draw per material signature city-wide.
+      furnitureStats: () => this.levelSystem?.level?.cityChunks
+        ? this.snapshot().level?.city?.furniture ?? null
+        : null,
+      startAllocationSample: (durationMs = 3000) => this.allocationSampler.start(durationMs),
+      stopAllocationSample: () => this.allocationSampler.stop(),
+      allocationSampleReport: () => this.allocationSampler.report(),
       // Dump each loaded city-chunk group and the meshes it contains. Used to
       // confirm streamed (worker-built) chunks attach to the scene and that
       // building merges ran in them too (not just the initial main-thread chunk).

@@ -11,7 +11,7 @@ import {
 } from 'three';
 
 import { MeshStandardNodeMaterial } from 'three/webgpu';
-import { attribute, color, float, fract, instanceIndex, mix, mx_fractal_noise_float, mx_noise_float, normalView, normalWorldGeometry, positionGeometry, positionLocal, positionView, positionViewDirection, positionWorld, select, sin, smoothstep, time, varying, vec3 } from 'three/tsl';
+import { attribute, color, float, fract, instanceIndex, mix, mx_fractal_noise_float, mx_noise_float, normalView, normalWorldGeometry, positionGeometry, positionView, positionViewDirection, positionWorld, select, sin, smoothstep, varying, vec3 } from 'three/tsl';
 
 import { mergeGeometries, mergeVertices } from '../../utils/BufferGeometryUtils.js';
 
@@ -265,19 +265,9 @@ function createStreetTreeMaterial() {
 	const detailHeight = select( isLeaf, tufts.mul( 0.07 ), select( isGrate, float( 0 ), ridge.mul( 0.02 ) ) ).mul( grazingFade );
 	material.normalNode = bumpNormal( detailHeight );
 
-	// a gentle breeze: the canopy leans and flutters, rising with height so the
-	// trunk stays planted. per-instance phase keeps neighbouring trees out of step
-	const isLeafVertex = attribute( 'partId', 'float' ).equal( LEAF );
-	const phase = float( instanceIndex ).mul( 1.7 );
-	const heightGate = smoothstep( 2.0, 5.0, p.y );
-	const lean = vec3(
-		sin( time.mul( 0.8 ).add( phase ) ).mul( 0.05 ),
-		0,
-		sin( time.mul( 0.61 ).add( phase.mul( 1.3 ) ) ).mul( 0.04 )
-	);
-	const flutter = sin( time.mul( 3.1 ).add( p.y.mul( 2.4 ) ).add( p.x.mul( 1.9 ) ) ).mul( 0.015 );
-	const sway = lean.add( vec3( flutter, flutter.negate(), 0 ) ).mul( heightGate );
-	material.positionNode = positionLocal.add( select( isLeafVertex, sway, vec3( 0 ) ) ); // on top of positionLocal, which already carries the instance transform
+	// Wind sway was removed: animating positionNode via the global `time` node
+	// forced per-frame node-material refresh across every tree instance in the
+	// city (major GC driver at downtown draw counts).
 
 	return material;
 

@@ -28,6 +28,7 @@ const stubLevel = {
   group: new THREE.Group(),
   updateStreaming: spy('updateStreaming', {}),
   getGroundHeightAt: spy('getGroundHeightAt', 1),
+  getRoadSurfaceAt: spy('getRoadSurfaceAt', 'dirt'),
   getBlockingColliderAt: spy('getBlockingColliderAt', null),
   ensureGroundCollider: spy('ensureGroundCollider', true),
   geometryIndex: {
@@ -43,6 +44,7 @@ ls.level = stubLevel;
 // name on LevelSystem -> [invoke it, name of the underlying call it must trigger]
 const cases = [
   ['getGroundHeightAt', () => ls.getGroundHeightAt(new THREE.Vector3(), 0.5), 'getGroundHeightAt'],
+  ['getRoadSurfaceAt', () => ls.getRoadSurfaceAt(0, 0), 'getRoadSurfaceAt'],
   ['ensureGroundCollider', () => ls.ensureGroundCollider(new THREE.Vector3(), {}), 'ensureGroundCollider'],
   ['getBlockingColliderAt', () => ls.getBlockingColliderAt({ position: new THREE.Vector3(), radius: 0.3 }), 'getBlockingColliderAt'],
   ['updateStreaming', () => ls.updateStreaming(new THREE.Vector3()), 'updateStreaming'],

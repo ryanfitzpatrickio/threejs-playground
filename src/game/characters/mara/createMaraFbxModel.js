@@ -4,6 +4,7 @@ import { MaraAnimationController, prepareClip, trimClipEnd, trimClipStart } from
 import { MARA_ANIMATION_MANIFEST, MARA_MODEL_URL } from './maraAnimationManifest.js';
 import { flattenObjectForWebGPU } from '../../geometry/prepareWebGPUGeometry.js';
 import { createGltfLoader } from '../../utils/createGltfLoader.js';
+import { resolveSourceAnimation } from '../player/sourceSkeletons.js';
 
 const TARGET_CHARACTER_HEIGHT = 1.72;
 const _normalizeVec = new THREE.Vector3();
@@ -116,15 +117,19 @@ const HORSE_ANIMATION_MANIFEST = {
   },
 };
 
-export async function createMaraFbxModel() {
-  const isGlb = MARA_MODEL_URL.toLowerCase().endsWith('.glb') || MARA_MODEL_URL.toLowerCase().endsWith('.gltf');
+export async function createMaraFbxModel({
+  modelUrl = MARA_MODEL_URL,
+  modelId = 'mixamo',
+  skeletonSource = 'mixamo',
+} = {}) {
+  const isGlb = modelUrl.toLowerCase().endsWith('.glb') || modelUrl.toLowerCase().endsWith('.gltf');
   const baseLoader = isGlb ? createGltfLoader() : new FBXLoader();
   const fbxLoader = new FBXLoader(); // always used for animation clip FBXs
 
   const group = new THREE.Group();
   group.name = isGlb ? 'Mara Vey GLB Character' : 'Mara Vey FBX Character';
 
-  let loaded = await baseLoader.loadAsync(assetUrl(MARA_MODEL_URL));
+  let loaded = await baseLoader.loadAsync(assetUrl(modelUrl));
   // GLTFLoader returns { scene, ... }; FBXLoader returns the root object directly
   let object = isGlb ? (loaded.scene || loaded) : loaded;
   object.name = isGlb ? 'Mara Climber GLB' : 'Mara Climber FBX';
@@ -201,9 +206,15 @@ export async function createMaraFbxModel() {
     targetBindRotations,
     targetNames,
     modelScale: rootMotionScale,
+    skeletonSource,
   });
 
-  const animationController = new MaraAnimationController({ mixer, clips: coreClips, modelRoot: object });
+  const animationController = new MaraAnimationController({
+    mixer,
+    clips: coreClips,
+    modelRoot: object,
+    skeletonSource,
+  });
   animationController.start();
 
   // Stream the remaining animations in the background without blocking startup.
@@ -218,14 +229,29 @@ export async function createMaraFbxModel() {
     velocity: new THREE.Vector3(),
     animationController,
     source: isGlb ? 'glb' : 'fbx',
+    modelId,
+    skeletonSource,
   };
 }
 
-async function loadAnimationClipsPartial({ loader, rootBindPosition, targetBindRotations, targetNames, modelScale }) {
-  const manifest = { ...MARA_ANIMATION_MANIFEST, ...HORSE_ANIMATION_MANIFEST };
+async function loadAnimationClipsPartial({
+  loader,
+  rootBindPosition,
+  targetBindRotations,
+  targetNames,
+  modelScale,
+  skeletonSource = 'mixamo',
+}) {
+  const canonicalManifest = { ...MARA_ANIMATION_MANIFEST, ...HORSE_ANIMATION_MANIFEST };
+  const manifest = Object.fromEntries(
+    Object.keys(canonicalManifest)
+      .map((state) => [state, resolveSourceAnimation(skeletonSource, state, canonicalManifest)])
+      .filter(([, entry]) => entry),
+  );
 
   const CORE_STATES = new Set([
     'idle', 'jog', 'sprint', 'runningSlide',
+    'mudIdle', 'mudWalk', 'mudRun', 'mudStandingJump', 'mudRunJump',
     'armedIdle', 'armedJog', 'armedSprint',
     'drawSword', 'sheatheSword',
     'lightSlash1', 'lightSlash2', 'lightSlash3', 'heavyAttack',
@@ -457,7 +483,7 @@ async function loadRetargetedClip({ entry, state }) {
   return clip;
 }
 
-function collectBindRotations(object) {
+export function collectBindRotations(object) {
   const rotations = new Map();
 
   object.traverse((child) => {
@@ -469,7 +495,7 @@ function collectBindRotations(object) {
   return rotations;
 }
 
-function collectTargetNames(object) {
+export function collectTargetNames(object) {
   const names = new Set();
 
   object.traverse((child) => {
@@ -481,7 +507,7 @@ function collectTargetNames(object) {
   return names;
 }
 
-function normalizeCharacterObject(object) {
+export function normalizeCharacterObject(object) {
   // For a skinned character the rendered height is the skeleton's bone extent,
   // NOT the mesh geometry's bind box: climber.glb's mesh geometry is oriented
   // inconsistently with its skeleton after FBX→GLB conversion (its tall axis is
@@ -540,7 +566,7 @@ function computeRootMotionScale(object) {
   return Number.isFinite(scale) && scale > 0 ? scale : null;
 }
 
-function prepareRenderable(child) {
+export function prepareRenderable(child) {
   if (!child.isMesh && !child.isSkinnedMesh) {
     return;
   }

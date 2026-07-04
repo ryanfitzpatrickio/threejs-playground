@@ -250,6 +250,14 @@ export class CombatSystem {
       return;
     }
 
+    // Source-skeleton profiles intentionally omit actions that have no genuine
+    // equivalent. Complete those gameplay transitions immediately instead of
+    // waiting forever on an animation that was not routed.
+    if (controller.hasAnimation?.(override) === false) {
+      this.completeOverride({ combat, enemyCutSystem });
+      return;
+    }
+
     // Only non-looping clips (draw / sheathe / attacks) clear themselves here.
     const entry = MARA_ANIMATION_MANIFEST[override];
     if (entry?.loop) {

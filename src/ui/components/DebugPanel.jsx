@@ -126,7 +126,7 @@ export function DebugPanel(props) {
         />
         <Toggle
           label="Sun (directional)"
-          checked={() => scene()?.sunVisible ?? true}
+          checked={() => scene()?.sunUserEnabled ?? true}
           onChange={(v) => apply('sun', v)}
         />
         <Toggle
@@ -151,6 +151,20 @@ export function DebugPanel(props) {
           checked={() => snap().timing?.showHud ?? false}
           onChange={(v) => apply('timingHud', v)}
         />
+        <button
+          type="button"
+          class="dbg-select"
+          onClick={() => {
+            const bridge = dbg();
+            if (!bridge?.startAllocationSample) return;
+            bridge.startAllocationSample(3000);
+            globalThis.setTimeout(() => {
+              console.info('[dreamfall] allocation sample', bridge.allocationSampleReport?.());
+            }, 3200);
+          }}
+        >
+          Sample allocation (3s → console)
+        </button>
 
         <div class="debug-section">Weather</div>
         <select

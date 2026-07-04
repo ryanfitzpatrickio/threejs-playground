@@ -22,7 +22,7 @@ import {
 } from 'three';
 
 import { MeshStandardNodeMaterial } from 'three/webgpu';
-import { attribute, cameraPosition, color, cross, dot, float, floor, Fn, fract, fwidth, hash as ihash, mix, mod, modelWorldMatrixInverse, mx_fractal_noise_float, normalLocal, normalView, normalWorldGeometry, positionLocal, positionView, positionWorld, select, smoothstep, step, uint, uv, varying, vec2, vec3, vec4 } from 'three/tsl';
+import { attribute, color, cross, dot, float, floor, Fn, fract, fwidth, hash as ihash, inverse, mix, mod, modelViewMatrix, mx_fractal_noise_float, normalLocal, normalView, normalWorldGeometry, normalize, positionLocal, positionView, positionWorld, select, smoothstep, step, uint, uv, varying, vec2, vec3, vec4 } from 'three/tsl';
 
 import { mergeGeometries } from '../../utils/BufferGeometryUtils.js';
 
@@ -1122,6 +1122,16 @@ function bumpNormal( height ) {
 
 // interior mapping: fakes a furnished room behind each glass pane in the fragment
 // shader — no geometry, no texture. every pane carries the room it looks into ( centre +
+// View ray in building-local space without the shared cameraPosition uniform (a
+// varying + modelViewMatrix only — avoids pulling cameraPosition into every pane's
+// node refresh path on the shared building material).
+const interiorRayLocal = /*@__PURE__*/ Fn( () => {
+
+	const rayView = normalize( positionView );
+	return normalize( inverse( modelViewMatrix ).mul( vec4( rayView, 0.0 ) ).xyz );
+
+} )();
+
 // size, baked per window by addWindows ), so neighbouring panes share one interior. the
 // view ray is cast into that box and the walls, floor, ceiling and a few furniture pieces
 // it meets are shaded procedurally, keyed off a per-room hash. returns vec4( colour, lit ).
@@ -1140,8 +1150,7 @@ const interior = /*@__PURE__*/ Fn( () => {
 	// this pixel and the view ray, in the room's ( across, up, depth ) frame; depth
 	// runs into the wall, so the ray's depth component is positive
 	const d = positionLocal.sub( roomCenter );
-	const camLocal = modelWorldMatrixInverse.mul( vec4( cameraPosition, 1 ) ).xyz;
-	const rayLocal = positionLocal.sub( camLocal ).normalize();
+	const rayLocal = interiorRayLocal;
 	const origin = vec3( dot( d, uAxis ), d.y, 0 );
 	const dir = vec3( dot( rayLocal, uAxis ), rayLocal.y, dot( rayLocal, n ).negate() );
 
@@ -1329,8 +1338,7 @@ const shopInterior = /*@__PURE__*/ Fn( () => {
 	const uAxis = cross( up, n ).normalize();
 
 	const d = positionLocal.sub( roomCenter );
-	const camLocal = modelWorldMatrixInverse.mul( vec4( cameraPosition, 1 ) ).xyz;
-	const rayLocal = positionLocal.sub( camLocal ).normalize();
+	const rayLocal = interiorRayLocal;
 	const origin = vec3( dot( d, uAxis ), d.y, 0 );
 	const dir = vec3( dot( rayLocal, uAxis ), rayLocal.y, dot( rayLocal, n ).negate() );
 

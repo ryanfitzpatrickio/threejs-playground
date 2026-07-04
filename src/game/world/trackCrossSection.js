@@ -67,6 +67,30 @@
  */
 
 export const TRACK_CROSS_SECTIONS = {
+  rallyStage: {
+    label: 'Rally Stage',
+    bands: [
+      { kind: 'shoulder', side: 'both', width: 3.6, lift: -0.02, texture: 'grass' },
+      { kind: 'asset', asset: 'rallyMarker', texture: '/assets/textures/rally/stage-marker.svg', side: 'both', width: 0.34, height: 1.65, every: 25, phase: 8, mountY: 0.02 },
+      { kind: 'asset', asset: 'rallyArrowLeft', texture: '/assets/textures/rally/corner-left.svg', side: 'left', width: 1.55, height: 1.05, every: 118, phase: 42, mountY: 0.72 },
+      { kind: 'asset', asset: 'rallyArrowRight', texture: '/assets/textures/rally/corner-right.svg', side: 'right', width: 1.55, height: 1.05, every: 118, phase: 42, mountY: 0.72 },
+      { kind: 'asset', asset: 'rallyKm', texture: '/assets/textures/rally/km-board.svg', side: 'right', width: 0.8, height: 1.18, every: 205, phase: 94, mountY: 0.5 },
+    ],
+  },
+
+  rallySpectator: {
+    label: 'Rally Spectator',
+    bands: [
+      { kind: 'shoulder', side: 'both', width: 3.2, lift: -0.02, texture: 'grass' },
+      { kind: 'asset', asset: 'rallyMarker', texture: '/assets/textures/rally/stage-marker.svg', side: 'both', width: 0.34, height: 1.65, every: 25, phase: 8, mountY: 0.02 },
+      { kind: 'rope', side: 'both', gap: 1.1, every: 4, height: 1.0 },
+      { kind: 'crowd', side: 'both', gap: 0.8, depth: 3.5, every: 2.4, maxInstances: 260 },
+      { kind: 'asset', asset: 'marshal', texture: '/assets/textures/rally/marshal.svg', side: 'both', offset: 1.5, width: 0.9, height: 1.9, every: 145, phase: 58, mountY: 0.02 },
+      { kind: 'asset', asset: 'rallyArrowLeft', texture: '/assets/textures/rally/corner-left.svg', side: 'left', width: 1.55, height: 1.05, every: 118, phase: 42, mountY: 0.72 },
+      { kind: 'asset', asset: 'rallyArrowRight', texture: '/assets/textures/rally/corner-right.svg', side: 'right', width: 1.55, height: 1.05, every: 118, phase: 42, mountY: 0.72 },
+    ],
+  },
+
   urbanCircuit: {
     label: 'Urban Circuit',
     bands: [

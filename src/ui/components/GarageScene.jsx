@@ -8,6 +8,8 @@ import { BaseVehicle } from '../../game/vehicles/BaseVehicle.js';
 import { LightProbeGrid } from '../../three-addons/lighting/LightProbeGrid.js';
 import {
   GARAGE_CHASSIS_OPTIONS,
+  GARAGE_CHASSIS_SURFACE_MODES,
+  GARAGE_ENGINE_OPTIONS,
   GARAGE_FRAME_PRESETS,
   GARAGE_TIRE_OPTIONS,
   createGarageBuild,
@@ -16,6 +18,7 @@ import {
   loadGarageBuilds,
   saveGarageBuild,
   setActiveGarageBuild,
+  vehicleOptionsFromGarageBuild,
 } from '../../game/vehicles/garageBuilds.js';
 
 const FRAME_FIELDS = [
@@ -34,6 +37,7 @@ const PERFORMANCE_FIELDS = [
   { key: 'highSpeedSteerYawRate', label: 'High-speed steer', min: 0.25, max: 0.7, step: 0.01, unit: 'r/s' },
   { key: 'suspensionStiffness', label: 'Spring', min: 16, max: 36, step: 1, unit: '' },
   { key: 'suspensionDamping', label: 'Damping', min: 7, max: 16, step: 0.5, unit: '' },
+  { key: 'traction', label: 'Traction (mud/dirt)', min: 0.4, max: 1, step: 0.02, unit: '' },
 ];
 
 const WHEEL_FIELDS = [
@@ -89,12 +93,49 @@ export function GarageScene(props) {
     preview?.setFrame({ [key]: number });
   };
 
+  const updateHideBackSeats = (checked) => {
+    const next = { ...draft(), hideBackSeats: checked };
+    setDraft(next);
+    preview?.setBuild(next);
+    setStatus(checked ? 'Two-seat layout enabled.' : 'Rear seats restored.');
+  };
+
+  const updateHideEngine = (checked) => {
+    const next = { ...draft(), hideEngine: checked };
+    setDraft(next);
+    preview?.setBuild(next);
+    setStatus(checked ? 'Exposed engine hidden.' : 'Exposed engine restored.');
+  };
+
+  const updateDisableGlassDetection = (checked) => {
+    const next = { ...draft(), disableGlassDetection: checked };
+    setDraft(next);
+    preview?.setBuild(next);
+    setStatus(checked ? 'Glass detection disabled for this build.' : 'Glass detection enabled.');
+  };
+
+  const updateChassisSurfaceMode = (mode) => {
+    const next = { ...draft(), chassisSurfaceMode: mode };
+    setDraft(next);
+    preview?.setBuild(next);
+    const label = GARAGE_CHASSIS_SURFACE_MODES.find((entry) => entry.id === mode)?.name ?? mode;
+    setStatus(`${label} surface selected.`);
+  };
+
   const updatePerformance = (key, value) => {
     const number = Number(value);
     setDraft((current) => ({
       ...current,
       performance: { ...current.performance, [key]: number },
     }));
+  };
+
+  const selectEngine = (engine) => {
+    setDraft((current) => ({
+      ...current,
+      performance: { ...current.performance, engineProfile: engine.id },
+    }));
+    setStatus(`${engine.name} engine selected.`);
   };
 
   const updateWheel = (key, value) => {
@@ -123,7 +164,18 @@ export function GarageScene(props) {
   };
 
   const selectChassis = (chassis) => {
-    const next = { ...draft(), chassisId: chassis.id };
+    const defaultTransform = chassis.defaultTransform;
+    const next = {
+      ...draft(),
+      chassisId: chassis.id,
+      chassisTransform: defaultTransform
+        ? {
+            position: [...defaultTransform.position],
+            rotationDegrees: [...defaultTransform.rotationDegrees],
+            scale: [...defaultTransform.scale],
+          }
+        : draft().chassisTransform,
+    };
     setDraft(next);
     preview?.setBuild(next);
     setStatus(`${chassis.name} selected.`);
@@ -255,6 +307,28 @@ export function GarageScene(props) {
               </label>
             )}
           </For>
+          <label class="garage-checkbox">
+            <input
+              type="checkbox"
+              checked={draft().hideBackSeats}
+              onChange={(event) => updateHideBackSeats(event.currentTarget.checked)}
+            />
+            <span>
+              <strong>Hide back seats</strong>
+              <small>Use a two-seat layout</small>
+            </span>
+          </label>
+          <label class="garage-checkbox">
+            <input
+              type="checkbox"
+              checked={draft().hideEngine}
+              onChange={(event) => updateHideEngine(event.currentTarget.checked)}
+            />
+            <span>
+              <strong>Hide exposed engine</strong>
+              <small>Remove the procedural engine block and pistons from the frame</small>
+            </span>
+          </label>
         </div>
 
         <div class="garage-control-group">
@@ -289,6 +363,39 @@ export function GarageScene(props) {
 
         <Show when={draft().chassisId !== 'bare'}>
           <div class="garage-control-group">
+            <h2>Chassis shell</h2>
+            <label class="garage-checkbox">
+              <input
+                type="checkbox"
+                checked={draft().disableGlassDetection}
+                onChange={(event) => updateDisableGlassDetection(event.currentTarget.checked)}
+              />
+              <span>
+                <strong>Disable glass detection</strong>
+                <small>Keep all shell parts opaque — fixes misclassified windows on some models</small>
+              </span>
+            </label>
+            <div class="garage-surface-mode-list">
+              <For each={GARAGE_CHASSIS_SURFACE_MODES}>
+                {(mode) => (
+                  <button
+                    type="button"
+                    class={`garage-chassis-card garage-surface-mode-card ${
+                      draft().chassisSurfaceMode === mode.id ? 'active' : ''
+                    }`}
+                    onClick={() => updateChassisSurfaceMode(mode.id)}
+                  >
+                    <strong>{mode.name}</strong>
+                    <small>{mode.description}</small>
+                  </button>
+                )}
+              </For>
+            </div>
+          </div>
+        </Show>
+
+        <Show when={draft().chassisId !== 'bare'}>
+          <div class="garage-control-group">
             <h2>Chassis shell transform</h2>
             <For each={CHASSIS_TRANSFORM_FIELDS}>
               {(field) => (
@@ -312,6 +419,19 @@ export function GarageScene(props) {
 
         <div class="garage-control-group">
           <h2>Performance</h2>
+          <div class="garage-frame-list">
+            <For each={GARAGE_ENGINE_OPTIONS}>
+              {(engine) => (
+                <button
+                  class={`garage-frame-card ${draft().performance.engineProfile === engine.id ? 'active' : ''}`}
+                  onClick={() => selectEngine(engine)}
+                >
+                  <strong>{engine.name}</strong>
+                  <small>{engine.description}</small>
+                </button>
+              )}
+            </For>
+          </div>
           <For each={PERFORMANCE_FIELDS}>
             {(field) => (
               <label class="garage-slider">
@@ -467,23 +587,8 @@ async function createGaragePreview(canvas, initialBuild) {
     const chassis = GARAGE_CHASSIS_OPTIONS.find((entry) => entry.id === build.chassisId)
       ?? GARAGE_CHASSIS_OPTIONS[0];
     const nextVehicle = new BaseVehicle({
+      ...vehicleOptionsFromGarageBuild(build),
       name: 'Garage Preview',
-      chassisOverlay: chassis.url ? { url: chassis.url, ...build.chassisTransform } : false,
-      frameParameters: build.frame,
-      wheelVisual: GARAGE_TIRE_OPTIONS.find((entry) => entry.id === build.wheels.tireId)?.url
-        ? { url: GARAGE_TIRE_OPTIONS.find((entry) => entry.id === build.wheels.tireId).url }
-        : null,
-      config: {
-        body: {
-          size: [build.frame.frameWidth, build.frame.frameHeight, build.frame.frameLength],
-        },
-        ground: {
-          wheelRadius: build.wheels.radius,
-          wheelWidth: build.wheels.width,
-          wheelInset: build.wheels.inset,
-          rayCast: { wheelRadius: build.wheels.radius },
-        },
-      },
     });
     const nextModel = nextVehicle.buildMesh();
     nextVehicle.group = nextModel;

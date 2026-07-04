@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { BaseVehicle, makeNeutralControls } from '../vehicles/BaseVehicle.js';
+import { BaseVehicle, makeNeutralControls, makeParkedControls } from '../vehicles/BaseVehicle.js';
 import { VEHICLE_DOMAINS } from '../config/vehicleConfig.js';
 
 // ---------------------------------------------------------------------------
@@ -23,8 +23,12 @@ import { VEHICLE_DOMAINS } from '../config/vehicleConfig.js';
 
 const ENTER_DISTANCE = 4.5;
 const HEADLIGHT_COLOR = 0xc9e9ff;
-const HEADLIGHT_INTENSITY = 4500;
-const HEADLIGHT_DISTANCE = 72;
+const HEADLIGHT_INTENSITY = 14000;
+const HEADLIGHT_DISTANCE = 240;
+const HEADLIGHT_ANGLE = 0.48;
+const HEADLIGHT_PENUMBRA = 0.72;
+const HEADLIGHT_TARGET_DROP = 2.4;
+const HEADLIGHT_TARGET_FORWARD = 140;
 
 // Mixamo hip bone used to hip-anchor the rider in the seat (same convention as
 // the horse saddle socket).
@@ -36,6 +40,7 @@ const _exitPos = new THREE.Vector3();
 const _anchorOffset = new THREE.Vector3();
 const _anchorWorld = new THREE.Vector3();
 const _recoveryPosition = new THREE.Vector3();
+const _recoveryBest = new THREE.Vector3();
 const _recoveryForward = new THREE.Vector3();
 const _lookaheadPosition = new THREE.Vector3();
 // How far ahead (in seconds of travel) the driven vehicle prefetches physics
@@ -43,9 +48,14 @@ const _lookaheadPosition = new THREE.Vector3();
 // a full radius-1 ring (9 chunks) fills in ~0.15s, well inside the window.
 const GROUND_PREFETCH_SECONDS = 1.25;
 const GROUND_PREFETCH_MIN_SPEED = 8; // m/s; below this the occupied chunk suffices
-const RECOVERY_RADII = [0, 3, 6, 10];
-const RECOVERY_DIRECTIONS = 8;
+const RECOVERY_RADII = [0, 4, 8, 14, 22, 32];
+const RECOVERY_DIRECTIONS = 12;
 const RECOVERY_CLEARANCE = 0.15;
+const RECOVERY_ROAD_SEARCH_MAX = 180;
+// Extra lift on spawn so the chassis clears road decks, heightfield seams, and any
+// analytic-vs-physics mismatch (the character rides analytic ground; a rigid body
+// needs real collider clearance).
+const SPAWN_EXTRA_CLEARANCE = 0.15;
 const CONTROL_RECORDING_LIMIT = 72_000;
 
 export class VehicleSystem {
@@ -56,16 +66,18 @@ export class VehicleSystem {
     this.scene = null;
     this.level = null;
     this.weatherSystem = null;
+    this.vehicleDamageSystem = null;
     this.status = 'idle';
     this.headlightsEnabled = false;
     this.controlRecording = [];
   }
 
-  initialize({ physics, scene, level = null, weatherSystem = null }) {
+  initialize({ physics, scene, level = null, weatherSystem = null, vehicleDamageSystem = null }) {
     this.physics = physics;
     this.scene = scene;
     this.level = level;
     this.weatherSystem = weatherSystem;
+    this.vehicleDamageSystem = vehicleDamageSystem;
     this.status = 'ready';
   }
 
@@ -106,7 +118,11 @@ export class VehicleSystem {
       // character rides analytic ground). A vehicle is a real rigid body, so
       // without this it would spawn over terrain that has no collider and fall
       // straight through. Builds the chunk block under the spawn if missing.
-      this.level.ensureGroundCollider?.(vehicle.spawnPosition, this.physics);
+      const builtCollider = this.level.ensureGroundCollider?.(vehicle.spawnPosition, this.physics);
+      if (builtCollider) {
+        // Rapier's query pipeline needs one step to see a heightfield we just built.
+        this.physics.world.step();
+      }
       // Sample the surface DIRECTLY under the spawn center (radius 0), not the
       // footprint MAX. getGroundHeightAt multi-samples around the radius and
       // returns the HIGHEST point (right for keeping a character from sinking),
@@ -116,12 +132,27 @@ export class VehicleSystem {
       // in the air, so it free-falls and tumbles down the slope on spawn ("falls
       // through the ground"). The point sample puts the wheels on the surface
       // they actually sit on; the suspension/contact resolves the per-wheel slope.
-      const ground = this.level.getGroundHeightAt(vehicle.spawnPosition, 0);
-      if (Number.isFinite(ground)) {
-        vehicle.spawnPosition.y = ground + vehicle.getGroundSpawnClearance();
+      const clearance = vehicle.getGroundSpawnClearance();
+      const analytic = this.level.getGroundHeightAt(vehicle.spawnPosition, 0, {
+        preferRoadSurface: true,
+      });
+      const physicsY = raycastPhysicsSurfaceY(
+        this.physics,
+        vehicle.spawnPosition.x,
+        vehicle.spawnPosition.z,
+      );
+      const surfaceY = Math.max(
+        Number.isFinite(analytic) ? analytic : -Infinity,
+        Number.isFinite(physicsY) ? physicsY : -Infinity,
+      );
+      if (Number.isFinite(surfaceY)) {
+        vehicle.spawnPosition.y = surfaceY + clearance + SPAWN_EXTRA_CLEARANCE;
       }
     }
     await vehicle.spawn({ scene: this.scene, physics: this.physics });
+    if (vehicle.domain === VEHICLE_DOMAINS.GROUND) {
+      vehicle.settleParked(this.physics);
+    }
     return this.registerVehicle(vehicle);
   }
 
@@ -147,7 +178,7 @@ export class VehicleSystem {
 
   // Returns { input } — possibly a locked clone while driving, or the original
   // (with the mount key consumed) when an enter/exit was handled this frame.
-  update({ delta, input, character, level }) {
+  update({ delta, input, character, level, camera = null }) {
     if (this.status !== 'ready' || !character) {
       return { input };
     }
@@ -210,6 +241,7 @@ export class VehicleSystem {
           }
         }
       }
+      this._updateVehicleSurface(this.activeVehicle);
       const controls = this._controlsFromInput(this.activeVehicle, input);
       this.activeVehicle.update({
         dt: delta,
@@ -217,33 +249,79 @@ export class VehicleSystem {
         physics: this.physics,
         weatherSystem: this.weatherSystem,
         integrate: !this.physics?.fixedStepPlanning,
+        camera,
       });
       this._lockRiderToSeat(character);
       outputInput = lockedInput(input);
     }
 
     const neutral = makeNeutralControls();
+    const parked = makeParkedControls();
     for (const vehicle of this.vehicles) {
       if (vehicle === this.activeVehicle) {
         continue;
       }
+      this._updateVehicleSurface(vehicle);
       const controls = vehicle.autopilot?.target
         ? vehicle.computeAutopilotControls()
-        : neutral;
+        : parked;
       vehicle.update({
         dt: delta,
         controls,
         physics: this.physics,
         weatherSystem: this.weatherSystem,
         integrate: !this.physics?.fixedStepPlanning,
+        camera,
       });
+    }
+
+    // Rally mud deform field: decay once per frame, then stamp fresh tyre ruts
+    // from each ground vehicle's telemetry. Null (no work) in every other mode.
+    const mudField = this.level?.mudField;
+    if (mudField) {
+      mudField.decay(delta);
+      for (const vehicle of this.vehicles) {
+        vehicle.stampMudRuts?.(mudField, delta);
+      }
+      // Follow the active car (or any ground vehicle) so the material can fade the
+      // wrapping deform texture to zero beyond the footprint around it.
+      const focus = this.activeVehicle?.group?.position
+        ?? character?.group?.position
+        ?? this.vehicles.find((v) => v.domain === VEHICLE_DOMAINS.GROUND)?.group?.position;
+      if (focus) mudField.setCenter(focus.x, focus.z);
+      // Re-upload the packed deform texture for the mud road material (no-op until
+      // the material has lazily created it). Same texture object every frame.
+      mudField.syncTexture();
     }
 
     if (consumedMount && outputInput.mountPressed) {
       outputInput = { ...outputInput, mountPressed: false };
     }
 
+    this._updateExteriorIdleAudio(character);
+
     return { input: outputInput };
+  }
+
+  _updateVehicleSurface(vehicle) {
+    if (vehicle?.domain !== VEHICLE_DOMAINS.GROUND) return;
+    const position = vehicle.group?.position ?? vehicle.spawnPosition;
+    const surface = position
+      ? this.level?.getRoadSurfaceAt?.(position.x, position.z)
+      : null;
+    vehicle.setGroundSurface?.(surface ?? 'offroad');
+    // Hand the vehicle the rally mud deform field (null everywhere else) so its
+    // integrate step can dip the visual tyres into their ruts.
+    vehicle.mudField = this.level?.mudField ?? null;
+  }
+
+  _updateExteriorIdleAudio(character) {
+    const listener = character?.group?.position;
+    if (!listener) return;
+    const inVehicle = Boolean(this.activeVehicle);
+    for (const vehicle of this.vehicles) {
+      vehicle.updateExteriorIdleAudio?.(listener, { inVehicle });
+    }
   }
 
   // ---- fixed-step hooks (wired into PhysicsSystem.stepHooks by GameRuntime) --
@@ -299,32 +377,66 @@ export class VehicleSystem {
     if (!vehicle?.group || !level?.getGroundHeightAt) return false;
 
     const origin = vehicle.group.position;
-    let found = false;
-    for (const radius of RECOVERY_RADII) {
-      const samples = radius === 0 ? 1 : RECOVERY_DIRECTIONS;
-      for (let index = 0; index < samples; index += 1) {
-        const angle = (index / samples) * Math.PI * 2;
-        _recoveryPosition.set(
-          origin.x + Math.cos(angle) * radius,
-          origin.y,
-          origin.z + Math.sin(angle) * radius,
-        );
-        const ground = level.getGroundHeightAt(_recoveryPosition, 0);
-        if (!Number.isFinite(ground)) continue;
-        _recoveryPosition.y = ground + vehicle.getGroundSpawnClearance() + RECOVERY_CLEARANCE;
-        found = true;
-        break;
-      }
-      if (found) break;
-    }
-    if (!found) return false;
+    let rotationY = vehicle.spawnRotationY;
+    let placedOnRoad = false;
 
-    level.ensureGroundCollider?.(_recoveryPosition, this.physics, { radiusChunks: 0 });
-    _recoveryForward.set(0, 0, -1).applyQuaternion(vehicle.group.quaternion);
-    _recoveryForward.y = 0;
-    const rotationY = _recoveryForward.lengthSq() > 0.0001
-      ? Math.atan2(-_recoveryForward.x, -_recoveryForward.z)
-      : vehicle.spawnRotationY;
+    const road = level.findNearestRoadPoint?.(origin.x, origin.z, {
+      maxDistance: RECOVERY_ROAD_SEARCH_MAX,
+    });
+    if (road) {
+      _recoveryPosition.set(road.x, 0, road.z);
+      rotationY = road.rotationY;
+      placedOnRoad = true;
+    } else {
+      let bestScore = Infinity;
+      let found = false;
+      for (const radius of RECOVERY_RADII) {
+        const samples = radius === 0 ? 1 : RECOVERY_DIRECTIONS;
+        for (let index = 0; index < samples; index += 1) {
+          const angle = (index / samples) * Math.PI * 2;
+          _recoveryPosition.set(
+            origin.x + Math.cos(angle) * radius,
+            origin.y,
+            origin.z + Math.sin(angle) * radius,
+          );
+          const ground = level.getGroundHeightAt(_recoveryPosition, 0);
+          if (!Number.isFinite(ground)) continue;
+          const onRoad = level.getRoadSurfaceAt?.(_recoveryPosition.x, _recoveryPosition.z) != null;
+          const dist = Math.hypot(_recoveryPosition.x - origin.x, _recoveryPosition.z - origin.z);
+          const score = dist + (onRoad ? 0 : 1000);
+          if (score < bestScore) {
+            bestScore = score;
+            _recoveryBest.copy(_recoveryPosition);
+            found = true;
+            placedOnRoad = onRoad;
+          }
+        }
+        if (found && placedOnRoad) break;
+      }
+      if (!found) return false;
+      if (placedOnRoad) {
+        _recoveryPosition.copy(_recoveryBest);
+      } else {
+        _recoveryPosition.copy(origin);
+      }
+    }
+
+    const ground = level.getGroundHeightAt(_recoveryPosition, 0, { preferRoadSurface: true });
+    if (!Number.isFinite(ground)) return false;
+    _recoveryPosition.y = ground + vehicle.getGroundSpawnClearance() + RECOVERY_CLEARANCE;
+
+    level.ensureGroundCollider?.(_recoveryPosition, this.physics, { radiusChunks: 1 });
+
+    if (!placedOnRoad) {
+      _recoveryForward.set(0, 0, -1).applyQuaternion(vehicle.group.quaternion);
+      _recoveryForward.y = 0;
+      if (_recoveryForward.lengthSq() > 0.0001) {
+        rotationY = Math.atan2(-_recoveryForward.x, -_recoveryForward.z);
+      }
+    }
+
+    this.vehicleDamageSystem?.repair?.(vehicle);
+
     return vehicle.recover({
       position: _recoveryPosition,
       rotationY,
@@ -366,6 +478,7 @@ export class VehicleSystem {
 
   _enter({ character, vehicle }) {
     const seatIndex = vehicle.driverSeatIndex;
+    vehicle.wakeForDrive(this.physics);
     vehicle.seatOccupant(seatIndex, character);
     this.activeVehicle = vehicle;
     character.velocity?.set(0, 0, 0);
@@ -402,6 +515,7 @@ export class VehicleSystem {
     }
     vehicle.tireEffects?.resume();
     vehicle.tireEffects?.mute(false);
+    vehicle.crashAudio?.resume();
     // AnimationStateSystem drives the seated state from next frame; play it now
     // so there's no one-frame gap to idle.
     character.animationController?.play?.('ridingHorse', 0.12);
@@ -422,6 +536,9 @@ export class VehicleSystem {
     character.vehicle = null;
     vehicle.onExit(character, seatIndex);
     this.activeVehicle = null;
+    if (vehicle.domain === VEHICLE_DOMAINS.GROUND) {
+      vehicle.park(this.physics);
+    }
     character.animationController?.play?.('idle', 0.12);
 
     // Mute engine audio when leaving the vehicle
@@ -482,8 +599,7 @@ export class VehicleSystem {
         c.throttle = throttle;
         c.steer = steer;
         c.brake = input.jump ? 1 : 0; // Space = brake
-        c.handbrake = input.slide === true; // C = handbrake / drift entry
-        c.boost = input.brace === true;
+        c.handbrake = input.brace === true; // Shift = handbrake / drift entry
         break;
     }
     return c;
@@ -544,13 +660,13 @@ function installHeadlights(vehicle, enabled) {
       HEADLIGHT_COLOR,
       HEADLIGHT_INTENSITY,
       HEADLIGHT_DISTANCE,
-      0.27,
-      0.7,
+      HEADLIGHT_ANGLE,
+      HEADLIGHT_PENUMBRA,
       2,
     );
     light.name = side < 0 ? 'Xenon headlight left' : 'Xenon headlight right';
     light.position.set(x, y, z);
-    light.target.position.set(x, y - 1.8, z - 42);
+    light.target.position.set(x, y - HEADLIGHT_TARGET_DROP, z - HEADLIGHT_TARGET_FORWARD);
     light.castShadow = false;
 
     const lens = new THREE.Mesh(lensGeometry, lensMaterial);
@@ -582,6 +698,7 @@ function lockedInput(input) {
     cutModePressed: false,
     telekinesisPressed: false,
     hookFirePressed: false,
+    hookAimHeld: false,
     dodgeDirection: null,
   };
 }
@@ -612,4 +729,15 @@ function getRiderHipAnchorOffset(character) {
   _anchorOffset.copy(_anchorWorld);
   character.group.worldToLocal(_anchorOffset);
   return _anchorOffset.clone();
+}
+
+function raycastPhysicsSurfaceY(physics, x, z) {
+  const world = physics?.world;
+  const RAPIER = physics?.RAPIER;
+  if (!world || !RAPIER) return null;
+  const fromY = 512;
+  const ray = new RAPIER.Ray({ x, y: fromY, z }, { x: 0, y: -1, z: 0 });
+  const hit = world.castRay(ray, fromY + 64, true);
+  if (!hit) return null;
+  return fromY - (hit.timeOfImpact ?? hit.toi);
 }

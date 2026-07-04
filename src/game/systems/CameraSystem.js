@@ -15,6 +15,8 @@ const freeMove = new THREE.Vector3();
 const freeForward = new THREE.Vector3();
 const freeRight = new THREE.Vector3();
 const freeEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+const seatEyePosition = new THREE.Vector3();
+const seatEyeOffset = new THREE.Vector3();
 
 function lerpAngle(from, to, alpha) {
   let delta = to - from;
@@ -58,6 +60,8 @@ export class CameraSystem {
     this.lastPositionSmoothing = GAME_CONFIG.camera.smoothing;
     this.lastTargetSmoothing = GAME_CONFIG.camera.targetSmoothing;
     this.driving = false;
+    this.vehicleCameraMode = GAME_CONFIG.camera.vehicleCameraModeOrder[0];
+    this._firstPersonHidCharacter = false;
     this.vehicleCameraYaw = 0;
     this.vehicleSteerOffset = 0;
     this.vehicleLateralOffset = 0;
@@ -87,6 +91,27 @@ export class CameraSystem {
       this.smoothedFov = this.camera.fov;
       delete this.camera.userData.photoMode;
     }
+  }
+
+  cycleVehicleCameraMode() {
+    const order = GAME_CONFIG.camera.vehicleCameraModeOrder;
+    const index = order.indexOf(this.vehicleCameraMode);
+    this.vehicleCameraMode = order[(index + 1) % order.length];
+    this.hasSmoothedTarget = false;
+    return this.vehicleCameraMode;
+  }
+
+  setVehicleCameraMode(mode) {
+    const order = GAME_CONFIG.camera.vehicleCameraModeOrder;
+    if (!order.includes(mode)) {
+      return this.vehicleCameraMode;
+    }
+    if (mode === this.vehicleCameraMode) {
+      return mode;
+    }
+    this.vehicleCameraMode = mode;
+    this.hasSmoothedTarget = false;
+    return mode;
   }
 
   setPhotoSetting(name, value) {
@@ -142,7 +167,7 @@ export class CameraSystem {
     vehicle = null,
   }) {
     if (vehicle) {
-      this.updateVehicleChaseCamera({ delta, vehicle, viewport });
+      this.updateVehicleCamera({ delta, vehicle, viewport, character });
       return;
     }
 
@@ -151,6 +176,7 @@ export class CameraSystem {
       this.hasSmoothedTarget = false;
       this.vehicleSteerOffset = 0;
       this.vehicleLateralOffset = 0;
+      this._restoreCharacterVisibility(character);
     }
 
     const config = GAME_CONFIG.camera;
@@ -192,8 +218,7 @@ export class CameraSystem {
     });
   }
 
-  updateVehicleChaseCamera({ delta, vehicle, viewport }) {
-    const config = GAME_CONFIG.camera.vehicle;
+  updateVehicleCamera({ delta, vehicle, viewport, character }) {
     const chassis = vehicle.group;
     if (!chassis) {
       return;
@@ -201,6 +226,22 @@ export class CameraSystem {
 
     const enteringVehicle = !this.driving;
     this.driving = true;
+
+    if (this.vehicleCameraMode === 'firstPerson') {
+      this._setCharacterHiddenForFirstPerson(character, true);
+      this.updateVehicleFirstPersonCamera({ delta, vehicle });
+      return;
+    }
+
+    this._setCharacterHiddenForFirstPerson(character, false);
+    this.updateVehicleChaseCamera({ delta, vehicle, viewport, enteringVehicle });
+  }
+
+  updateVehicleChaseCamera({ delta, vehicle, viewport, enteringVehicle }) {
+    const shared = GAME_CONFIG.camera.vehicle;
+    const mode = GAME_CONFIG.camera.vehicleCameraModes[this.vehicleCameraMode]
+      ?? GAME_CONFIG.camera.vehicleCameraModes.close;
+    const chassis = vehicle.group;
 
     const headingYaw = extractVehicleYaw(chassis.quaternion);
     if (enteringVehicle) {
@@ -210,74 +251,123 @@ export class CameraSystem {
       this.smoothedTarget.copy(chassis.position);
       this.hasSmoothedTarget = true;
       this.yaw = headingYaw;
-      this.pitch = config.pitch;
+      this.pitch = mode.pitch;
     }
 
-    const yawAlpha = 1 - Math.exp(-config.yawSmoothing * delta);
+    const yawAlpha = 1 - Math.exp(-shared.yawSmoothing * delta);
     this.vehicleCameraYaw = lerpAngle(this.vehicleCameraYaw, headingYaw, yawAlpha);
 
     const steer = getVehicleSteerInput(vehicle);
-    const steerAlpha = 1 - Math.exp(-config.steerOffsetSmoothing * delta);
-    const desiredSteerOffset = steer * config.steerLookStrength;
+    const steerAlpha = 1 - Math.exp(-shared.steerOffsetSmoothing * delta);
+    const desiredSteerOffset = steer * shared.steerLookStrength;
     this.vehicleSteerOffset = THREE.MathUtils.lerp(this.vehicleSteerOffset, desiredSteerOffset, steerAlpha);
     this.vehicleLateralOffset = THREE.MathUtils.lerp(
       this.vehicleLateralOffset,
-      -steer * config.lateralShift,
+      -steer * shared.lateralShift,
       steerAlpha,
     );
 
     const cameraYaw = this.vehicleCameraYaw + this.vehicleSteerOffset;
     this.yaw = cameraYaw;
-    this.pitch = config.pitch;
+    this.pitch = mode.pitch;
 
     const horizontalSpeed = getVehicleHorizontalSpeed(vehicle);
     const speedRatio = THREE.MathUtils.clamp(
-      horizontalSpeed / config.maxSpeedForEffects,
+      horizontalSpeed / shared.maxSpeedForEffects,
       0,
       1,
     );
-    const responsiveDistance = viewport?.aspect < 0.8 ? config.followDistance + 1.1 : config.followDistance;
-    const distance = responsiveDistance + horizontalSpeed * config.speedDistanceBoost;
-    const responsiveHeight = viewport?.aspect < 0.8 ? config.followHeight + 0.35 : config.followHeight;
+    const responsiveDistance = viewport?.aspect < 0.8 ? mode.followDistance + 1.1 : mode.followDistance;
+    const distance = responsiveDistance + horizontalSpeed * shared.speedDistanceBoost;
+    const responsiveHeight = viewport?.aspect < 0.8 ? mode.followHeight + 0.35 : mode.followHeight;
 
     this.updateSmoothedTarget({
       target: chassis.position,
       delta,
-      targetSmoothing: config.targetSmoothing,
+      targetSmoothing: shared.targetSmoothing,
       // At maximum speed the old fixed 14 m threshold represented only ~0.2 s
       // and turned an otherwise smooth catch-up into a hard target snap.
-      maxLag: Math.max(config.maxTargetLag, horizontalSpeed * 0.45),
+      maxLag: Math.max(shared.maxTargetLag, horizontalSpeed * 0.45),
     });
-    this.lastPositionSmoothing = config.positionSmoothing;
-    this.lastTargetSmoothing = config.targetSmoothing;
+    this.lastPositionSmoothing = shared.positionSmoothing;
+    this.lastTargetSmoothing = shared.targetSmoothing;
 
     vehicleForward.set(0, 0, -1).applyQuaternion(chassis.quaternion);
     vehicleRight.set(1, 0, 0).applyQuaternion(chassis.quaternion);
 
-    const horizontalDistance = Math.cos(config.pitch) * distance;
+    const horizontalDistance = Math.cos(mode.pitch) * distance;
     offset
       .set(Math.sin(cameraYaw), 0, Math.cos(cameraYaw))
       .multiplyScalar(horizontalDistance);
-    offset.y = responsiveHeight + Math.sin(config.pitch) * distance;
+    offset.y = responsiveHeight + Math.sin(mode.pitch) * distance;
     offset.addScaledVector(vehicleRight, this.vehicleLateralOffset);
 
     desiredPosition.copy(this.smoothedTarget).add(offset);
     this.camera.position.lerp(
       desiredPosition,
-      1 - Math.exp(-config.positionSmoothing * delta),
+      1 - Math.exp(-shared.positionSmoothing * delta),
     );
 
     vehicleTarget
       .copy(this.smoothedTarget)
-      .addScaledVector(vehicleForward, config.lookAhead)
-      .add({ x: 0, y: config.lookHeight, z: 0 });
+      .addScaledVector(vehicleForward, mode.lookAhead)
+      .add({ x: 0, y: mode.lookHeight, z: 0 });
     this.camera.lookAt(vehicleTarget);
 
     this.updateFov({
       delta,
-      targetFov: config.baseFov + speedRatio * config.speedFovBoost,
+      targetFov: shared.baseFov + speedRatio * shared.speedFovBoost,
       smoothing: 8,
     });
+  }
+
+  updateVehicleFirstPersonCamera({ delta, vehicle }) {
+    const config = GAME_CONFIG.camera.vehicleCameraModes.firstPerson;
+    const chassis = vehicle.group;
+    const seat = vehicle.config?.seats?.[vehicle.driverSeatIndex];
+    if (!chassis || !seat) {
+      return;
+    }
+
+    // Bolt the view to the chassis — any position smoothing trails the car under
+    // acceleration and makes rear interior geometry slide into the frame.
+    seatEyePosition.fromArray(seat.offset);
+    seatEyePosition.y += vehicle.frameParameters?.offsetFromTires ?? 0;
+    seatEyeOffset.fromArray(config.eyeOffset);
+    seatEyePosition.add(seatEyeOffset);
+    chassis.updateWorldMatrix(true, false);
+    this.camera.position.copy(seatEyePosition).applyMatrix4(chassis.matrixWorld);
+    this.camera.quaternion.copy(chassis.quaternion);
+
+    vehicleForward.set(0, 0, -1).applyQuaternion(chassis.quaternion);
+    this.yaw = Math.atan2(-vehicleForward.x, -vehicleForward.z);
+    freeEuler.setFromQuaternion(chassis.quaternion, 'YXZ');
+    this.pitch = freeEuler.x;
+
+    this.updateFov({
+      delta,
+      targetFov: config.fov,
+      smoothing: 10,
+    });
+  }
+
+  _setCharacterHiddenForFirstPerson(character, hidden) {
+    if (!character?.group) {
+      return;
+    }
+    if (hidden === this._firstPersonHidCharacter) {
+      return;
+    }
+    character.group.visible = !hidden;
+    this._firstPersonHidCharacter = hidden;
+  }
+
+  _restoreCharacterVisibility(character) {
+    if (!this._firstPersonHidCharacter || !character?.group) {
+      return;
+    }
+    character.group.visible = true;
+    this._firstPersonHidCharacter = false;
   }
 
   updateFov({ delta, targetFov, smoothing }) {
@@ -342,6 +432,7 @@ export class CameraSystem {
       positionSmoothing: Number((this.lastPositionSmoothing ?? 0).toFixed(2)),
       targetSmoothing: Number((this.lastTargetSmoothing ?? 0).toFixed(2)),
       driving: this.driving,
+      vehicleCameraMode: this.vehicleCameraMode,
       photoMode: this.photoMode,
       photoSettings: { ...this.photoSettings },
     };

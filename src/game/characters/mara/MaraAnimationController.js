@@ -57,6 +57,24 @@ const FOOT_GROUNDING_SETTINGS = {
     maxGroundDistance: 0.09,
     smoothing: 24,
   },
+  mudIdle: {
+    maxDrop: 0.2,
+    maxRaise: 0.04,
+    maxGroundDistance: 0.12,
+    smoothing: 18,
+  },
+  mudWalk: {
+    maxDrop: 0.22,
+    maxRaise: 0.04,
+    maxGroundDistance: 0.12,
+    smoothing: 20,
+  },
+  mudRun: {
+    maxDrop: 0.24,
+    maxRaise: 0.04,
+    maxGroundDistance: 0.13,
+    smoothing: 24,
+  },
   runningSlide: {
     maxDrop: 0.68,
     maxRaise: 0.035,
@@ -365,10 +383,11 @@ const emptyIkWeights = {
 };
 
 export class MaraAnimationController {
-  constructor({ mixer, clips, modelRoot }) {
+  constructor({ mixer, clips, modelRoot, skeletonSource = 'mixamo' }) {
     this.mixer = mixer;
     this.clips = clips;
     this.modelRoot = modelRoot;
+    this.skeletonSource = skeletonSource;
     this.baseModelPosition = modelRoot?.position.clone() ?? new THREE.Vector3();
     this.baseModelQuaternion = modelRoot?.quaternion.clone() ?? new THREE.Quaternion();
     this.baseModelY = modelRoot?.position.y ?? 0;
@@ -695,7 +714,7 @@ export class MaraAnimationController {
     // When layered (armed), the base drives only the lower body so the upper-body
     // overlay can own the torso/arms. Otherwise play the full clip.
     const map = this.layered ? this.lowerActions : this.actions;
-    const nextAction = map.get(state) ?? this.actions.get(state) ?? this.actions.get('idle');
+    const nextAction = map.get(state) ?? this.actions.get(state);
     const currentSettings = this.actionSettings.get(this.currentState) ?? {};
     const settings = this.actionSettings.get(state) ?? {};
     const transition = currentSettings.transitions?.[state] ?? {};
@@ -727,6 +746,10 @@ export class MaraAnimationController {
     this.currentState = state;
   }
 
+  hasState(state) {
+    return this.actions.has(state);
+  }
+
   // Toggle armed mode: when layered, play() uses lower-body-masked clips so the
   // upper-body overlay (setUpperBodyState) can drive the torso/arms.
   setLayered(layered) {
@@ -754,9 +777,9 @@ export class MaraAnimationController {
     if (this.upperBodyState === state) {
       return;
     }
-    this.upperBodyState = state;
 
     if (!state) {
+      this.upperBodyState = null;
       if (this.upperBodyAction) {
         this.upperBodyAction.fadeOut(fadeSeconds);
         this.upperBodyAction = null;
@@ -768,12 +791,14 @@ export class MaraAnimationController {
     // are disjoint from the lower-body base, so they never compete for a bone.
     const nextAction = this.upperActions.get(state);
     if (!nextAction) {
+      this.upperBodyState = null;
       if (this.upperBodyAction) {
         this.upperBodyAction.fadeOut(fadeSeconds);
         this.upperBodyAction = null;
       }
       return;
     }
+    this.upperBodyState = state;
 
     const settings = this.actionSettings.get(state) ?? {};
     const fade = fadeSeconds ?? settings.fadeIn ?? DEFAULT_FADE_SECONDS;
@@ -825,6 +850,9 @@ export class MaraAnimationController {
         // reference so the ramp can continue fading its weight and restore the
         // locomotion base weight. Actual stop/null happens in update when weight ~0.
         this.attackLegState = null;
+        if (state) {
+          targetWeight = 0;
+        }
       }
     }
     this.attackLegTarget = Math.max(0, Math.min(1, targetWeight));
@@ -836,9 +864,14 @@ export class MaraAnimationController {
     return Number.isFinite(duration) && timeScale > 0 ? duration / timeScale : duration;
   }
 
+  hasAnimation(state) {
+    return this.actions.has(state);
+  }
+
   snapshot() {
     return {
       source: this.modelRoot?.parent?.name?.includes('GLB') || this.modelRoot?.name?.includes('GLB') ? 'glb' : 'fbx',
+      skeletonSource: this.skeletonSource,
       currentState: this.currentState,
       upperBodyState: this.upperBodyState,
       attackLegState: this.attackLegState,

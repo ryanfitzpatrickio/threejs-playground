@@ -91,9 +91,10 @@ async function probe(x, z) {
   await vehicleSystem.spawnVehicle({ vehicle });
   const spawnY = vehicle.spawnPosition.y;
   const clearance = vehicle.getGroundSpawnClearance();
+  const SPAWN_EXTRA_CLEARANCE = 0.15; // keep in sync with VehicleSystem
   // How far above the surface-under-center the snap placed the chassis, beyond the
-  // intended rest clearance. ~0 = lands on the surface; large = floats and drops.
-  const overshoot = spawnY - (ground0 + clearance);
+  // intended rest clearance + spawn lift. ~0 = lands on the surface; large = floats and drops.
+  const overshoot = spawnY - (ground0 + clearance + SPAWN_EXTRA_CLEARANCE);
 
   vehicleSystem.removeVehicle(vehicle);
 

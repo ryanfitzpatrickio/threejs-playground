@@ -58,6 +58,11 @@ export function createLevelGeometryIndex(root) {
         // (terrain/blueprint/wilds levels) is unaffected until each is audited.
         if (objectRoot.userData?.freezeStaticWorldMatrices === true) {
           object.matrixWorldAutoUpdate = false;
+          // Three's NodeMaterialObserver skips the per-frame equals() path (world
+          // matrix, lights, env) when object.static === true. Node materials still
+          // run updateForRender, but this avoids redundant observer work on every
+          // static city chunk mesh each render pass.
+          object.static = true;
         }
       }
 

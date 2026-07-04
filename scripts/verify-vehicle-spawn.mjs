@@ -3,6 +3,9 @@ import * as THREE from 'three';
 import { VehicleSystem } from '../src/game/systems/VehicleSystem.js';
 import { BaseVehicle } from '../src/game/vehicles/BaseVehicle.js';
 
+// Keep in sync with VehicleSystem SPAWN_EXTRA_CLEARANCE.
+const SPAWN_EXTRA_CLEARANCE = 0.15;
+
 class SpawnProbeVehicle extends BaseVehicle {
   async spawn() {
     this.spawnedAt = this.spawnPosition.clone();
@@ -38,7 +41,7 @@ await system.spawnVehicle({ vehicle });
 const susp = vehicle.config.ground.suspension;
 const wheelCount = vehicle.config.ground.wheels?.length ?? 4;
 const sag = Math.min(susp.restLength, 9.81 / (wheelCount * susp.stiffness));
-const expectedY = 7.25 + 2 + (susp.restLength - sag) + vehicle.config.body.contactSkin;
+const expectedY = 7.25 + 2 + (susp.restLength - sag) + vehicle.config.body.contactSkin + SPAWN_EXTRA_CLEARANCE;
 assert.ok(Math.abs(vehicle.spawnedAt.y - expectedY) < 1e-9);
 assert.ok(
   vehicle.spawnedAt.y - vehicle.config.body.size[1] * 0.5 > 7.25,

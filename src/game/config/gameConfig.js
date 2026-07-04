@@ -39,8 +39,47 @@ export const GAME_CONFIG = {
       baseFov: 54,
       defaultFov: 48,
     },
+    // Driving camera presets — cycled from the top-bar eye control while in a vehicle.
+    vehicleCameraModes: {
+      close: {
+        followDistance: 5.8,
+        followHeight: 1.45,
+        lookAhead: 5.5,
+        lookHeight: 0.75,
+        pitch: 0.1,
+      },
+      medium: {
+        followDistance: 8.8,
+        followHeight: 2.05,
+        lookAhead: 7.2,
+        lookHeight: 0.85,
+        pitch: 0.12,
+      },
+      far: {
+        followDistance: 12.5,
+        followHeight: 2.85,
+        lookAhead: 9.5,
+        lookHeight: 1.0,
+        pitch: 0.14,
+      },
+      firstPerson: {
+        // Chassis-local offset from the driver seat anchor (x, y, z). -Z is forward.
+        eyeOffset: [0, 0.68, -0.14],
+        fov: 72,
+      },
+    },
+    vehicleCameraModeOrder: ['close', 'medium', 'far', 'firstPerson'],
   },
   character: {
+    // Selects a profile from playerModelProfiles.js. Override at runtime with
+    // ?playerModel=mixamo or ?playerModel=mesh2motion for side-by-side testing.
+    playerModel: 'mixamo',
+    // Jacket / cloth experiments (three-simplecloth). Disabled by default — set
+    // jacketExperiments: true to re-enable, or force a one-off test with
+    // ?jacket=cloth or ?jacket=procedural in the URL.
+    jacketExperiments: false,
+    // Target mode when jacketExperiments is true: "cloth" | "procedural" | "off".
+    jacket: 'cloth',
     walkSpeed: 2.1,
     jogSpeed: 4.1,
     sprintSpeed: 6.15,

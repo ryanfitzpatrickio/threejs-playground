@@ -11,6 +11,7 @@
  */
 
 import { normalizeWorldMap, makeId } from './worldMapSchema.js';
+import { getDefaultRallyWorldMap as getBuiltInDefaultRallyWorldMap } from './defaultRallyMap.js';
 import {
   getWorldMapDraft,
   readCollection,
@@ -58,6 +59,8 @@ function readAll() {
   return scenes;
 }
 
+/** @typedef {'world' | 'rally'} SceneDefaultRole */
+
 /** Lightweight metadata for every saved scene, newest first (no full map). */
 export function listScenes() {
   const all = readAll();
@@ -68,6 +71,7 @@ export function listScenes() {
       savedAt: s.savedAt ?? 0,
       zones: s.map?.zones?.length ?? 0,
       pois: s.map?.pois?.length ?? 0,
+      defaultRole: getSceneDefaultRole(s.id ?? id),
     }))
     .sort((a, b) => b.savedAt - a.savedAt);
 }
@@ -108,26 +112,92 @@ export function saveScene({ id = null, name, map }) {
   return { id: entry.id, name: entry.name, savedAt: entry.savedAt };
 }
 
+/** Stable id for the authored Pine Ridge stage shipped in defaultRallyMap.js */
+export const BUILTIN_RALLY_SCENE_ID = 'pine-ridge-rally';
+
+/**
+ * Save the built-in rally track as a named scene (idempotent). Returns scene
+ * metadata whether newly created or already present.
+ */
+export function ensureBuiltInRallyScene() {
+  const existing = getScene(BUILTIN_RALLY_SCENE_ID);
+  if (existing) {
+    return { id: existing.id, name: existing.name, savedAt: existing.savedAt };
+  }
+  const map = getBuiltInDefaultRallyWorldMap();
+  return saveScene({
+    id: BUILTIN_RALLY_SCENE_ID,
+    name: map.name ?? 'Pine Ridge Rally',
+    map,
+  });
+}
+
 export function deleteScene(id) {
   const all = readAll();
-  if (all[id]) {
-    deleteEntry('worldmaps', id);
-    return true;
+  if (!all[id]) return false;
+  deleteEntry('worldmaps', id);
+  clearSceneDefaultRoles(id);
+  return true;
+}
+
+// ----------------------------------------------------------------------
+// Default scene roles (one World default + one Rally default across all maps)
+// ----------------------------------------------------------------------
+export function getDefaultWorldSceneId() {
+  return readState().defaultWorldSceneId || null;
+}
+
+export function getDefaultRallySceneId() {
+  return readState().defaultRallySceneId || null;
+}
+
+/** @returns {SceneDefaultRole | null} */
+export function getSceneDefaultRole(sceneId) {
+  if (!sceneId) return null;
+  const state = readState();
+  if (state.defaultWorldSceneId === sceneId) return 'world';
+  if (state.defaultRallySceneId === sceneId) return 'rally';
+  return null;
+}
+
+/**
+ * Mark a scene as the default for World or Rally play. Each scene can hold at
+ * most one role; setting a role clears the other on the same scene. Only one
+ * scene may be the default of each type. Pass `role: null` to clear this scene.
+ */
+export function setSceneDefaultRole(sceneId, role) {
+  if (!sceneId) return;
+  if (role && !getScene(sceneId)) return;
+  const state = readState();
+  const patch = {};
+
+  if (role === 'world') {
+    patch.defaultWorldSceneId = sceneId;
+    if (state.defaultRallySceneId === sceneId) patch.defaultRallySceneId = undefined;
+  } else if (role === 'rally') {
+    patch.defaultRallySceneId = sceneId;
+    if (state.defaultWorldSceneId === sceneId) patch.defaultWorldSceneId = undefined;
+  } else {
+    if (state.defaultWorldSceneId === sceneId) patch.defaultWorldSceneId = undefined;
+    if (state.defaultRallySceneId === sceneId) patch.defaultRallySceneId = undefined;
   }
-  return false;
+
+  if (Object.keys(patch).length) writeState(patch);
+}
+
+function clearSceneDefaultRoles(sceneId) {
+  const state = readState();
+  const patch = {};
+  if (state.defaultWorldSceneId === sceneId) patch.defaultWorldSceneId = undefined;
+  if (state.defaultRallySceneId === sceneId) patch.defaultRallySceneId = undefined;
+  if (Object.keys(patch).length) writeState(patch);
 }
 
 // ----------------------------------------------------------------------
 // Active scene (what the playable World loads)
 // ----------------------------------------------------------------------
 export function setActiveSceneId(id) {
-  const state = readState();
-  if (id) writeState({ ...state, activeSceneId: id });
-  else {
-    const next = { ...state };
-    delete next.activeSceneId;
-    writeState(next);
-  }
+  writeState({ activeSceneId: id || undefined });
 }
 
 export function getActiveSceneId() {
@@ -155,4 +225,20 @@ export function getActiveWorldMapSync() {
  */
 export async function getActiveWorldMap() {
   return getActiveWorldMapSync();
+}
+
+/**
+ * Rally play map: default rally scene when set, otherwise the built-in stage.
+ */
+export function getRallyWorldMapSync() {
+  const id = getDefaultRallySceneId();
+  if (id) {
+    const scene = getScene(id);
+    if (scene) return scene.map;
+  }
+  return getBuiltInDefaultRallyWorldMap();
+}
+
+export async function getRallyWorldMap() {
+  return getRallyWorldMapSync();
 }

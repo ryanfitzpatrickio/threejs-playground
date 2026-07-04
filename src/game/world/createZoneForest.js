@@ -23,7 +23,13 @@ const ALT_MIN = 0.08;             // forest band, as a fraction of the zone's he
 const ALT_MAX = 0.58;
 const MIN_FLATNESS = 0.5;         // skip steep ground (normal.y below this)
 
-export function createZoneForest({ zones = [], sampleHeight, forestCount }) {
+export function createZoneForest({
+  zones = [],
+  sampleHeight,
+  forestCount,
+  roadCorridor = null,
+  riverCorridor = null,
+}) {
   if (!zones.length) return { group: null, count: 0, setCameraPosition() {}, dispose() {} };
 
   // Sample the zones' height range so the altitude band is meaningful.
@@ -92,6 +98,11 @@ export function createZoneForest({ zones = [], sampleHeight, forestCount }) {
       const x = b.minX + rng() * (b.maxX - b.minX);
       const z = b.minZ + rng() * (b.maxZ - b.minZ);
       if (!zoneContains(zone, x, z)) continue;
+      // Roads and rivers are already transformed into world space before their
+      // profiles are built. Query those exact profiles here so vegetation uses
+      // the same translated spline, width, and edge feather as terrain shaping
+      // and road/river rendering. This also clears bridged roads through Wilds.
+      if (isForestCorridorExcluded(x, z, roadCorridor, riverCorridor)) continue;
 
       const y = sampleHeight(x, z);
       const altitude = (y - minY) / span;
@@ -136,6 +147,14 @@ export function createZoneForest({ zones = [], sampleHeight, forestCount }) {
     setCameraPosition: (pos) => { camPos.value.copy(pos); },
     dispose: () => { geometry.dispose(); },
   };
+}
+
+/** Pure predicate kept exported so vector-corridor exclusion can be regression tested. */
+export function isForestCorridorExcluded(x, z, roadCorridor, riverCorridor) {
+  const road = typeof roadCorridor === 'function' ? roadCorridor(x, z) : null;
+  if ((road?.weight ?? 0) > 0) return true;
+  const river = typeof riverCorridor === 'function' ? riverCorridor(x, z) : null;
+  return (river?.weight ?? 0) > 0;
 }
 
 // One tree blob: an icosphere squashed into a lumpy teardrop (matches r185's

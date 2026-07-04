@@ -57,7 +57,7 @@ const BRIDGE_CLEARANCE = 0.8;
 // follows a steep hill / spiral exactly instead of being graded down below the
 // spline. The world pipeline passes the SAME values so a placed blueprint road
 // matches its editor preview (see createStreamingTerrainLevel).
-const ROAD_PROFILE_OPTS = { smoothRadius: 2, maxGrade: Infinity };
+const ROAD_PROFILE_OPTS = { sampleSpacing: 1, smoothRadius: 4, maxGrade: Infinity };
 const RIVER_PROFILE_OPTS = { smoothRadius: 2 };
 // How close a click must land to a road/river centerline to pick it (world m).
 const PICK_TOLERANCE = 3;
@@ -1671,6 +1671,7 @@ export class MapBuilder {
       id: r.id, type: 'road', width: r.width,
       points: r.points.map((p) => ({ x: p.x, z: p.z })),
       ...(typeof r.trackStyle === 'string' && r.trackStyle ? { trackStyle: r.trackStyle } : {}),
+      ...(typeof r.surface === 'string' && r.surface ? { surface: r.surface } : {}),
       ...(Number.isFinite(r.elevation) ? { elevation: r.elevation } : {}),
     }));
   }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import { normalizeWorldMap, CITY_STYLE_ORDER } from '../src/world/worldMap/worldMapSchema.js';
-import { getCityStride, buildSkeletonColliderData, createCityMaterialWarmupGroup, createGeneratorCityLevel, serializeGeneratorCityChunk, createGeneratorCityChunkFromPayload } from '../src/game/world/createGeneratorCityLevel.js';
+import { getCityStride, buildSkeletonColliderData, createCityMaterialWarmupGroup, createGeneratorCityLevel, serializeGeneratorCityChunk, createGeneratorCityChunkFromPayload, CITY_SEED } from '../src/game/world/createGeneratorCityLevel.js';
 import { seedForChunk } from '../src/game/world/createInfiniteCityLevel.js';
 import { resolveCityChunkDistrict } from '../src/game/world/createComposedWorldLevel.js';
 import { extractCityTraversal } from '../src/game/world/extractCityTraversal.js';
@@ -140,6 +140,42 @@ assertMeshesInsideZone(dtRebuilt.group, 'downtown rebuilt');
 dtRebuilt.dispose();
 dtUnclipped.dispose();
 dtChunk.dispose();
+
+// Adjacent streamed chunks must not both emit a sidewalk slab for the same world
+// block center — that duplication reads as curbs expanding past the road border.
+const seamA = createGeneratorCityLevel({
+  cityStyle: 'downtown', seed: 42, chunkKey: '1:0', chunkX: 1, chunkZ: 0,
+  originX: stride.x, originZ: 0, includeDebugOverlay: false,
+});
+const seamB = createGeneratorCityLevel({
+  cityStyle: 'downtown', seed: seedForChunk(2, 0, CITY_SEED), chunkKey: '2:0', chunkX: 2, chunkZ: 0,
+  originX: stride.x * 2, originZ: 0, includeDebugOverlay: false,
+});
+const seamPositions = new Set();
+const findSidewalkSlab = (root) => {
+  let slab = null;
+  root.traverse((child) => {
+    if (child.isInstancedMesh && child.name === 'Sidewalk Slab') slab = child;
+  });
+  return slab;
+};
+for (const chunk of [seamA, seamB]) {
+  chunk.group.updateMatrixWorld(true);
+  const instanced = findSidewalkSlab(chunk.group);
+  if (!instanced) continue;
+  const matrix = new THREE.Matrix4();
+  const position = new THREE.Vector3();
+  for (let index = 0; index < instanced.count; index += 1) {
+    instanced.getMatrixAt(index, matrix);
+    position.setFromMatrixPosition(matrix);
+    instanced.localToWorld(position);
+    const key = `${position.x.toFixed(3)}:${position.z.toFixed(3)}`;
+    assert.ok(!seamPositions.has(key), `duplicate sidewalk instance at ${key}`);
+    seamPositions.add(key);
+  }
+}
+seamA.dispose();
+seamB.dispose();
 
 const overlap = [
   zone('first', 'suburbs', 10, { minX: -100, minZ: -100, maxX: 100, maxZ: 100 }),

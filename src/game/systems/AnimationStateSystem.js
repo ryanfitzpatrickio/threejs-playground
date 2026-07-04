@@ -17,6 +17,8 @@ export class AnimationStateSystem {
   constructor() {
     this.status = 'waiting';
     this.state = 'loading';
+    this.playbackState = 'loading';
+    this.locomotionSurface = null;
     this.elapsed = 0;
     this.airborneElapsed = 0;
     this.jumpStartedMoving = false;
@@ -30,6 +32,8 @@ export class AnimationStateSystem {
   start({ character }) {
     this.status = 'running';
     this.state = 'idle';
+    this.playbackState = 'idle';
+    this.locomotionSurface = null;
     this.elapsed = 0;
     this.airborneElapsed = 0;
     this.jumpStartedMoving = false;
@@ -47,7 +51,7 @@ export class AnimationStateSystem {
     applyIdlePose(character, 0);
   }
 
-  update({ delta, input, movement, character }) {
+  update({ delta, input, movement, character, level = null }) {
     if (this.status !== 'running') {
       return;
     }
@@ -77,6 +81,14 @@ export class AnimationStateSystem {
     }
 
     this.state = this.resolveAnimationState({ input, movement, character, delta });
+    this.locomotionSurface = resolveLocomotionSurface({ character, level });
+    const surfacePlaybackState = (state) => resolveSurfacePlaybackState({
+      state,
+      movement,
+      surface: this.locomotionSurface,
+      controller: character.animationController,
+    });
+    this.playbackState = surfacePlaybackState(this.state);
     character.sway = Math.sin(this.elapsed * 1.35) * (this.state === 'brace' ? 0.12 : 0.045);
 
     if (character.animationController) {
@@ -101,7 +113,7 @@ export class AnimationStateSystem {
 
       if (flinchLayered && !dodgeActive) {
         character.animationController.setLayered(true);
-        const lowerState = resolveLocomotionLower(input, movement);
+        const lowerState = surfacePlaybackState(resolveLocomotionLower(input, movement));
         character.animationController.play(lowerState);
         character.animationController.setUpperBodyState(resolveHitReactionUpper(character));
         character.animationController.setAttackLegs(null, 0);
@@ -114,7 +126,7 @@ export class AnimationStateSystem {
         // when standing (moveBlend~0), blending fully to locomotion as the player
         // moves (moveBlend~1). Upper body plays the armed pose or the override.
         character.animationController.setLayered(true);
-        const lowerState = resolveLocomotionLower(input, movement);
+        const lowerState = surfacePlaybackState(resolveLocomotionLower(input, movement));
         character.animationController.play(lowerState);
         character.animationController.setUpperBodyState(this.state);
         const moveBlend = Math.max(0, Math.min(1, movement.speed / LEG_BLEND_SPEED));
@@ -126,7 +138,8 @@ export class AnimationStateSystem {
         character.animationController.setLayered(false);
         character.animationController.setUpperBodyState(null);
         character.animationController.setAttackLegs(null, 0);
-        character.animationController.play(this.state);
+        character.animationController.play(this.playbackState);
+        groundingState = this.playbackState;
       }
 
       character.animationController.update(delta);
@@ -175,6 +188,8 @@ export class AnimationStateSystem {
     return {
       status: this.status,
       state: this.state,
+      playbackState: this.playbackState,
+      locomotionSurface: this.locomotionSurface,
       elapsed: Number(this.elapsed.toFixed(3)),
       airborneElapsed: Number(this.airborneElapsed.toFixed(3)),
       jumpStartedMoving: this.jumpStartedMoving,
@@ -449,6 +464,48 @@ export class AnimationStateSystem {
     character.airborneAnimationOverride = null;
     return mapArmedState('idle', character);
   }
+}
+
+export function resolveLocomotionSurface({ character, level }) {
+  const position = character?.group?.position;
+  if (!position || !level?.getRoadSurfaceAt) return null;
+  return level.getRoadSurfaceAt(position.x, position.z) === 'mud' ? 'mud' : null;
+}
+
+export function resolveSurfacePlaybackState({ state, movement, surface, controller }) {
+  if (surface !== 'mud') return state;
+
+  let mudState = null;
+  switch (state) {
+    case 'idle':
+      mudState = 'mudIdle';
+      break;
+    case 'walk':
+      mudState = 'mudWalk';
+      break;
+    case 'jog':
+      mudState = movement.speed < 3.4 ? 'mudWalk' : 'mudRun';
+      break;
+    case 'sprint':
+      mudState = 'mudRun';
+      break;
+    case 'turnLeft':
+      mudState = 'mudTurnLeft';
+      break;
+    case 'turnRight':
+      mudState = 'mudTurnRight';
+      break;
+    case 'jump':
+      mudState = 'mudStandingJump';
+      break;
+    case 'jumpMoving':
+      mudState = 'mudRunJump';
+      break;
+    default:
+      return state;
+  }
+
+  return controller?.hasState?.(mudState) ? mudState : state;
 }
 
 function resolveHitReactionUpper(character) {

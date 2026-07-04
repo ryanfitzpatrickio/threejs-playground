@@ -4,6 +4,7 @@ import { listScenes, WORLDMAP_DRAFT_ID } from '../../world/worldMap/worldMapScen
 import { listBlueprints } from '../../map/blueprintLibrary.js';
 import { getFileStoreRevision, subscribeFileStore, ensureFileStore } from '../../store/fileStore.js';
 import { TRACK_CROSS_SECTIONS, TRACK_CROSS_SECTION_ORDER } from '../../game/world/trackCrossSection.js';
+import { ROAD_SURFACES, ROAD_SURFACE_ORDER } from '../../world/worldMap/roadSurface.js';
 
 const TOOLS = [
   { id: 'select', label: 'Select' },
@@ -16,40 +17,11 @@ const TOOLS = [
   { id: 'poi', label: 'POI' },
   { id: 'entity', label: 'Entity' },
   { id: 'spawn', label: 'Spawn' },
+  { id: 'district', label: 'District' },
   { id: 'pan', label: 'Pan' },
 ];
 
 const ZONE_TOOLS = new Set(['terrain', 'city', 'loopout', 'wilds']);
-
-const panel = {
-  position: 'absolute',
-  top: 0,
-  left: 0,
-  bottom: 0,
-  width: '264px',
-  'box-sizing': 'border-box',
-  padding: '14px',
-  background: 'rgb(20 22 18 / 96%)',
-  'border-right': '1px solid rgb(247 244 232 / 14%)',
-  color: '#e7e9e2',
-  font: '13px system-ui, sans-serif',
-  'overflow-y': 'auto',
-  'overflow-x': 'hidden',
-  'overscroll-behavior': 'contain',
-  'scrollbar-gutter': 'stable',
-  'min-height': 0,
-  'max-height': '100%',
-  // A flex column lets every direct child shrink by default, which compresses
-  // long editor contents instead of growing the scroll range. Max-content grid
-  // rows keep every control at its natural height and make the panel itself the
-  // single vertical scroller.
-  display: 'grid',
-  'grid-auto-flow': 'row',
-  'grid-auto-rows': 'max-content',
-  'align-content': 'start',
-  gap: '12px',
-  'z-index': 10,
-};
 
 const h2 = {
   'font-size': '11px',
@@ -97,11 +69,21 @@ export function WorldMapControls(props) {
     return listScenes();
   });
 
+  const defaultWorldScene = createMemo(() => scenes().find((s) => s.defaultRole === 'world') ?? null);
+  const defaultRallyScene = createMemo(() => scenes().find((s) => s.defaultRole === 'rally') ?? null);
+
   const blueprints = createMemo(() => {
     storeRevision();
     snap();
     return listBlueprints();
   });
+
+  // AI CLI (Codex live tools or Grok headless JSON) — same UX as blueprint editor
+  const [aiPrompt, setAiPrompt] = createSignal('');
+  const [aiBusy, setAiBusy] = createSignal(false);
+  const [aiProvider, setAiProvider] = createSignal('grok'); // grok | codex
+  const [aiText, setAiText] = createSignal('');
+  const [aiCodexThreadId, setAiCodexThreadId] = createSignal(null);
 
   let fileInput;
 
@@ -125,8 +107,355 @@ export function WorldMapControls(props) {
   const call = (fn) => () => { const e = editor(); if (e) fn(e); };
   const num = (e) => (e.target.value === '' ? undefined : Number(e.target.value));
 
+  // --- AI Codex / Grok support (parallel to MapBuilderControls) ---
+  const WORLD_MAP_CODEX_TOOLS = [
+    {
+      name: 'get_map_summary',
+      description: 'Return full current world map state including bounds, existing POIs (with exact positions and kinds — use these as anchors to steer roads, zones and entities), zones, roads, rivers, entities and available blueprints. Always call this first.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    },
+    {
+      name: 'add_rect_zone',
+      description: 'Add a rectangular zone. type one of terrain,city,wilds,loopout. rect in world units inside current bounds.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          type: { type: 'string' },
+          rect: { type: 'object', properties: { minX: { type: 'number' }, minZ: { type: 'number' }, maxX: { type: 'number' }, maxZ: { type: 'number' } }, required: ['minX', 'minZ', 'maxX', 'maxZ'] },
+          props: { type: 'object' },
+        },
+        required: ['type', 'rect'],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'add_poly_zone',
+      description: 'Add a polygon zone (3+ points).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          type: { type: 'string' },
+          points: { type: 'array' },
+          props: { type: 'object' },
+        },
+        required: ['type', 'points'],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'add_road',
+      description: 'Add a road spline. points is array of {x,z} or [x,z]. Must stay inside map bounds. Use multiple points to span the map.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          points: { type: 'array', items: { oneOf: [{ type: 'array', minItems: 2, maxItems: 2 }, { type: 'object' }] } },
+          width: { type: 'number' },
+        },
+        required: ['points'],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'add_river',
+      description: 'Add a river spline (carves down). points array, optional width/depth/oceanLeft/oceanRight.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          points: { type: 'array' },
+          width: { type: 'number' },
+          depth: { type: 'number' },
+          oceanLeft: { type: 'boolean' },
+          oceanRight: { type: 'boolean' },
+        },
+        required: ['points'],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'add_poi',
+      description: 'Add a POI (spawn/landmark/city_gate).',
+      inputSchema: {
+        type: 'object',
+        properties: { kind: { type: 'string' }, name: { type: 'string' }, x: { type: 'number' }, z: { type: 'number' } },
+        required: ['x', 'z'],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'place_entity',
+      description: 'Place a blueprint entity at world (x,z). Use blueprintId from get_map_summary availableBlueprints.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          blueprintId: { type: 'string' },
+          x: { type: 'number' }, z: { type: 'number' },
+          yaw: { type: 'number' }, scale: { type: 'number' },
+          groundMode: { type: 'string' },
+        },
+        required: ['blueprintId', 'x', 'z'],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'set_spawn',
+      description: 'Set the player spawn point.',
+      inputSchema: {
+        type: 'object',
+        properties: { x: { type: 'number' }, z: { type: 'number' }, yaw: { type: 'number' } },
+        required: ['x', 'z'],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'connect_road_to_poi',
+      description: 'Add a road (or extend points) that connects to an existing POI. Use POI id or name/kind substring to target it. Provide optional prefix points.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          points: { type: 'array', items: { oneOf: [{ type: 'array', minItems: 2, maxItems: 2 }, { type: 'object' }] } },
+          poi: { type: 'string', description: 'POI id or name/kind to connect to' },
+          width: { type: 'number' },
+        },
+        required: ['poi'],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'place_near_poi',
+      description: 'Place a blueprint entity near an existing POI (by id or name). Optional offset [dx, dz] in meters.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          blueprintId: { type: 'string' },
+          poi: { type: 'string' },
+          offset: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 },
+          yaw: { type: 'number' },
+          scale: { type: 'number' },
+          groundMode: { type: 'string' },
+          name: { type: 'string' },
+        },
+        required: ['blueprintId', 'poi'],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'add_district',
+      description: 'Add a named district (for LLM guidance and in-game labels). Supports rect (with rect), polygon/triangle (with points array), circle (with center + radius).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          shape: { type: 'string' },
+          rect: { type: 'object' },
+          points: { type: 'array' },
+          center: { type: 'object' },
+          radius: { type: 'number' },
+        },
+        required: ['name', 'shape'],
+        additionalProperties: false,
+      },
+    },
+  ];
+
+  const createWorldMapCodexSystemPrompt = () => {
+    const s = editor()?.getMapSummary?.() || {};
+    const bpList = (s.availableBlueprints || []).map((b) => `${b.id} (${b.name})`).join(', ') || 'none';
+    const poiList = (s.poiAnchors && s.poiAnchors.length) ? s.poiAnchors.join(' | ') : 'none yet';
+    return `You are editing a Dreamfall vector world map (2D top-down) live through safe tools.
+Map bounds: ${JSON.stringify(s.bounds || {})} sizeMeters: ${JSON.stringify(s.sizeMeters || {})}.
+**Existing POIs (key anchors — use them to steer what and where you place things):**
+${poiList}
+
+Rules:
+- Preserve existing POIs (copy ids/kinds/positions when doing large changes).
+- Use POIs to steer: connect roads to landmarks/city_gates, place cities near city_gates, cluster interesting content near landmarks, respect the spawn POI.
+- Special tools: connect_road_to_poi and place_near_poi make it easy to build directly around existing POIs (pass poi id or name substring).
+- Districts (named areas) are great for guiding generation: put themed content inside named districts (e.g. "Downtown" gets tall buildings, "Docks" gets industrial).
+- Always keep added features INSIDE the current bounds.
+- Prefer rect zones that cover large areas; roads/rivers should have 3+ points and traverse significant distance.
+- Entities must use exact blueprintId values from availableBlueprints.
+Coordinate system: X horizontal, Z vertical on the 2D map (same as world X/Z).
+After edits respond with a short summary of what you changed or added.
+
+Available blueprints: ${bpList}
+Current summary (use for context):
+${JSON.stringify({ zones: (s.zones||[]).length, roads: (s.roads||[]).length, entities: (s.entities||[]).length, pois: (s.pois||[]).length, bounds: s.bounds }, null, 0)}
+`;
+  };
+
+  const executeWorldMapTool = (name, args = {}) => {
+    const e = editor();
+    if (!e) return { success: false, error: 'editor not ready' };
+    try {
+      if (name === 'get_map_summary') return { success: true, summary: e.getMapSummary() };
+      if (name === 'add_rect_zone') return e.addZone({ type: args.type, rect: args.rect, props: args.props });
+      if (name === 'add_poly_zone') return e.addZone({ type: args.type, points: args.points, props: args.props });
+      if (name === 'add_road') return e.addRoad(args.points, { width: args.width });
+      if (name === 'add_river') return e.addRiver(args.points, { width: args.width, depth: args.depth, oceanLeft: args.oceanLeft, oceanRight: args.oceanRight });
+      if (name === 'add_poi') return e.addPoi(args);
+      if (name === 'place_entity') return e.addEntity(args);
+      if (name === 'set_spawn') return e.setSpawn(args.x, args.z, args.yaw);
+
+      if (name === 'connect_road_to_poi') {
+        const sum = e.getMapSummary();
+        const q = String(args.poi || '').toLowerCase();
+        const target = (sum.pois || []).find((p) =>
+          p.id === args.poi || (p.name && p.name.toLowerCase().includes(q)) || p.kind.toLowerCase().includes(q)
+        );
+        if (!target) return { success: false, error: `POI not found for query: ${args.poi}` };
+        let pts = Array.isArray(args.points) && args.points.length > 0 ? [...args.points] : [];
+        pts.push({ x: target.x, z: target.z });
+        return e.addRoad(pts, { width: args.width });
+      }
+
+      if (name === 'place_near_poi') {
+        const sum = e.getMapSummary();
+        const q = String(args.poi || '').toLowerCase();
+        const target = (sum.pois || []).find((p) =>
+          p.id === args.poi || (p.name && p.name.toLowerCase().includes(q)) || p.kind.toLowerCase().includes(q)
+        );
+        if (!target) return { success: false, error: `POI not found for query: ${args.poi}` };
+        const ox = Array.isArray(args.offset) ? (args.offset[0] || 0) : 0;
+        const oz = Array.isArray(args.offset) ? (args.offset[1] || 0) : 0;
+        return e.addEntity({
+          blueprintId: args.blueprintId,
+          x: target.x + ox,
+          z: target.z + oz,
+          yaw: args.yaw,
+          scale: args.scale,
+          groundMode: args.groundMode,
+          name: args.name,
+        });
+      }
+
+      if (name === 'add_district') {
+        return e.addDistrict(args);
+      }
+
+      return { success: false, error: `Unknown tool ${name}` };
+    } catch (err) {
+      return { success: false, error: err?.message || 'tool failed' };
+    }
+  };
+
+  const runCodexWorldEdit = async () => {
+    const prompt = aiPrompt().trim();
+    if (!prompt || aiBusy()) return;
+    setAiBusy(true);
+    setAiText('');
+    try {
+      const availability = await fetch('/api/codex/status', { headers: { Accept: 'application/json' } }).then((r) => r.json());
+      if (!availability.available) throw new Error(availability.error || 'Codex unavailable');
+
+      await new Promise((resolve, reject) => {
+        const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const ws = new WebSocket(`${protocol}//${location.host}/ws/codex`);
+        let assistantText = '';
+        ws.onopen = () => {
+          ws.send(JSON.stringify({
+            type: 'start',
+            model: 'gpt-5.4',
+            threadId: aiCodexThreadId(),
+            systemPrompt: createWorldMapCodexSystemPrompt(),
+            tools: WORLD_MAP_CODEX_TOOLS,
+            userMessage: prompt,
+          }));
+        };
+        ws.onmessage = (event) => {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'thread') { setAiCodexThreadId(msg.threadId); return; }
+          if (msg.type === 'status') { /* could surface */ return; }
+          if (msg.type === 'delta') { assistantText += msg.text || ''; setAiText(assistantText); return; }
+          if (msg.type === 'tool_call') {
+            const result = executeWorldMapTool(msg.name, msg.args || {});
+            ws.send(JSON.stringify({ type: 'tool_result', id: msg.id, result: JSON.stringify(result), success: result.success !== false }));
+            return;
+          }
+          if (msg.type === 'turn_complete') {
+            setAiText(msg.text || assistantText);
+            ws.close(); resolve(); return;
+          }
+          if (msg.type === 'error') { ws.close(); reject(new Error(msg.message || 'Codex error')); }
+        };
+        ws.onerror = () => reject(new Error('Codex WS failed'));
+      });
+      setAiPrompt('');
+    } catch (err) {
+      console.error(err);
+      setAiText(`Codex error: ${err?.message || err}`);
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
+  const runGrokWorldEdit = async () => {
+    const prompt = aiPrompt().trim();
+    if (!prompt || aiBusy()) return;
+    setAiBusy(true);
+    setAiText('');
+    try {
+      const availability = await fetch('/api/grok/status', { headers: { Accept: 'application/json' } }).then((r) => r.json());
+      if (!availability.available) throw new Error(availability.error || 'Grok CLI unavailable');
+      const e = editor();
+      const summary = e ? e.getMapSummary() : null;
+
+      // Capture original POIs before generation so we can safeguard them
+      const originalPois = summary?.pois ? JSON.parse(JSON.stringify(summary.pois)) : [];
+
+      const res = await fetch('/api/grok/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ prompt, summary, mode: 'worldmap' }),
+      }).then((r) => r.json());
+      if (!res || res.success === false) {
+        const msg = res?.error || 'Grok generation failed';
+        if (res?.partial) setAiText(`Partial output:\n${String(res.partial).slice(0, 400)}`);
+        throw new Error(msg);
+      }
+      let mapData = res.map || res.project;
+
+      // Safeguard: merge back any original POIs the model may have omitted
+      if (mapData && originalPois.length > 0) {
+        const generatedPois = Array.isArray(mapData.pois) ? mapData.pois : [];
+        const keptIds = new Set(generatedPois.map((p) => p && p.id).filter(Boolean));
+        const missing = originalPois.filter((p) => p && p.id && !keptIds.has(p.id));
+        if (missing.length > 0) {
+          mapData = {
+            ...mapData,
+            pois: [...generatedPois, ...missing],
+          };
+        }
+      }
+
+      if (mapData && e && typeof e.loadJSON === 'function') {
+        try {
+          e.loadJSON(mapData);
+        } catch (loadErr) {
+          console.error(loadErr);
+        }
+      }
+      setAiText(res.summary || 'Grok world map generated.');
+      setAiPrompt('');
+    } catch (err) {
+      console.error(err);
+      // If we already set partial output above, don't clobber it completely
+      if (!aiText().startsWith('Partial')) {
+        setAiText(`Grok error: ${err?.message || 'failed'}`);
+      }
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
+  const runAiWorld = () => {
+    if (aiProvider() === 'grok') runGrokWorldEdit(); else runCodexWorldEdit();
+  };
+
+  // Small status helper (WorldMapControls doesn't have a setStatus prop in same way; we just use aiText for results)
+  // We can update a transient message via aiText.
+
   return (
-    <div style={panel}>
+    <div class="worldmap-editor-panel">
       <div style={{ 'font-size': '15px', 'font-weight': 600 }}>World Map Editor</div>
 
       <div style={h2}>Tools</div>
@@ -142,6 +471,34 @@ export function WorldMapControls(props) {
           )}
         </For>
       </div>
+
+      {/* AI CLI — Grok (default, headless full map JSON) or Codex (live tools). Responds to map size/bounds and fills. */}
+      <div style={h2}>AI CLI</div>
+      <select
+        style={field}
+        value={aiProvider()}
+        onChange={(e) => setAiProvider(e.currentTarget.value)}
+        disabled={aiBusy()}
+      >
+        <option value="grok">Grok (headless JSON — fills map)</option>
+        <option value="codex">Codex (live)</option>
+      </select>
+      <textarea
+        style={{ ...field, height: '52px', 'margin-top': '4px', 'font-family': 'monospace', 'font-size': '11px' }}
+        value={aiPrompt()}
+        disabled={aiBusy() || !editor()}
+        placeholder={aiProvider() === 'grok' ? 'Describe a filled world map (Grok will return full vector map JSON respecting current bounds)' : 'Ask Codex to edit the world map (tools)'}
+        onInput={(e) => setAiPrompt(e.currentTarget.value)}
+      />
+      <button
+        style={{ ...btn(false), width: '100%', 'margin-top': '4px', background: aiBusy() ? '#444' : '#3a5a3a' }}
+        disabled={aiBusy() || !aiPrompt().trim()}
+        onClick={runAiWorld}
+      >
+        {aiBusy() ? 'Working…' : (aiProvider() === 'grok' ? 'Generate Map JSON' : 'Apply with Codex')}
+      </button>
+      {aiText() && <div style={{ 'font-size': '11px', color: '#a8b09f', 'margin-top': '3px', 'white-space': 'pre-wrap' }}>{aiText()}</div>}
+      <div style={{ 'font-size': '10px', color: '#6f746a' }}>Grok: returns complete map (zones+roads+entities) sized to bounds. Codex: incremental via tools.</div>
 
       <Show when={ZONE_TOOLS.has(snap().tool)}>
         <div style={h2}>Zone shape</div>
@@ -181,6 +538,17 @@ export function WorldMapControls(props) {
           <option value="">Plain road</option>
           <For each={TRACK_CROSS_SECTION_ORDER}>
             {(id) => <option value={id}>{TRACK_CROSS_SECTIONS[id]?.label ?? id}</option>}
+          </For>
+        </select>
+        <label style={{ 'font-size': '11px', color: '#8d9384', 'margin-top': '6px', display: 'block' }}>Surface</label>
+        <select
+          style={field}
+          value={snap().selected?.kind === 'road' ? (snap().selected.surface ?? '') : (snap().roadSurface ?? '')}
+          onChange={(e) => editor()?.setRoadSurface(e.target.value)}
+        >
+          <option value="">Automatic from style</option>
+          <For each={ROAD_SURFACE_ORDER}>
+            {(id) => <option value={id}>{ROAD_SURFACES[id]?.label ?? id}</option>}
           </For>
         </select>
         <label style={{ 'font-size': '11px', color: '#8d9384', 'margin-top': '6px', display: 'block' }}>Elevation</label>
@@ -296,6 +664,21 @@ export function WorldMapControls(props) {
         </Show>
       </Show>
 
+      <Show when={snap().tool === 'district'}>
+        <div style={h2}>District (named area for LLM + in-game labels)</div>
+        <label style={{ 'font-size': '11px', color: '#8d9384' }}>Name</label>
+        <input style={field} value={snap().districtName ?? 'District'} onInput={(e) => editor()?.setDistrictName(e.currentTarget.value)} />
+        <label style={{ 'font-size': '11px', color: '#8d9384', 'margin-top': '4px', display: 'block' }}>Shape</label>
+        <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+          <For each={['rect','polygon','circle','triangle']}>{(sh) => (
+            <button style={btn(snap().activeDistrictShape === sh)} onClick={() => editor()?.setActiveDistrictShape(sh)}>{sh}</button>
+          )}</For>
+        </div>
+        <div style={{ 'font-size': '10px', color: '#8d9384', 'line-height': 1.3, marginTop: '4px' }}>
+          Draw to add named district. Use in prompts ("build in 'Downtown'") and game shows name on enter.
+        </div>
+      </Show>
+
       <div style={{ display: 'flex', gap: '5px' }}>
         <button style={btn(snap().showGrid)} onClick={call((e) => e.toggleGrid())}>Grid</button>
         <button style={btn(snap().snap)} onClick={call((e) => e.toggleSnap())}>Snap</button>
@@ -409,34 +792,47 @@ export function WorldMapControls(props) {
       </div>
 
       <Show when={snap().zones?.length}>
-        <div style={h2}>Zones (click row or canvas to select; ↑/↓ = priority; selected rects show corner grips for resize)</div>
-        <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px', 'max-height': '120px', 'overflow-y': 'auto', 'font-size': '11px' }}>
+        <div style={h2}>Zones</div>
+        <div class="worldmap-zone-list">
           <For each={snap().zones}>
             {(z) => {
               const isSel = snap().selected?.kind === 'zone' && snap().selected.id === z.id;
               return (
                 <div
-                  style={{
-                    display: 'flex',
-                    'align-items': 'center',
-                    gap: '4px',
-                    padding: '2px 4px',
-                    background: isSel ? 'rgb(74 111 165 / 28%)' : '#262a23',
-                    border: '1px solid rgb(247 244 232 / 10%)',
-                    'border-radius': '3px',
-                    cursor: 'pointer',
-                  }}
+                  class={`worldmap-zone-row${isSel ? ' is-selected' : ''}`}
                   onClick={() => editor()?.select('zone', z.id)}
-                  title="Select this zone (bypasses canvas hit test)"
+                  title="Select this zone"
                 >
-                  <span style={{ flex: 1, color: isSel ? '#fff' : '#cfd2c8' }}>{z.label} {z.shape === 'rect' ? '□' : '⬡'}</span>
-                  <button style={{ ...btn(false), padding: '1px 4px', 'font-size': '10px' }} onClick={(e) => { e.stopPropagation(); editor()?.bringZoneToFront(z.id); }} title="Bring to front (wins clicks &amp; overrides where overlapping)">↑</button>
-                  <button style={{ ...btn(false), padding: '1px 4px', 'font-size': '10px' }} onClick={(e) => { e.stopPropagation(); editor()?.sendZoneToBack(z.id); }} title="Send to back">↓</button>
+                  <span class="worldmap-zone-row__label">{z.label} {z.shape === 'rect' ? '□' : '⬡'}</span>
+                  <button style={{ ...btn(false), padding: '2px 6px', 'font-size': '11px', 'flex-shrink': 0 }} onClick={(e) => { e.stopPropagation(); editor()?.bringZoneToFront(z.id); }} title="Bring to front">↑</button>
+                  <button style={{ ...btn(false), padding: '2px 6px', 'font-size': '11px', 'flex-shrink': 0 }} onClick={(e) => { e.stopPropagation(); editor()?.sendZoneToBack(z.id); }} title="Send to back">↓</button>
                 </div>
               );
             }}
           </For>
         </div>
+        <div style={{ 'font-size': '11px', color: '#8d9384', 'line-height': 1.4 }}>
+          Click a row or the canvas to select. ↑/↓ sets overlap priority.
+        </div>
+      </Show>
+
+      <Show when={(snap().districts ?? []).length}>
+        <div style={h2}>Districts (named areas for AI + GTA-style labels)</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', maxHeight: '90px', overflow: 'auto' }}>
+          <For each={snap().districts}>
+            {(dd) => {
+              const isSel = snap().selected?.kind === 'district' && snap().selected.id === dd.id;
+              return (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '2px 4px', background: isSel ? '#1e3a5f' : '#262a23', border: '1px solid #3a4a5a', borderRadius: '3px', fontSize: '11px', cursor: 'pointer' }}
+                  onClick={() => editor()?.select('district', dd.id)}>
+                  <span style={{ flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{dd.name} <span style={{opacity:0.6}}>({dd.shape})</span></span>
+                  <button style={{ ...btn(false), padding: '0 4px', fontSize: '10px' }} onClick={(e) => { e.stopPropagation(); editor()?.select('district', dd.id); editor()?.deleteSelected?.(); }}>del</button>
+                </div>
+              );
+            }}
+          </For>
+        </div>
+        <div style={{ fontSize: '10px', color: '#8d9384' }}>Districts steer LLM gen and trigger on-screen name when player enters/exits.</div>
       </Show>
 
       <div style={h2}>Actions</div>
@@ -464,15 +860,32 @@ export function WorldMapControls(props) {
       />
 
       <div style={h2}>Scenes</div>
-      <div style={{ display: 'flex', gap: '5px' }}>
+      <Show when={defaultWorldScene() || defaultRallyScene()}>
+        <div style={{ 'font-size': '10px', color: '#7f857a', 'line-height': 1.45 }}>
+          <Show when={defaultWorldScene()}>
+            <div>World default: {defaultWorldScene().name}</div>
+          </Show>
+          <Show when={defaultRallyScene()}>
+            <div>Rally default: {defaultRallyScene().name}</div>
+          </Show>
+        </div>
+      </Show>
+      <div style={{ display: 'flex', gap: '5px', 'flex-wrap': 'wrap' }}>
         <input
-          style={field}
+          style={{ ...field, flex: '1 1 120px' }}
           placeholder={snap().name || 'Scene name'}
           value={sceneName()}
           onInput={(e) => setSceneName(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') saveScene(); }}
         />
         <button style={btn(false)} onClick={saveScene}>Save</button>
+        <button
+          style={btn(false)}
+          onClick={() => editor()?.importBuiltinRallyScene()}
+          title="Save the built-in Pine Ridge rally stage to your scenes"
+        >
+          + Pine Ridge
+        </button>
       </div>
       <button
         style={{ ...btn(false), background: '#3a6a3a', 'border-color': '#4a8a4a', color: '#fff' }}
@@ -485,39 +898,52 @@ export function WorldMapControls(props) {
         when={scenes().length > 0}
         fallback={<div style={{ 'font-size': '11px', color: '#6f746a' }}>No saved scenes yet.</div>}
       >
-        <div style={{ display: 'flex', 'flex-direction': 'column', gap: '4px', 'max-height': '180px', 'overflow-y': 'auto' }}>
+        <div class="worldmap-scene-list">
           <For each={scenes()} by="id">
             {(s) => (
-              <div
-                style={{
-                  display: 'flex',
-                  'align-items': 'center',
-                  gap: '5px',
-                  padding: '5px 6px',
-                  background: s.id === snap().currentSceneId ? 'rgb(74 111 165 / 28%)' : '#262a23',
-                  border: '1px solid rgb(247 244 232 / 12%)',
-                  'border-radius': '5px',
-                }}
-              >
-                <div style={{ flex: 1, 'min-width': 0 }}>
-                  <div style={{ 'font-size': '12px', 'white-space': 'nowrap', overflow: 'hidden', 'text-overflow': 'ellipsis' }}>{s.name}</div>
-                  <div style={{ 'font-size': '10px', color: '#7f857a' }}>{s.zones}z · {s.pois}p</div>
+              <div class={`worldmap-scene-card${s.id === snap().currentSceneId ? ' is-current' : ''}`}>
+                <div>
+                  <div class="worldmap-scene-card__name">
+                    {s.name}
+                    <Show when={s.defaultRole === 'world'}>
+                      <span class="worldmap-scene-card__badge worldmap-scene-card__badge--world">WORLD</span>
+                    </Show>
+                    <Show when={s.defaultRole === 'rally'}>
+                      <span class="worldmap-scene-card__badge worldmap-scene-card__badge--rally">RALLY</span>
+                    </Show>
+                  </div>
+                  <div class="worldmap-scene-card__meta">{s.zones} zones · {s.pois} POIs</div>
                 </div>
-                <button
-                  style={{ ...btn(false), padding: '4px 7px', background: '#3a6a3a', 'border-color': '#4a8a4a', color: '#fff' }}
-                  onClick={() => play(s.id)}
-                  title="Play this scene in the World"
-                >
-                  ▶
-                </button>
-                <button style={{ ...btn(false), padding: '4px 7px' }} onClick={() => editor()?.loadSceneById(s.id)} title="Load into editor">Edit</button>
-                <button
-                  style={{ ...btn(false), padding: '4px 7px', background: '#5a2e2e', 'border-color': '#7a3e3e' }}
-                  onClick={() => editor()?.deleteSceneById(s.id)}
-                  title="Delete scene"
-                >
-                  ✕
-                </button>
+                <div class="worldmap-scene-card__row">
+                  <select
+                    class="worldmap-scene-card__default"
+                    style={field}
+                    value={s.defaultRole ?? ''}
+                    onChange={(e) => editor()?.setSceneDefaultRole(s.id, e.target.value || null)}
+                    title="Default map for World or Rally mode"
+                  >
+                    <option value="">No default</option>
+                    <option value="world">World default</option>
+                    <option value="rally">Rally default</option>
+                  </select>
+                  <div class="worldmap-scene-card__buttons">
+                    <button
+                      style={{ ...btn(false), padding: '5px 9px', background: '#3a6a3a', 'border-color': '#4a8a4a', color: '#fff' }}
+                      onClick={() => play(s.id)}
+                      title="Play this scene"
+                    >
+                      Play
+                    </button>
+                    <button style={{ ...btn(false), padding: '5px 9px' }} onClick={() => editor()?.loadSceneById(s.id)} title="Load into editor">Edit</button>
+                    <button
+                      style={{ ...btn(false), padding: '5px 9px', background: '#5a2e2e', 'border-color': '#7a3e3e' }}
+                      onClick={() => editor()?.deleteSceneById(s.id)}
+                      title="Delete scene"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
           </For>

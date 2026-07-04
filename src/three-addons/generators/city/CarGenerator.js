@@ -17,6 +17,7 @@ import { atan, attribute, color, float, mix, positionGeometry, select, smoothste
 
 import { mergeGeometries } from '../../utils/BufferGeometryUtils.js';
 import { LoftGeometry } from '../../geometries/LoftGeometry.js';
+import { quantizeCarPaint } from '../CityGenerator.js';
 
 /**
  * A low-poly car fleet: smooth body shells lofted through a row of cross sections,
@@ -62,10 +63,11 @@ class CarGenerator {
 		for ( let i = 0; i < cars.length; i ++ ) {
 
 			const car = cars[ i ];
-			const type = car.color === CarGenerator.taxiColor ? 'taxi' : ( ( ( i * 2654435761 ) >>> 0 ) % 100 < 42 ? 'suv' : 'sedan' );
-			const key = type + '|' + car.color;
+			const paint = quantizeCarPaint( car.color );
+			const type = paint === CarGenerator.taxiColor ? 'taxi' : ( ( ( i * 2654435761 ) >>> 0 ) % 100 < 42 ? 'suv' : 'sedan' );
+			const key = type + '|' + paint;
 
-			if ( ! buckets.has( key ) ) buckets.set( key, { type, color: car.color, matrices: [] } );
+			if ( ! buckets.has( key ) ) buckets.set( key, { type, color: paint, matrices: [] } );
 			buckets.get( key ).matrices.push( car.matrix );
 
 		}

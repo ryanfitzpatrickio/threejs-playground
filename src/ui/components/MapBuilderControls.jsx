@@ -161,10 +161,11 @@ export function MapBuilderControls(props) {
   const [objectTransformMode, setObjectTransformMode] = createSignal('select');
   const [confine, setConfine] = createSignal(false);
   const [status, setStatus] = createSignal('Ready');
-  const [codexPrompt, setCodexPrompt] = createSignal('');
-  const [codexBusy, setCodexBusy] = createSignal(false);
+  const [aiPrompt, setAiPrompt] = createSignal('');
+  const [aiBusy, setAiBusy] = createSignal(false);
+  const [aiProvider, setAiProvider] = createSignal('grok'); // 'grok' (headless JSON) | 'codex'
   const [codexThreadId, setCodexThreadId] = createSignal(null);
-  const [codexText, setCodexText] = createSignal('');
+  const [aiText, setAiText] = createSignal('');
   const [blueprintName, setBlueprintName] = createSignal('');
   const [mapName, setMapName] = createSignal('');
   const [terrainTexBlend, setTerrainTexBlend] = createSignal(0.6);
@@ -338,7 +339,7 @@ export function MapBuilderControls(props) {
     const b = builder();
     if (!b) return;
     b.newLevel();
-    setCodexText('');
+    setAiText('');
     setStatus('New level started');
   };
 
@@ -423,11 +424,11 @@ After edits, respond with a concise summary of what changed.`;
   };
 
   const runCodexEdit = async () => {
-    const prompt = codexPrompt().trim();
-    if (!prompt || codexBusy()) return;
+    const prompt = aiPrompt().trim();
+    if (!prompt || aiBusy()) return;
 
-    setCodexBusy(true);
-    setCodexText('');
+    setAiBusy(true);
+    setAiText('');
     setStatus('Codex: connecting');
 
     try {
@@ -462,7 +463,7 @@ After edits, respond with a concise summary of what changed.`;
           }
           if (msg.type === 'delta') {
             assistantText += msg.text || '';
-            setCodexText(assistantText);
+            setAiText(assistantText);
             return;
           }
           if (msg.type === 'tool_call') {
@@ -476,7 +477,7 @@ After edits, respond with a concise summary of what changed.`;
             return;
           }
           if (msg.type === 'turn_complete') {
-            setCodexText(msg.text || assistantText);
+            setAiText(msg.text || assistantText);
             ws.close();
             resolve();
             return;
@@ -490,13 +491,67 @@ After edits, respond with a concise summary of what changed.`;
         ws.onerror = () => reject(new Error('Codex WebSocket failed'));
       });
 
-      setCodexPrompt('');
+      setAiPrompt('');
       setStatus('Codex edit applied');
     } catch (err) {
       console.error(err);
       setStatus(`Codex error: ${err?.message || 'edit failed'}`);
     } finally {
-      setCodexBusy(false);
+      setAiBusy(false);
+    }
+  };
+
+  const runGrokEdit = async () => {
+    const prompt = aiPrompt().trim();
+    if (!prompt || aiBusy()) return;
+
+    setAiBusy(true);
+    setAiText('');
+    setStatus('Grok: connecting');
+
+    try {
+      const availability = await fetch('/api/grok/status', { headers: { Accept: 'application/json' } }).then((r) => r.json());
+      if (!availability.available) throw new Error(availability.error || 'Grok CLI unavailable');
+
+      setStatus('Grok: generating (headless)…');
+
+      const b = builder();
+      const summary = b ? b.getSceneSummary() : null;
+
+      const res = await fetch('/api/grok/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ prompt, summary, mode: 'blueprint' }),
+      }).then((r) => r.json());
+
+      if (!res || res.success === false) {
+        const msg = res?.error || 'Grok generation failed';
+        if (res?.partial) setAiText(`Partial output:\n${String(res.partial).slice(0, 400)}`);
+        throw new Error(msg);
+      }
+
+      if (res.project && b && typeof b.loadProjectFromJSON === 'function') {
+        try {
+          b.loadProjectFromJSON(res.project);
+          setStatus('Grok: JSON project loaded into editor');
+        } catch (applyErr) {
+          console.error(applyErr);
+          setStatus(`Grok: loaded with warnings: ${applyErr?.message || ''}`);
+        }
+      } else {
+        setStatus('Grok: received response (no project applied)');
+      }
+
+      setAiText(res.summary || 'Grok returned a result.');
+      setAiPrompt('');
+    } catch (err) {
+      console.error(err);
+      setStatus(`Grok error: ${err?.message || 'generation failed'}`);
+      if (!aiText().startsWith('Partial')) {
+        setAiText(err?.message || 'See console');
+      }
+    } finally {
+      setAiBusy(false);
     }
   };
 
@@ -949,17 +1004,37 @@ After edits, respond with a concise summary of what changed.`;
 
       <aside class="map-editor-panel map-editor-right" aria-label="Map editor inspector">
         <section class="editor-section">
-          <h3>Codex</h3>
+          <h3>
+            AI CLI
+            <select
+              value={aiProvider()}
+              onChange={(e) => setAiProvider(e.currentTarget.value)}
+              style={{ 'margin-left': '6px', 'font-size': '11px', padding: '1px 4px', 'vertical-align': 'middle' }}
+              disabled={aiBusy()}
+            >
+              <option value="grok">Grok (headless)</option>
+              <option value="codex">Codex</option>
+            </select>
+          </h3>
           <textarea
-            value={codexPrompt()}
-            disabled={codexBusy() || !builder()}
-            placeholder="Ask Codex to edit the map"
-            onInput={(e) => setCodexPrompt(e.currentTarget.value)}
+            value={aiPrompt()}
+            disabled={aiBusy() || !builder()}
+            placeholder={aiProvider() === 'grok' ? 'Describe blueprint/level to build (Grok returns JSON project)' : 'Ask Codex to edit the map'}
+            onInput={(e) => setAiPrompt(e.currentTarget.value)}
           />
-          <button class="tb-btn primary full-width" disabled={codexBusy() || !codexPrompt().trim()} onClick={runCodexEdit}>
-            {codexBusy() ? 'Editing' : 'Apply Edit'}
+          <button
+            class="tb-btn primary full-width"
+            disabled={aiBusy() || !aiPrompt().trim()}
+            onClick={() => {
+              if (aiProvider() === 'grok') runGrokEdit(); else runCodexEdit();
+            }}
+          >
+            {aiBusy() ? 'Working…' : (aiProvider() === 'grok' ? 'Generate JSON' : 'Apply Edit')}
           </button>
-          {codexText() && <p class="codex-result">{codexText()}</p>}
+          {aiText() && <p class="codex-result">{aiText()}</p>}
+          <p style={{ 'font-size': '10px', color: '#6f746a', margin: '4px 0 0' }}>
+            {aiProvider() === 'grok' ? 'Headless: full project JSON replaces editor state.' : 'Live tools: incremental edits.'}
+          </p>
         </section>
 
         <section class="editor-section">

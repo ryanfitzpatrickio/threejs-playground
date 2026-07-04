@@ -13,6 +13,7 @@ export function GameCanvas(props) {
     runtime = new GameRuntime({
       canvas,
       qualityPreset: preset,
+      qualityLevel,
       onSnapshot: props.onSnapshot,
       levelMode: props.levelMode ?? 'city',
     });

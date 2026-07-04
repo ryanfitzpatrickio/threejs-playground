@@ -1,9 +1,10 @@
 import * as THREE from 'three';
-import { color, floor, fract, mix, positionWorld, sin, step } from 'three/tsl';
 import { MeshBasicNodeMaterial } from 'three/webgpu';
+import { color, floor, fract, mix, positionWorld, sin, step } from 'three/tsl';
 import { disposeObject3D } from '../utils/disposeObject3D.js';
 import { createLevelGeometryIndex } from './createLevelGeometryIndex.js';
 import { ColliderSpatialIndex } from './ColliderSpatialIndex.js';
+import { createCityFurnitureBatcher } from './CityFurnitureBatcher.js';
 import {
   CITY_SEED,
   createCityMaterialWarmupGroup,
@@ -23,6 +24,7 @@ const MAX_SKELETON_ATTACHMENTS_PER_UPDATE = 3;
 // New chunk requests issued per updateStreaming — post all at once so workers start immediately.
 const MAX_REQUESTS_PER_UPDATE = 25;
 const MAX_MESH_REVEALS_PER_UPDATE = 4;
+const MAX_MESH_REVEALS_POST_LOAD = 20;
 let WORKER_COUNT = 4;
 // Far silhouettes only need a few broad masses per chunk. Keeping this small is
 // important because the complete skyline is one instanced vertex buffer.
@@ -109,6 +111,7 @@ export function createInfiniteCityLevel(qualityPreset = {}, { chunkFilter = null
   UNLOAD_RADIUS = qualityPreset.unloadRadius ?? 3;
   WORKER_COUNT = qualityPreset.workerCount ?? 4;
   const cityFurniture = qualityPreset.cityFurniture ?? {};
+  const cityCastShadows = qualityPreset.cityCastShadows !== false;
   const furnitureRadius = Math.max(0, qualityPreset.cityFurnitureRadius ?? 1);
   const traversalRadius = Math.max(0, qualityPreset.cityTraversalRadius ?? 1);
   const skylineRadius = Math.max(UNLOAD_RADIUS + 1, qualityPreset.citySkylineRadius ?? UNLOAD_RADIUS + 3);
@@ -121,6 +124,8 @@ export function createInfiniteCityLevel(qualityPreset = {}, { chunkFilter = null
 
   const group = new THREE.Group();
   group.name = 'Infinite Generator City';
+
+  const furnitureBatcher = createCityFurnitureBatcher(group);
 
   const chunks = new Map();
   const pendingChunks = new Map();
@@ -248,7 +253,10 @@ export function createInfiniteCityLevel(qualityPreset = {}, { chunkFilter = null
       removedChunkKeysScratch.length = 0;
       justAddedSet.clear();
 
-      revealChunkMeshes(current, MAX_MESH_REVEALS_PER_UPDATE);
+      const revealBudget = initialLoadComplete
+        ? Math.min(MAX_MESH_REVEALS_POST_LOAD, Math.max(MAX_MESH_REVEALS_PER_UPDATE, Math.ceil(pendingMeshReveals.length / 15)))
+        : MAX_MESH_REVEALS_PER_UPDATE;
+      revealChunkMeshes(current, revealBudget);
 
       // Drain full-chunk attach queue (1 per frame to avoid geometry spike).
       attachCompletedChunks({ addedChunks: addedChunksScratch, debugVisible, current, maxCount: MAX_CHUNK_ATTACHMENTS_PER_UPDATE });
@@ -262,6 +270,7 @@ export function createInfiniteCityLevel(qualityPreset = {}, { chunkFilter = null
       // attached; this keeps startup CPU, worker, and transfer pressure bounded.
       if (!initialLoadComplete && isRadiusAttached(current, INITIAL_LOAD_RADIUS)) {
         initialLoadComplete = true;
+        backfillFurnitureAdoption();
       }
       const activeLoadRadius = initialLoadComplete ? LOAD_RADIUS : INITIAL_LOAD_RADIUS;
 
@@ -380,6 +389,7 @@ export function createInfiniteCityLevel(qualityPreset = {}, { chunkFilter = null
       worstAttachMs: Number(worstAttachMs.toFixed(2)),
       meanAttachMs: attachCount ? Number((totalAttachMs / attachCount).toFixed(2)) : 0,
       skylineInstances: skyline.mesh.count,
+      furniture: furnitureBatcher.snapshot(),
       strideX: Number(chunkStrideX.toFixed(3)),
       strideZ: Number(chunkStrideZ.toFixed(3)),
       keys: [...chunks.keys()].sort(),
@@ -391,6 +401,7 @@ export function createInfiniteCityLevel(qualityPreset = {}, { chunkFilter = null
       }
       workers = [];
       geometryIndex?.dispose();
+      furnitureBatcher.dispose();
       for (const chunk of chunks.values()) {
         chunk.dispose?.();
       }
@@ -420,6 +431,7 @@ export function createInfiniteCityLevel(qualityPreset = {}, { chunkFilter = null
         originX: chunkX * chunkStrideX,
         originZ: chunkZ * chunkStrideZ,
         furniture: cityFurniture,
+        castShadows: cityCastShadows,
         extractTraversal,
       },
     });
@@ -490,6 +502,7 @@ export function createInfiniteCityLevel(qualityPreset = {}, { chunkFilter = null
           originZ: request.chunkZ * chunkStrideZ,
           includeDebugOverlay: false,
           furniture: cityFurniture,
+          castShadows: cityCastShadows,
           extractTraversal: request.extractTraversal,
         });
         completedChunks.push(fallback);
@@ -680,6 +693,8 @@ export function createInfiniteCityLevel(qualityPreset = {}, { chunkFilter = null
     chunks.set(chunk.chunkKey, chunk);
     skylineDirty = true;
     group.add(chunk.group);
+    furnitureBatcher.adoptChunkFurniture(chunk.group, chunk.chunkKey);
+    purgeFurnitureReveals(chunk.chunkKey);
     // Opt chunk meshes into static-world-matrix freezing (see createLevelGeometryIndex
     // addRoot): the chunk group + its parent (the city root) + the scene never move
     // post-attach, so every baked mesh matrixWorld is final and can skip the per-pass
@@ -701,6 +716,7 @@ export function createInfiniteCityLevel(qualityPreset = {}, { chunkFilter = null
   function removeChunk(chunk) {
     chunks.delete(chunk.chunkKey);
     skylineDirty = true;
+    furnitureBatcher.releaseChunk(chunk.chunkKey);
     geometryIndex?.removeRoot?.(chunk.group);
     colliderIndex.removeChunk(chunk.chunkKey);
     removeTraversal(chunk.chunkKey);
@@ -723,10 +739,27 @@ export function createInfiniteCityLevel(qualityPreset = {}, { chunkFilter = null
     };
   }
 
+  function backfillFurnitureAdoption() {
+    for (const chunk of chunks.values()) {
+      furnitureBatcher.adoptChunkFurniture(chunk.group, chunk.chunkKey);
+      purgeFurnitureReveals(chunk.chunkKey);
+    }
+  }
+
+  function purgeFurnitureReveals(chunkKey = null) {
+    for (let index = pendingMeshReveals.length - 1; index >= 0; index -= 1) {
+      const entry = pendingMeshReveals[index];
+      if (!isFurnitureMesh(entry.mesh)) continue;
+      if (chunkKey && entry.chunkKey !== chunkKey) continue;
+      pendingMeshReveals.splice(index, 1);
+    }
+  }
+
   function stageChunkMeshes(chunk) {
     const meshes = [];
     chunk.group.traverse((object) => {
       if (!object.isMesh || object.userData?.debugOverlay === 'traversal') return;
+      if (isFurnitureMesh(object)) return;
       object.visible = false;
       object.userData.cityRevealPending = true;
       meshes.push(object);
@@ -936,7 +969,11 @@ export function seedForChunk(chunkX, chunkZ, zoneSeed = CITY_SEED) {
 
 function replaceFlatView(target, entriesByChunk) {
   target.length = 0;
-  for (const entries of entriesByChunk.values()) target.push(...entries);
+  for (const entries of entriesByChunk.values()) {
+    for (let index = 0; index < entries.length; index += 1) {
+      target.push(entries[index]);
+    }
+  }
 }
 
 function isFurnitureMesh(object) {
@@ -965,3 +1002,4 @@ function setChunkTraversalDebugVisible(chunk, visible) {
     }
   });
 }
+
