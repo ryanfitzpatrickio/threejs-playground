@@ -19,6 +19,15 @@ const KEY_BINDINGS = {
   KeyQ: 'wingsuit',
   KeyZ: 'drawSheathe',
   KeyE: 'hookFire',
+  Digit1: 'elevatorFloor1',
+  Digit2: 'elevatorFloor2',
+  Digit3: 'elevatorFloor3',
+  Digit4: 'elevatorFloor4',
+  Digit5: 'elevatorFloor5',
+  Digit6: 'elevatorFloor6',
+  Digit7: 'elevatorFloor7',
+  Digit8: 'elevatorFloor8',
+  Digit9: 'elevatorFloor9',
   AltLeft: 'hookAim',
   AltRight: 'hookAim',
   KeyR: 'shoulderThrow',
@@ -108,6 +117,10 @@ export class InputSystem {
     const telekinesisReleased = this.releasedActions.has('telekinesis');
     const hookFirePressed = this.pressedActions.has('hookFire') || this.mouseMiddlePressed;
     const hookFireDoubleTapped = this.hookFireDoubleTapPending;
+    const elevatorFloors = {};
+    for (let i = 1; i <= 9; i += 1) {
+      elevatorFloors[`elevatorFloor${i}`] = this.pressedActions.has(`elevatorFloor${i}`);
+    }
     this.hookFireDoubleTapPending = false;
     const dodgeDirection = this.dodgeDirectionPending;
     const jumpDoubleTapped = this.jumpDoubleTapPending;
@@ -130,6 +143,7 @@ export class InputSystem {
     this.pressedActions.delete('cutCancel');
     this.pressedActions.delete('telekinesis');
     this.pressedActions.delete('hookFire');
+    for (let i = 1; i <= 9; i += 1) this.pressedActions.delete(`elevatorFloor${i}`);
     this.dodgeDirectionPending = null;
     this.jumpDoubleTapPending = false;
     this.releasedActions.delete('jump');
@@ -187,6 +201,8 @@ export class InputSystem {
       // Raw edge for glider/wingsuit deploy (double-tap jump or single Q press).
       // Independent of air-dash flag.
       wingsuitTogglePressed,
+      wingsuitHeld: this.actions.has('wingsuit'),
+      ...elevatorFloors,
     };
   }
 

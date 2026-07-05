@@ -1,25 +1,60 @@
 // officeTileset.js — WFC tiles for a single-floor office (docs/office-interior-wfc-plan.md).
 //
-// Every tile shares category 'office' so their sockets are actually compared
-// (Adjacency treats cross-category pairs as permissive). Socket scheme, chosen so
-// a plausible floor plan falls out of purely local adjacency:
-//   - corridor : 'any' on all four sides — the universal connector.
-//   - open     : 'open' — open-plan cells only touch open or corridor.
-//   - meeting  : 'M'    — a room type; only touches its own kind or corridor.
-//   - office   : 'O'    — another room type; same rule.
-// So open / meeting / office form separate blobs that can only be stitched
-// together through corridors → enclosed rooms off hallways, with open-plan areas.
+// Socket scheme:
+//   corridor : 'any' on all four sides — universal connector.
+//   open     : 'open' — open-plan only touches open or corridor.
+//   meeting  : 'M'    — room blob; touches M or corridor.
+//   office   : 'O'    — room blob; touches O or corridor.
+//   elev_*   : 1×1 shaft — 'W' solid on three sides, 'any' on the lobby side.
 
 import { TileDefinition } from './wfc/TileDefinition.js';
 import { TileSet } from './wfc/TileSet.js';
 
-// Fillable zones (the 'empty' tile is required by the solver but never placed in
-// an occupied cell). ROOM_ZONES get walled off; corridor/open stay walkable.
-export const OFFICE_ZONES = ['corridor', 'open', 'meeting', 'office'];
-export const ROOM_ZONES = new Set(['meeting', 'office']);
+export const WALL_SOCKET = 'W';
+
+export const BASE_OFFICE_ZONES = ['corridor', 'open', 'meeting', 'office'];
+export const OFFICE_ZONES = [...BASE_OFFICE_ZONES, 'elevator'];
+export const ROOM_ZONES = new Set(['meeting', 'office', 'elevator']);
+
+const LOBBY_SIDES = ['NZ', 'PZ', 'NX', 'PX'];
 
 function sides(socket) {
   return { PX: socket, NX: socket, PZ: socket, NZ: socket, PY: 'any', NY: 'any' };
+}
+
+/** Sockets for a 1×1 elevator cell; lobbySide is the corridor door facade. */
+export function elevatorSockets(lobbySide) {
+  return {
+    NZ: lobbySide === 'NZ' ? 'any' : WALL_SOCKET,
+    PZ: lobbySide === 'PZ' ? 'any' : WALL_SOCKET,
+    NX: lobbySide === 'NX' ? 'any' : WALL_SOCKET,
+    PX: lobbySide === 'PX' ? 'any' : WALL_SOCKET,
+    PY: 'any',
+    NY: 'any',
+  };
+}
+
+export function elevatorTileId(lobbySide) {
+  return `elev_${lobbySide.toLowerCase()}`;
+}
+
+export function lobbySideFromCell(gx, gz, lobby) {
+  if (!lobby) return 'NZ';
+  if (lobby.gz === gz - 1) return 'NZ';
+  if (lobby.gz === gz + 1) return 'PZ';
+  if (lobby.gx === gx - 1) return 'NX';
+  if (lobby.gx === gx + 1) return 'PX';
+  return 'NZ';
+}
+
+export function zoneFromTile(tileId) {
+  if (!tileId || tileId === 'empty') return 'open';
+  if (tileId.startsWith('elev_')) return 'elevator';
+  return tileId;
+}
+
+export function isElevatorTile(tileId) {
+  return tileId?.startsWith('elev_') ?? false;
 }
 
 export function createOfficeTileSet() {
@@ -29,5 +64,15 @@ export function createOfficeTileSet() {
   tileSet.register(new TileDefinition({ id: 'open', category: 'office', sockets: sides('open'), weight: 2 }));
   tileSet.register(new TileDefinition({ id: 'meeting', category: 'office', sockets: sides('M'), weight: 2 }));
   tileSet.register(new TileDefinition({ id: 'office', category: 'office', sockets: sides('O'), weight: 3 }));
+
+  for (const lobbySide of LOBBY_SIDES) {
+    const id = elevatorTileId(lobbySide);
+    tileSet.register(new TileDefinition({
+      id,
+      category: 'office',
+      sockets: elevatorSockets(lobbySide),
+      weight: 1,
+    }));
+  }
   return tileSet;
 }

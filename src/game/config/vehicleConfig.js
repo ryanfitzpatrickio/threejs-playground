@@ -353,6 +353,29 @@ export const DEFAULT_VEHICLE_CONFIG = {
       },
     },
 
+    // Contact-local mud response shared by tyre grip, rut digging, and both mud
+    // particle layers. Slip bands intentionally keep ordinary rolling clean.
+    mudWheelDynamics: {
+      slipBands: [
+        { slip: 0.05, intensity: 0 },
+        { slip: 0.15, intensity: 0.08 },
+        { slip: 0.30, intensity: 0.28 },
+        { slip: 0.50, intensity: 0.52 },
+        { slip: 0.80, intensity: 0.82 },
+        { slip: 1.00, intensity: 1 },
+      ],
+      loadForce: 300,
+      baseSoftness: 0.62,
+      rutSoftness: 0.38,
+      rutAmplification: 0.45,
+      brakingScale: 0.38,
+      brakingRearScale: 0.18,
+      speedTaper: { start: 12, end: 38, minimum: 0.08, extremeSlipRetention: 0.78 },
+      landing: { minAirTime: 0.08, minDuration: 0.2, maxDuration: 0.5, intensity: 0.85 },
+      grip: { maxRutLoss: 0.35, longitudinalRutLoss: 0.28, lateralRutLoss: 0.35 },
+      emission: { clodPerIntensity: 150, liquidPerIntensity: 620 },
+    },
+
     lateralGrip: 8.5, // body-level sideways slip cancellation (1/s, x mass)
     // RWD rear-axle trim rate (1/s) — applied per rear wheel, scaled by rearGripScale.
     rearAxleGrip: 2.5,
@@ -466,9 +489,9 @@ export const DEFAULT_VEHICLE_CONFIG = {
           old: [0.42, 0.30, 0.20],
         },
         opacity: { peak: 1.0, fadePow: 0.6 }, // stay solid, then blink out
-        // Fine wet streaks are rendered in a second instanced pool. Emission
-        // rises with road speed and throttle, while width/lifetime fall with
-        // speed so a fast car leaves a thin spray rather than an opaque cloud.
+        // Fine wet streaks are rendered in a second instanced pool. Scheduling
+        // comes from contact-local mudWheelDynamics; this block retains the
+        // particle pool, shape, lifetime, and launch geometry.
         liquid: {
           poolSize: 6000,
           emitRate: { base: 120, perSpeed: 20, perThrottle: 550, speedCap: 46, maxPerFrame: 120 },

@@ -261,6 +261,7 @@ export function App() {
         onPostEffectChange={handlePostEffectChange}
         onVehicleCameraModeChange={(mode) => gameRuntime?.setVehicleCameraMode(mode)}
         onComfortChange={(enabled) => gameRuntime?.setCameraComfortEnabled(enabled)}
+        onOnFootFirstPersonChange={(enabled) => gameRuntime?.setOnFootFirstPersonEnabled(enabled)}
         onCameraFeelChange={(feel) => gameRuntime?.setCameraFeel(feel)}
         onPhotoModeChange={(enabled) => gameRuntime?.setPhotoMode(enabled)}
         onClothEditorChange={setShowClothEditor}

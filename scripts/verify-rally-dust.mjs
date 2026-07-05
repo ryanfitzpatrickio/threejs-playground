@@ -21,6 +21,10 @@ import * as THREE from 'three';
 import { sanitizeWebGPUVertexBuffers } from '../src/game/geometry/prepareWebGPUGeometry.js';
 import { createVehicleConfig } from '../src/game/config/vehicleConfig.js';
 import { DirtDustSystem, MudLiquidSpraySystem } from '../src/game/vehicles/TireEffects.js';
+import {
+  computeMudWheelIntensity,
+  mudSlipBandIntensity,
+} from '../src/game/vehicles/mudWheelDynamics.js';
 
 let passed = 0;
 const ok = (message) => { passed += 1; console.log(`  ✓ ${message}`); };
@@ -197,6 +201,22 @@ function instanceTranslation(dust, i) {
   ok(`drift fans the plume sideways (centered @0 vs mean ${meanDrift.toFixed(2)}m, wider spread @lateralSpeed 12)`);
 }
 
+function setMudWheels(vehicle, intensities, overrides = {}) {
+  vehicle.wheelTelemetry.forEach((wheel, index) => {
+    Object.assign(wheel, {
+      surface: 'mud',
+      normalizedLoad: 1,
+      mudSoftness: 0.75,
+      rutDepth: 0,
+      mudIntensity: intensities[index] ?? 0,
+      braking: false,
+      landingTimeRemaining: 0,
+    }, overrides[index]);
+  });
+}
+
+const emittedTotal = (system) => system.snapshot().emittedByWheel.reduce((sum, value) => sum + value, 0);
+
 // --- mud profile: darker, heavier, shorter-lived clods ---------------------
 // (docs/rally-mud-tread-plan.md §8 / M4). The DirtDustSystem swaps to the mud
 // config on `surface: 'mud'` — same pool/emit path, different look.
@@ -205,6 +225,7 @@ function instanceTranslation(dust, i) {
   const vehicle = makeVehicle();
   const cam = { quaternion: new THREE.Quaternion() };
   const base = dust.baseCfg;
+  setMudWheels(vehicle, [0, 0, 0.7, 0.7]);
 
   assert.ok(dust.mudCfg, 'a mud dust profile is configured');
   assert.ok(dust.mudCfg.color.fresh[0] < base.color.fresh[0], 'mud clods are darker than dirt dust');
@@ -227,25 +248,43 @@ function instanceTranslation(dust, i) {
   }
 
   // Back on dirt, it swaps back to the base profile.
+  vehicle.wheelTelemetry.forEach((wheel) => { wheel.surface = 'dirt'; });
   dust.update({ dt: DT, surface: 'dirt', speed: 24, intensity: 1, vehicle, camera: cam });
   assert.equal(dust.cfg, dust.baseCfg, 'off mud, the system restores the dirt profile');
   dust.dispose();
   ok(`mud swaps to darker/heavier/shorter clods (${live.activeParticles} active) and reverts on dirt`);
 }
 
-// --- acceleration mud spray: all wheels + wheel-tangential throw ----------
+// --- authored slip bands + high-speed taper --------------------------------
+{
+  assert.equal(mudSlipBandIntensity(0.049), 0, 'slip below 0.05 is clean');
+  assert.ok(mudSlipBandIntensity(0.1) > 0 && mudSlipBandIntensity(0.1) < 0.1,
+    '0.05–0.15 produces only occasional tiny clods');
+  assert.ok(mudSlipBandIntensity(0.4) >= 0.4, '0.30–0.50 produces a continuous low stream');
+  assert.ok(mudSlipBandIntensity(0.65) >= 0.65, '0.50–0.80 produces dense ribbons');
+  assert.equal(mudSlipBandIntensity(1), 1, 'extreme slip reaches rooster-tail output');
+  const stableFast = computeMudWheelIntensity({ slip: 0.08, torque: 1, load: 1, softness: 0.8, speed: 42 });
+  const extremeFast = computeMudWheelIntensity({ slip: 1, torque: 1, load: 1, softness: 0.8, speed: 42 });
+  assert.ok(stableFast < 0.01, 'ordinary high-speed travel is tapered nearly clean');
+  assert.ok(extremeFast > 0.55, 'extreme wheelspin retains strong high-speed output');
+  ok('slip bands and speed taper suppress cruising while retaining extreme slip');
+}
+
+// --- standing launch / corner exit: rear-biased wheel-tangential throw -----
 {
   const vehicle = makeVehicle({ rearSlip: 0.8 });
+  setMudWheels(vehicle, [0.03, 0.03, 1, 1]);
   const spray = new MudLiquidSpraySystem(new THREE.Group(), vehicle);
   const cam = { quaternion: new THREE.Quaternion() };
 
   for (let i = 0; i < 90; i += 1) {
-    spray.update({ dt: DT, surface: 'mud', speed: 18, throttle: 1, vehicle, camera: cam });
+    spray.update({ dt: DT, surface: 'mud', speed: 0, throttle: 1, vehicle, camera: cam });
   }
   const snapshot = spray.snapshot();
-  assert.ok(snapshot.activeParticles > 0, 'liquid mud spray is active under acceleration');
-  assert.ok(snapshot.emittedByWheel.every((count) => count > 0),
-    `acceleration emits from all four wheel contacts (${snapshot.emittedByWheel.join(', ')})`);
+  assert.ok(snapshot.activeParticles > 0, 'liquid mud spray is active during a standing launch');
+  assert.ok(snapshot.emittedByWheel[2] > snapshot.emittedByWheel[0] * 10
+    && snapshot.emittedByWheel[3] > snapshot.emittedByWheel[1] * 10,
+  `launch output is rear-biased (${snapshot.emittedByWheel.join(', ')})`);
   assert.ok(spray.particles.some((particle) => particle.sheet && particle.width > spray.cfg.size.widthMax),
     'liquid layer includes broad translucent splash sheets among the fine streaks');
   assert.ok(snapshot.fragmentsSpawned > 0, 'cohesive sheets break into inherited-momentum droplets');
@@ -303,49 +342,89 @@ function instanceTranslation(dust, i) {
   assert.ok(rearYawMean < 28,
     `rear spray mean stays broadly backward (${rearYawMean.toFixed(1)}° mean)`);
   spray.dispose();
-  ok('mud acceleration sprays liquid from every wheel with angular-speed-driven throw');
+  ok('standing launch and throttle exit produce dense rear, wheel-tangential spray');
 }
 
-// --- speed response: more droplets, but finer and shorter-lived ------------
+// --- sustained controlled drift stays continuous, not burst-retriggered ----
 {
-  const run = (speed) => {
-    const vehicle = makeVehicle();
-    vehicle.linearVelocity.z = -speed;
-    const spray = new MudLiquidSpraySystem(new THREE.Group(), vehicle);
-    for (let i = 0; i < 120; i += 1) {
-      spray.update({ dt: DT, surface: 'mud', speed, throttle: 1, vehicle });
-    }
-    const emitted = spray.snapshot().emittedByWheel.reduce((sum, count) => sum + count, 0);
-    // Compare primary spray particles; breakup children intentionally use a
-    // separate short fragment lifetime independent of road speed.
-    const live = spray.particles.filter((p) => p.life > 0 && !p.fragment);
-    const meanWidth = live.reduce((sum, p) => sum + p.width, 0) / Math.max(1, live.length);
-    const meanLife = live.reduce((sum, p) => sum + p.maxLife, 0) / Math.max(1, live.length);
-    spray.dispose();
-    return { emitted, meanWidth, meanLife };
-  };
-  const slow = run(5);
-  const fast = run(42);
-  assert.ok(fast.emitted > slow.emitted * 1.5,
-    `fast driving emits more droplets (${fast.emitted} > ${slow.emitted})`);
-  assert.ok(fast.meanWidth < slow.meanWidth * 0.82,
-    `fast spray is thinner (${fast.meanWidth.toFixed(3)}m < ${slow.meanWidth.toFixed(3)}m)`);
-  assert.ok(fast.meanLife < slow.meanLife * 0.7, 'fast spray clears sooner instead of obscuring the road');
-  ok('speed increases mud volume while thinning and shortening each droplet');
+  const vehicle = makeVehicle({ rearSlip: 0.55 });
+  setMudWheels(vehicle, [0, 0, 0.48, 0.48]);
+  const spray = new MudLiquidSpraySystem(new THREE.Group(), vehicle);
+  for (let i = 0; i < 60; i += 1) spray.update({ dt: DT, surface: 'mud', speed: 14, throttle: 0.8, vehicle });
+  const first = emittedTotal(spray);
+  for (let i = 0; i < 60; i += 1) spray.update({ dt: DT, surface: 'mud', speed: 14, throttle: 0.8, vehicle });
+  const second = emittedTotal(spray) - first;
+  assert.ok(first > 0 && second > 0, 'both halves of the drift emit continuously');
+  assert.ok(Math.abs(first - second) / first < 0.08, 'steady drift output remains a steady ribbon');
+  spray.dispose();
+  ok('controlled throttle drift emits continuously at a stable rate');
 }
 
-// --- liquid gate: mud + acceleration only ---------------------------------
+// --- steering/coasting/stable cruise stay clean ----------------------------
 {
   const vehicle = makeVehicle();
+  setMudWheels(vehicle, [0, 0, 0, 0]);
   const spray = new MudLiquidSpraySystem(new THREE.Group(), vehicle);
   for (let i = 0; i < 90; i += 1) {
     spray.update({ dt: DT, surface: 'mud', speed: 20, throttle: 0, vehicle });
     spray.update({ dt: DT, surface: 'asphalt', speed: 20, throttle: 1, vehicle });
   }
-  assert.equal(spray.snapshot().emittedByWheel.reduce((sum, count) => sum + count, 0), 0,
-    'coasting on mud and accelerating on asphalt emit no liquid mud spray');
+  assert.equal(emittedTotal(spray), 0,
+    'steering/coasting on mud and acceleration on asphalt emit no liquid spray');
   spray.dispose();
-  ok('liquid spray is gated to acceleration on mud');
+  ok('steering, coasting, and stable high-speed travel remain clean');
+}
+
+// --- braking: modest front output with forward/outward launch --------------
+{
+  const vehicle = makeVehicle();
+  setMudWheels(vehicle, [0.28, 0.28, 0.025, 0.025], {
+    0: { braking: true }, 1: { braking: true }, 2: { braking: true }, 3: { braking: true },
+  });
+  const spray = new MudLiquidSpraySystem(new THREE.Group(), vehicle);
+  for (let i = 0; i < 45; i += 1) spray.update({ dt: DT, surface: 'mud', speed: 18, throttle: 0, vehicle });
+  const counts = spray.snapshot().emittedByWheel;
+  assert.ok(counts[0] > counts[2] * 5 && counts[1] > counts[3] * 5,
+    `braking is front-biased and modest (${counts.join(', ')})`);
+  const frontLeft = { wheel: vehicle.wheelTelemetry[0], wheelIndex: 0, anchor: vehicle.wheelAnchors[0] };
+  spray._emit(frontLeft, vehicle, 18, 0.28);
+  const clump = spray.particles[(spray.cursor - 1 + spray.max) % spray.max];
+  assert.ok(clump.vz < 0 && clump.vx < 0, 'left-front braking clump launches forward and outward');
+  spray.dispose();
+  ok('heavy braking emits modest front-wheel forward/outward clumps');
+}
+
+// --- contact-local surface/rut amplification -------------------------------
+{
+  const vehicle = makeVehicle();
+  setMudWheels(vehicle, [0.9, 0.9, 0.9, 0.9]);
+  vehicle.wheelTelemetry[1].surface = 'dirt';
+  vehicle.wheelTelemetry[2].surface = 'dirt';
+  vehicle.wheelTelemetry[3].surface = 'dirt';
+  const spray = new MudLiquidSpraySystem(new THREE.Group(), vehicle);
+  for (let i = 0; i < 30; i += 1) spray.update({ dt: DT, surface: 'mud', speed: 8, throttle: 1, vehicle });
+  assert.ok(spray.snapshot().emittedByWheel[0] > 0, 'the mud/deep-rut wheel emits');
+  assert.deepEqual(spray.snapshot().emittedByWheel.slice(1), [0, 0, 0], 'dry wheels do not inherit chassis mud output');
+  spray.dispose();
+  ok('only the wheel touching mud or a deep rut receives amplified output');
+}
+
+// --- landing envelope is bounded and ends within 0.5 seconds ---------------
+{
+  const vehicle = makeVehicle();
+  setMudWheels(vehicle, [0.75, 0.75, 0.75, 0.75], {
+    0: { landingTimeRemaining: 0.3 }, 1: { landingTimeRemaining: 0.3 },
+    2: { landingTimeRemaining: 0.3 }, 3: { landingTimeRemaining: 0.3 },
+  });
+  const spray = new MudLiquidSpraySystem(new THREE.Group(), vehicle);
+  for (let i = 0; i < 18; i += 1) spray.update({ dt: DT, surface: 'mud', speed: 10, throttle: 0, vehicle });
+  const burstCount = emittedTotal(spray);
+  assert.ok(burstCount > 0, 'landing creates an outward transient');
+  vehicle.wheelTelemetry.forEach((wheel) => { wheel.mudIntensity = 0; wheel.landingTimeRemaining = 0; });
+  for (let i = 0; i < 31; i += 1) spray.update({ dt: DT, surface: 'mud', speed: 10, throttle: 0, vehicle });
+  assert.equal(emittedTotal(spray), burstCount, 'landing emission returns to baseline within 0.5 seconds');
+  spray.dispose();
+  ok('landing burst is bounded to the configured 0.2–0.5 second envelope');
 }
 
 console.log(`\nAll ${passed} rally-dust checks passed.`);

@@ -241,6 +241,9 @@ export class VehicleSystem {
           }
         }
       }
+      if (this.level?.updateForestDrivingColliders && this.activeVehicle.group) {
+        this.level.updateForestDrivingColliders(this.activeVehicle.group.position, this.physics);
+      }
       this._updateVehicleSurface(this.activeVehicle);
       const controls = this._controlsFromInput(this.activeVehicle, input);
       this.activeVehicle.update({
@@ -310,6 +313,7 @@ export class VehicleSystem {
       ? this.level?.getRoadSurfaceAt?.(position.x, position.z)
       : null;
     vehicle.setGroundSurface?.(surface ?? 'offroad');
+    vehicle.setGroundSurfaceSampler?.(this.level);
     // Hand the vehicle the rally mud deform field (null everywhere else) so its
     // integrate step can dip the visual tyres into their ruts.
     vehicle.mudField = this.level?.mudField ?? null;
@@ -525,6 +529,7 @@ export class VehicleSystem {
       // Give a little initial rev on entry for feedback (muscle car feel)
       if (vehicle.engineRpm) vehicle.engineRpm = Math.max(vehicle.engineRpm, 1650);
     }
+    this.level?.wakeForestAmbience?.();
     vehicle.tireEffects?.resume();
     vehicle.tireEffects?.mute(false);
     vehicle.crashAudio?.resume();

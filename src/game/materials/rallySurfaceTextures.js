@@ -26,6 +26,15 @@ import {
 } from 'three/tsl';
 import { puddleMaskAt, puddleRippleNormal } from './wetSurfaceNodes.js';
 import { parallaxOcclusionUV } from '../../three-addons/tsl/utils/ParallaxOcclusion.js';
+import { RALLY_MUD_TRACK_SRGB } from './rallyMudPalette.js';
+import { disablePbrEnvironment } from './disablePbrEnvironment.js';
+import { uSunDirection } from '../render/cloud/cloudUniforms.js';
+import {
+  createHexTileGrid,
+  hexBlendWeights,
+  hexRotationAngle,
+  hexTileUv,
+} from './hexTilingNodes.js';
 
 const ROOT = '/assets/textures/rally/surfaces';
 const cache = new Map();
@@ -227,6 +236,9 @@ export function createRallySurfaceMaterial(maps, {
   // albedo/roughness/normal maps are sampled at the raymarched offset UV so the
   // dirt/gravel gets real self-occluding relief instead of a flat normal map.
   parallaxOcclusion = null,
+  // Practical hex tiling. It takes precedence over POM because POM's samples
+  // must all use one coherent height field and cannot share rotated tile UVs.
+  hextile = null,
 } = {}) {
   const uv = positionWorld.xz.mul(float(tilesPerMetre));
   const material = new MeshStandardNodeMaterial();
@@ -237,7 +249,8 @@ export function createRallySurfaceMaterial(maps, {
   // the fine, near-isotropic dirt/gravel relief this reads as a subtle lean, not
   // a directional error — acceptable for the ultra-only visual pass. `silhouette`
   // stays off: the surface tiles forever, there is no outline to clip.
-  const pomEnabled = parallaxOcclusion?.enabled === true && maps?.heightMap != null;
+  const hexEnabled = hextile?.enabled === true;
+  const pomEnabled = !hexEnabled && parallaxOcclusion?.enabled === true && maps?.heightMap != null;
   // maxLayers is a compile-time loop bound and cannot be faded at runtime; fade
   // the relief depth instead so distant road flattens (and avoids swim/shimmer)
   // while the raymarch still resolves fine near the camera. The fade reaches out
@@ -258,22 +271,75 @@ export function createRallySurfaceMaterial(maps, {
   // sub-build and must not share a march result (addon constraint) → a 2nd call.
   const pomColor = pomEnabled ? makePom() : null;
 
+  let hexColor = null;
+  let hexScalar = null;
+  let hexNormal = null;
+  if (hexEnabled) {
+    const grid = createHexTileGrid(positionWorld.xz, vec2(0), tilesPerMetre);
+    const rotStrength = hextile.roadRotStrength ?? 0.35;
+    const uv1 = hexTileUv(uv, grid.vertex1, rotStrength);
+    const uv2 = hexTileUv(uv, grid.vertex2, rotStrength);
+    const uv3 = hexTileUv(uv, grid.vertex3, rotStrength);
+    // Roads expose blend discontinuities strongly under rain/SSR. Keep one
+    // shared, soft set of weights for every PBR channel so albedo, roughness,
+    // and normals cannot resolve into different visible hex regions.
+    const weights = hexBlendWeights(
+      grid.weights,
+      vec3(1),
+      0,
+      hextile.roadExponent ?? 2,
+    );
+
+    hexColor = (map) => {
+      const c1 = texture(map, uv1).rgb;
+      const c2 = texture(map, uv2).rgb;
+      const c3 = texture(map, uv3).rgb;
+      return c1.mul(weights.x).add(c2.mul(weights.y)).add(c3.mul(weights.z));
+    };
+    hexScalar = (map) => {
+      const s1 = texture(map, uv1).r;
+      const s2 = texture(map, uv2).r;
+      const s3 = texture(map, uv3).r;
+      return s1.mul(weights.x).add(s2.mul(weights.y)).add(s3.mul(weights.z));
+    };
+    hexNormal = (map) => {
+      const rotateNormal = (sample, vertex) => {
+        const decoded = sample.mul(2).sub(1);
+        const angle = hexRotationAngle(vertex, rotStrength);
+        const cs = angle.cos();
+        const sn = angle.sin();
+        const rotated = vec3(
+          decoded.x.mul(cs).sub(decoded.y.mul(sn)),
+          decoded.x.mul(sn).add(decoded.y.mul(cs)),
+          decoded.z,
+        );
+        return rotated.mul(0.5).add(0.5);
+      };
+      const n1 = rotateNormal(texture(map, uv1).rgb, grid.vertex1);
+      const n2 = rotateNormal(texture(map, uv2).rgb, grid.vertex2);
+      const n3 = rotateNormal(texture(map, uv3).rgb, grid.vertex3);
+      return n1.mul(weights.x).add(n2.mul(weights.y)).add(n3.mul(weights.z));
+    };
+  }
+
   let baseColorNode = maps?.map
-    ? (pomColor ? pomColor.sample(maps.map).rgb : texture(maps.map, uv).rgb)
+    ? (pomColor ? pomColor.sample(maps.map).rgb : (hexColor ? hexColor(maps.map) : texture(maps.map, uv).rgb))
     : color(0x8a7355);
   let baseRoughnessNode = maps?.roughnessMap
-    ? (pomColor ? pomColor.sample(maps.roughnessMap).r : texture(maps.roughnessMap, uv).r)
+    ? (pomColor ? pomColor.sample(maps.roughnessMap).r : (hexScalar ? hexScalar(maps.roughnessMap) : texture(maps.roughnessMap, uv).r))
     : float(1);
   let baseNormalNode = maps?.normalMap
-    ? normalMap((pomEnabled ? makePom().sample(maps.normalMap) : texture(maps.normalMap, uv)).rgb)
+    ? normalMap(pomEnabled ? makePom().sample(maps.normalMap).rgb : (hexNormal ? hexNormal(maps.normalMap) : texture(maps.normalMap, uv).rgb))
     : null;
 
-  // Base mud treatment: wet-mud brown over the dirt albedo. Kept lighter than the
-  // first pass — a heavy mix + 0.82 multiply read too dark in shade and washed
-  // to sand only in direct sun.
+  // Base mud treatment: wet-mud brown over the dirt albedo. Matte + sun-facing
+  // compression keep clear-sky noon from blowing the ribbon out to pale sand.
   if (mudSurface) {
-    baseColorNode = mix(baseColorNode, color(0x725636), 0.62).mul(0.94);
-    baseRoughnessNode = baseRoughnessNode.mul(0.62);
+    baseColorNode = mix(baseColorNode, color(RALLY_MUD_TRACK_SRGB), 0.84);
+    baseRoughnessNode = clamp(baseRoughnessNode.mul(0.82), float(0.45), float(1));
+    const sunFacing = clamp(normalWorld.dot(normalize(uSunDirection)), float(0), float(1));
+    const sunBleachFix = mix(float(1), float(0.70), sunFacing.mul(sunFacing));
+    baseColorNode = baseColorNode.mul(sunBleachFix);
   }
 
   // Break the uniform gloss with LARGE-scale roughness variation — shallow
@@ -321,7 +387,7 @@ export function createRallySurfaceMaterial(maps, {
     // (raise roughness) so they're clearly distinct from the glossy rain puddles.
     // Tread grooves add darker lines. Gated by `present` so un-stamped road just
     // shows the base mud look.
-    const darken = mix(float(1), float(0.42), rut.mul(present))
+    const darken = mix(float(1), float(0.52), rut.mul(present))
       .mul(mix(float(1), float(0.78), tread.mul(present)));
     baseColorNode = baseColorNode.mul(darken);
     // Churned mud is rougher than the surrounding wet skin (matte, not slick).
@@ -432,5 +498,6 @@ export function createRallySurfaceMaterial(maps, {
   }
 
   material.metalnessNode = float(0);
+  disablePbrEnvironment(material);
   return material;
 }

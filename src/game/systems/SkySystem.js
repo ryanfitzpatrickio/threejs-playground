@@ -37,7 +37,10 @@ const WEATHER_SKY_PROFILE = Object.freeze({
     cloudDensity: 0.86,
     cloudElevation: 0.58,
     cloudScale: 0.00011,
-    sunDiscScale: 0.28,
+    // SkyMesh's disc is an extremely bright HDR source, so fog needs a much
+    // smaller multiplier than its apparent opacity would suggest.
+    sunDiscScale: 0.08,
+    mieDirectionalG: 0.62,
   },
   overcast: {
     turbidity: 8.2,
@@ -47,7 +50,8 @@ const WEATHER_SKY_PROFILE = Object.freeze({
     cloudDensity: 0.92,
     cloudElevation: 0.7,
     cloudScale: 0.0001,
-    sunDiscScale: 0.16,
+    sunDiscScale: 0,
+    mieDirectionalG: 0.48,
   },
   rain: {
     // Grey overcast without the first pass's near-opaque blanket. Low Rayleigh
@@ -55,11 +59,12 @@ const WEATHER_SKY_PROFILE = Object.freeze({
     turbidity: 8.8,
     rayleigh: 0.62,
     mieCoefficient: 0.0115,
-    cloudCoverage: 0.9,
-    cloudDensity: 0.86,
+    cloudCoverage: 0.94,
+    cloudDensity: 0.9,
     cloudElevation: 0.68,
     cloudScale: 0.0001,
-    sunDiscScale: 0.1,
+    sunDiscScale: 0,
+    mieDirectionalG: 0.42,
   },
 });
 const HEMISPHERE_SKY_COLOR = Object.freeze({
@@ -72,6 +77,20 @@ const SUN_COLOR = Object.freeze({
   overcast: 0xdde2e6,
   rain: 0xdce2e8,
 });
+
+function resolveSunColor(weather, config = {}) {
+  if (weather === 'clear' && config.sunColor != null) {
+    return config.sunColor;
+  }
+  return SUN_COLOR[weather] ?? config.sunColor ?? 0xffe4b5;
+}
+
+function resolveHemisphereSkyColor(weather, config = {}) {
+  if (weather === 'clear' && config.hemisphereSkyColor != null) {
+    return config.hemisphereSkyColor;
+  }
+  return HEMISPHERE_SKY_COLOR[weather] ?? config.hemisphereSkyColor ?? 0xb9d8ff;
+}
 
 // Accepted cloud modes. `volumetric` selects the new sky reference source pipeline
 // (CloudSkyProvider); `dome`/`off` keep the existing SkyMesh path.
@@ -131,21 +150,29 @@ export class SkySystem {
       if (this.sun) {
         this.sun.position.copy(this.sunDirection).multiplyScalar(DEFAULT_SUN_DISTANCE);
         this.sun.target.position.set(0, 0, 0);
-        this.sun.color.set(SUN_COLOR[this.weather] ?? this.config.sunColor ?? 0xffe4b5);
+        this.sun.color.set(resolveSunColor(this.weather, this.config));
         this.sun.intensity = (this.config.sunIntensity ?? 4.2) * daylight * weatherScale;
       }
       if (this.hemisphere) {
-        this.hemisphere.color.set(
-          HEMISPHERE_SKY_COLOR[this.weather] ?? this.config.hemisphereSkyColor ?? 0xb9d8ff,
-        );
+        this.hemisphere.color.set(resolveHemisphereSkyColor(this.weather, this.config));
         this.hemisphere.groundColor.set(this.config.hemisphereGroundColor ?? 0x776653);
-        this.hemisphere.intensity = (this.config.hemisphereIntensity ?? 1.6)
+        this.hemisphere.intensity = (this.config.hemisphereIntensity ?? 0.5)
           * (0.08 + daylight * 0.92)
           * weatherScale;
       }
     }
     this.onTimeOfDayChanged?.(this.timeOfDay);
     return this.sunDirection;
+  }
+
+  updateEnvironmentConfig(config = {}) {
+    this.config = { ...this.config, ...config };
+    if (config.timeOfDay != null) {
+      this.setTimeOfDay(config.timeOfDay);
+    } else {
+      this.setTimeOfDay(this.timeOfDay);
+    }
+    return this;
   }
 
   // `camera` is required by the volumetric path: the sky sphere is parented to the
@@ -242,6 +269,9 @@ export class SkySystem {
       sunDirection: this.sunDirection.toArray().map(round3),
       turbidity: this.sky?.turbidity.value ?? null,
       rayleigh: this.sky?.rayleigh.value ?? null,
+      mieCoefficient: this.sky?.mieCoefficient.value ?? null,
+      mieDirectionalG: this.sky?.mieDirectionalG.value ?? null,
+      sunDiscVisibility: this.sky?.showSunDisc.value ?? 0,
       clouds: this.config.clouds ?? 'dome',
       cloudCoverage: this.sky?.cloudCoverage.value ?? 0,
       dynamicDay: this.dynamicDay,
@@ -274,33 +304,38 @@ function resolveSkyDefaults(config) {
 }
 
 function applyDomeWeatherProfile(sky, weather, config) {
+  const profile = resolveDomeWeatherProfile(config, weather);
+  sky.turbidity.value = profile.turbidity;
+  sky.rayleigh.value = profile.rayleigh;
+  sky.mieCoefficient.value = profile.mieCoefficient;
+  sky.mieDirectionalG.value = profile.mieDirectionalG;
+  sky.cloudCoverage.value = profile.cloudCoverage;
+  sky.cloudDensity.value = profile.cloudDensity;
+  sky.cloudScale.value = profile.cloudScale;
+  sky.cloudSpeed.value = profile.cloudSpeed;
+  sky.cloudElevation.value = profile.cloudElevation;
+  sky.showSunDisc.value = profile.sunDiscVisibility;
+}
+
+// Pure profile resolution keeps the weather contract testable without creating
+// a renderer. Solar-disc visibility is intentionally independent of the scene's
+// DirectionalLight and HemisphereLight toggles.
+export function resolveDomeWeatherProfile(config = {}, weather = 'clear') {
   const base = resolveSkyDefaults(config);
+  const profile = WEATHER_SKY_PROFILE[weather] ?? null;
   const cloudsEnabled = config.clouds !== 'off';
-  const profile = WEATHER_SKY_PROFILE[weather];
-
-  sky.mieDirectionalG.value = base.mieDirectionalG;
-  sky.cloudSpeed.value = base.cloudSpeed;
-
-  if (!profile || !cloudsEnabled) {
-    sky.turbidity.value = base.turbidity;
-    sky.rayleigh.value = base.rayleigh;
-    sky.mieCoefficient.value = base.mieCoefficient;
-    sky.cloudCoverage.value = cloudsEnabled ? base.cloudCoverage : 0;
-    sky.cloudDensity.value = base.cloudDensity;
-    sky.cloudScale.value = base.cloudScale;
-    sky.cloudElevation.value = base.cloudElevation;
-    sky.showSunDisc.value = base.sunDiscIntensity;
-    return;
-  }
-
-  sky.turbidity.value = profile.turbidity ?? base.turbidity;
-  sky.rayleigh.value = profile.rayleigh ?? base.rayleigh;
-  sky.mieCoefficient.value = profile.mieCoefficient ?? base.mieCoefficient;
-  sky.cloudCoverage.value = profile.cloudCoverage ?? base.cloudCoverage;
-  sky.cloudDensity.value = profile.cloudDensity ?? base.cloudDensity;
-  sky.cloudScale.value = profile.cloudScale ?? base.cloudScale;
-  sky.cloudElevation.value = profile.cloudElevation ?? base.cloudElevation;
-  sky.showSunDisc.value = base.sunDiscIntensity * (profile.sunDiscScale ?? 1);
+  return {
+    turbidity: profile?.turbidity ?? base.turbidity,
+    rayleigh: profile?.rayleigh ?? base.rayleigh,
+    mieCoefficient: profile?.mieCoefficient ?? base.mieCoefficient,
+    mieDirectionalG: profile?.mieDirectionalG ?? base.mieDirectionalG,
+    cloudCoverage: cloudsEnabled ? (profile?.cloudCoverage ?? base.cloudCoverage) : 0,
+    cloudDensity: profile?.cloudDensity ?? base.cloudDensity,
+    cloudScale: profile?.cloudScale ?? base.cloudScale,
+    cloudSpeed: base.cloudSpeed,
+    cloudElevation: profile?.cloudElevation ?? base.cloudElevation,
+    sunDiscVisibility: base.sunDiscIntensity * (profile?.sunDiscScale ?? 1),
+  };
 }
 
 function createConfiguredSky(config, includeClouds = false) {

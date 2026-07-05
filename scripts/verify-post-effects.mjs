@@ -89,8 +89,9 @@ for (const [presetName, preset] of [['high', high], ['ultra', ultra], ['low', lo
 const highSsaoPlan = buildPostPipelinePlan({ requestedMode: 'ssao', qualityPreset: high, backend: 'webgpu' });
 assert.equal(highSsaoPlan.requestedMode, 'ssao');
 assert.deepEqual(highSsaoPlan.ssao, {
-  resolutionScale: 0.4, samples: 8, radius: 1.5, intensity: 4, blur: false, updateInterval: 1,
+  resolutionScale: 0.4, samples: 8, radius: 1.5, intensity: 4, blur: false, updateInterval: 2,
 });
+assert.equal(highSsaoPlan.ssao.updateInterval, 2, 'high renders AO every other frame');
 const ultraSsaoPlan = buildPostPipelinePlan({ requestedMode: 'ssao', qualityPreset: ultra, backend: 'webgpu' });
 assert.equal(ultraSsaoPlan.ssao.updateInterval, 2, 'ultra renders AO every other frame');
 assert.equal(highSsaoPlan.bloom.strength, high.environment.bloomStrength, 'bloom keeps preset strength');

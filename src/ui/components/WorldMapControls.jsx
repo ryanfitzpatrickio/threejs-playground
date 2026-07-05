@@ -1,5 +1,5 @@
 import { For, Show, createSignal, createMemo, onCleanup, onMount } from 'solid-js';
-import { ZONE_TYPES, ZONE_TYPE_ORDER, POI_KINDS, POI_KIND_ORDER, ENTITY_GROUND_MODES, ENTITY_GROUND_MODE_ORDER, TERRAIN_BIOMES, TERRAIN_BIOME_ORDER, CITY_STYLES, CITY_STYLE_ORDER } from '../../world/worldMap/worldMapSchema.js';
+import { ZONE_TYPES, ZONE_TYPE_ORDER, POI_KINDS, POI_KIND_ORDER, ENTITY_GROUND_MODES, ENTITY_GROUND_MODE_ORDER, TERRAIN_BIOMES, TERRAIN_BIOME_ORDER, CITY_STYLES, CITY_STYLE_ORDER, FOREST_SPECIES, FOREST_SPECIES_ORDER } from '../../world/worldMap/worldMapSchema.js';
 import { listScenes, WORLDMAP_DRAFT_ID } from '../../world/worldMap/worldMapScenes.js';
 import { listBlueprints } from '../../map/blueprintLibrary.js';
 import { getFileStoreRevision, subscribeFileStore, ensureFileStore } from '../../store/fileStore.js';
@@ -12,6 +12,7 @@ const TOOLS = [
   { id: 'city', label: 'City' },
   { id: 'loopout', label: 'Loop-out' },
   { id: 'wilds', label: 'Wilds' },
+  { id: 'forest', label: 'Forest' },
   { id: 'road', label: 'Road' },
   { id: 'river', label: 'River' },
   { id: 'poi', label: 'POI' },
@@ -21,7 +22,7 @@ const TOOLS = [
   { id: 'pan', label: 'Pan' },
 ];
 
-const ZONE_TOOLS = new Set(['terrain', 'city', 'loopout', 'wilds']);
+const ZONE_TOOLS = new Set(['terrain', 'city', 'loopout', 'wilds', 'forest']);
 
 const h2 = {
   'font-size': '11px',
@@ -116,7 +117,7 @@ export function WorldMapControls(props) {
     },
     {
       name: 'add_rect_zone',
-      description: 'Add a rectangular zone. type one of terrain,city,wilds,loopout. rect in world units inside current bounds.',
+      description: 'Add a rectangular zone. type one of terrain,city,wilds,loopout,forest. rect in world units inside current bounds.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -758,6 +759,38 @@ ${JSON.stringify({ zones: (s.zones||[]).length, roads: (s.roads||[]).length, ent
             onChange={(e) => editor()?.setSelectedCitySeed(Number(e.target.value))}
           />
         </Show>
+        <Show when={snap().selected.kind === 'zone' && snap().selected.type === 'forest'}>
+          <label style={{ 'font-size': '11px', color: '#8d9384' }}>Species / mix</label>
+          <input
+            style={field}
+            list="forest-species-options"
+            placeholder="pine or pine:0.7,douglas-fir:0.3"
+            value={snap().selected.forestSpecies ?? 'pine'}
+            onInput={(e) => editor()?.setSelectedForestSpecies(e.currentTarget.value)}
+          />
+          <datalist id="forest-species-options">
+            <For each={FOREST_SPECIES_ORDER}>{(s) => <option value={s}>{FOREST_SPECIES[s].label}</option>}</For>
+          </datalist>
+          <label style={{ 'font-size': '11px', color: '#8d9384' }}>Density (trees/hectare)</label>
+          <input
+            style={field}
+            type="number"
+            min="1"
+            placeholder="150"
+            value={snap().selected.forestDensity ?? ''}
+            onInput={(e) => editor()?.setSelectedForestDensity(e.currentTarget.value)}
+          />
+          <label style={{ 'font-size': '11px', color: '#8d9384' }}>Forest seed</label>
+          <input
+            style={field}
+            type="number"
+            value={snap().selected.seed ?? 1}
+            onChange={(e) => editor()?.setSelectedForestSeed(Number(e.target.value))}
+          />
+          <div style={{ 'font-size': '11px', color: '#8d9384', 'line-height': 1.4 }}>
+            Vegetation overlay only — does not reshape terrain. Procedural pine trees scatter inside the zone polygon.
+          </div>
+        </Show>
         <Show when={snap().selected.kind === 'entity'}>
           <input
             style={field}
@@ -797,7 +830,7 @@ ${JSON.stringify({ zones: (s.zones||[]).length, roads: (s.roads||[]).length, ent
 
       <div style={h2}>Stats</div>
       <div style={{ 'font-size': '12px', color: '#b9bcb1', 'line-height': 1.6 }}>
-        Zones: {snap().stats?.zones ?? 0} (terrain {snap().stats?.byType?.terrain ?? 0}, city {snap().stats?.byType?.city ?? 0}, loop {snap().stats?.byType?.loopout ?? 0}, wilds {snap().stats?.byType?.wilds ?? 0})<br />
+        Zones: {snap().stats?.zones ?? 0} (terrain {snap().stats?.byType?.terrain ?? 0}, city {snap().stats?.byType?.city ?? 0}, loop {snap().stats?.byType?.loopout ?? 0}, wilds {snap().stats?.byType?.wilds ?? 0}, forest {snap().stats?.byType?.forest ?? 0})<br />
         Roads: {snap().stats?.roads ?? 0}<br />
         Rivers: {snap().stats?.rivers ?? 0}<br />
         POIs: {snap().stats?.pois ?? 0}<br />

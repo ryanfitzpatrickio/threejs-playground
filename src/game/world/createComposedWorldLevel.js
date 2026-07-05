@@ -25,7 +25,7 @@ import { CITY_STYLES } from '../../world/worldMap/worldMapSchema.js';
 
 const cityPhysicsOwnerKey = (chunkKey) => `city:${chunkKey}`;
 
-export function createComposedWorldLevel(qualityPreset = {}, { worldMap = null, levelMode = 'city' } = {}) {
+export function createComposedWorldLevel(qualityPreset = {}, { worldMap = null, levelMode = 'city', renderer = null } = {}) {
   const cityZones = (worldMap?.zones ?? []).filter((zone) => zone.type === 'city');
 
   const stride = getCityStride();
@@ -36,7 +36,7 @@ export function createComposedWorldLevel(qualityPreset = {}, { worldMap = null, 
   };
 
   // City zones flatten the terrain beneath them (whatever their shape).
-  const terrain = createStreamingTerrainLevel(qualityPreset, { worldMap, flattenZones: cityZones, levelMode });
+  const terrain = createStreamingTerrainLevel(qualityPreset, { worldMap, flattenZones: cityZones, levelMode, renderer });
   const city = createInfiniteCityLevel(qualityPreset, { chunkResolver });
 
   const group = new THREE.Group();
@@ -81,9 +81,20 @@ export function createComposedWorldLevel(qualityPreset = {}, { worldMap = null, 
     cityChunks: city.cityChunks,
     cityChunkStride: city.cityChunkStride,
     createPipelineWarmupGroup: city.createPipelineWarmupGroup,
+    ready: terrain.ready,
+
+    updateForestEnvironment: (env) => terrain.updateForestEnvironment?.(env),
+
+    updateForestDrivingColliders: (position, physics) =>
+      terrain.updateForestDrivingColliders?.(position, physics),
+
+    updateForestAmbience: (position, delta) =>
+      terrain.updateForestAmbience?.(position, delta),
+
+    wakeForestAmbience: () => terrain.wakeForestAmbience?.(),
 
     updateStreaming: (position, options = {}) => {
-      const t = terrain.updateStreaming(position) ?? {};
+      const t = terrain.updateStreaming(position, options) ?? {};
       const c = city.updateStreaming(position, options) ?? {};
       return {
         // City chunks are heavy → keep them on the hide-until-compiled path.

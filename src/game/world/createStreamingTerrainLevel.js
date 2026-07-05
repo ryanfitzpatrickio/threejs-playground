@@ -32,8 +32,13 @@ import {
 import { buildRiverProfile, applyRiverCorridorHeight } from '../../world/worldMap/riverProfile.js';
 import { createTerrainBiomeMaterial } from '../materials/createTerrainBiomeMaterial.js';
 import { createZoneForest } from './createZoneForest.js';
+import { createForestZone } from './forest/createForestZone.js';
+import { setForestLitterMask, clearForestLitterMask } from './forest/forestLitter.js';
 import { createRoadworks, ROAD_SURFACE_LIFT } from './createRoadworks.js';
 import { createTracksideLayers } from './createTracksideLayers.js';
+import { createSpectatorCrowd } from './spectatorCrowd.js';
+import { getQualityLevel } from '../config/qualityPresets.js';
+import { isSpectatorCrowdEnabled } from '../config/renderDebugSettings.js';
 import { createRiverworks } from './createRiverworks.js';
 import { createBlueprintEntities, collectBlueprintRoads, collectBlueprintRivers, collectBlueprintTerrainTexture } from './createBlueprintEntities.js';
 import { getGroundHeightAt as colliderGroundHeightAt } from './createBaseLevel.js';
@@ -102,7 +107,7 @@ const BIOME_MARGIN = 48;
 // below 0" (canyons) eases in rather than stepping at the zone edge.
 const ELEVATION_MARGIN = 24;
 
-export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = null, flattenZones = [], levelMode = 'city' } = {}) {
+export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = null, flattenZones = [], levelMode = 'city', renderer = null } = {}) {
   const loadRadius = qualityPreset.terrainLoadRadius ?? DEFAULT_LOAD_RADIUS;
   const unloadRadius = qualityPreset.terrainUnloadRadius ?? loadRadius + 1;
   const maxChunkBuildsPerFrame = qualityPreset.terrainChunkBuildsPerFrame ?? DEFAULT_CHUNK_BUILDS_PER_FRAME;
@@ -119,6 +124,7 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
   let roadCorridor = null;
   let roadworks = null;
   let trackside = null;
+  let spectatorCrowd = null;
 
   // River corridor query (assigned after the profile is built, below). Null until
   // the river profile exists so buildRiverProfile's sampleHeight (base + road +
@@ -348,7 +354,10 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
   // hidden-until-compiled (which was causing the chunk-edge flicker while moving).
   // Height + slope blended PBR (sand → grass → rock → snow), plus the optional
   // single blueprint terrain texture painted over merge footprints.
-  const terrainMaterial = createTerrainBiomeMaterial({ overlay: bpTerrainTexture });
+  const terrainMaterial = createTerrainBiomeMaterial({
+    overlay: bpTerrainTexture,
+    hextile: qualityPreset.terrainHextile,
+  });
 
   const liveChunks = new Map(); // chunkKey -> { handle, data, group, chunkKey, cx, cz }
   const geometryIndex = createLevelGeometryIndex(group);
@@ -657,8 +666,24 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
     group.add(roadworks.group);
     // GT3-style trackside stack (curbs/shoulders/walls) for roads with a trackStyle.
     // Its wall colliders go into level.colliders so the vehicle is contained.
-    trackside = createTracksideLayers({ profile: roadProfile, sampleHeight: sampleShapedHeight });
+    const qualityLevel = getQualityLevel();
+    const useAnimatedSpectatorCrowd = isSpectatorCrowdEnabled() && qualityLevel !== 'low';
+    trackside = createTracksideLayers({
+      profile: roadProfile,
+      sampleHeight: sampleShapedHeight,
+      crowdQuality: useAnimatedSpectatorCrowd ? qualityLevel : 'low',
+    });
     if (trackside.group.children.length) group.add(trackside.group);
+    if (useAnimatedSpectatorCrowd && trackside.crowdPlacements?.length) {
+      spectatorCrowd = createSpectatorCrowd({
+        placements: trackside.crowdPlacements,
+        quality: qualityLevel,
+      });
+      group.add(spectatorCrowd.group);
+      spectatorCrowd.load().catch((err) => {
+        console.warn('[level] spectator crowd failed to load', err);
+      });
+    }
   }
 
   // Build the initial ring synchronously around the actual map spawn so Rapier has
@@ -720,6 +745,36 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
     for (const mesh of blueprints.meshes) geometryIndex.addRoot(mesh);
   }
 
+  const colliders = [
+    ...(roadworks?.colliders ?? []),
+    ...(trackside?.colliders ?? []),
+    ...blueprints.colliders,
+  ];
+
+  // Forest zones: SeedThree procedural trees with LOD rebinning + impostors (M3+).
+  const forestMapZones = (worldMap?.zones ?? []).filter((z) => z.type === 'forest');
+  let forestZone = null;
+  const forestZoneReady = forestMapZones.length > 0
+    ? createForestZone({
+      zones: forestMapZones,
+      sampleHeight: sampleShapedHeight,
+      roadCorridor,
+      riverCorridor,
+      findNearestRoadPoint: (x, z, options) =>
+        roadProfile ? findNearestRoadPoint(roadProfile, x, z, options) : null,
+      qualityPreset,
+      renderer,
+    }).then((built) => {
+      forestZone = built;
+      if (built.group) group.add(built.group);
+      if (built.colliders?.length) colliders.push(...built.colliders);
+      if (built.litterMask) {
+        setForestLitterMask(built.litterMask);
+      }
+      return built;
+    })
+    : Promise.resolve(null);
+
   for (const entry of initialEntries) {
     const distance = Math.max(Math.abs(entry.cx - initialCenterX), Math.abs(entry.cz - initialCenterZ));
     entry.physicsActive = distance <= physicsRadius;
@@ -731,7 +786,7 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
     // Bridge deck colliders (static; built once) + blueprint platform/object
     // colliders. PhysicsSystem builds these and getGroundHeightAt stands the
     // player on them.
-    colliders: [...(roadworks?.colliders ?? []), ...(trackside?.colliders ?? []), ...blueprints.colliders],
+    colliders,
     ledges: [],
     climbSurfaces: [],
     wallRunSurfaces: [],
@@ -742,11 +797,32 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
     // road). VehicleSystem stamps tyre ruts into it and decays it per frame;
     // getGroundHeightAt (above) folds it into the analytic surface.
     mudField,
+    spectatorCrowd,
     // Heightfields for these are built at physics init; streaming handles the rest.
     terrainChunks: initialEntries.filter((entry) => entry.physicsActive).map(terrainChunkPayload),
 
-    updateStreaming: (position) => {
-      if (forest && position) forest.setCameraPosition(position);
+    ready: forestZoneReady,
+
+    updateForestEnvironment: (env) => {
+      forestZone?.updateEnvironment?.(env);
+    },
+
+    updateForestDrivingColliders: (position, physics) => {
+      forestZone?.updateDrivingColliders?.(position, physics);
+    },
+
+    updateForestAmbience: (position, delta) => {
+      forestZone?.updateAmbience?.(position, delta);
+    },
+
+    wakeForestAmbience: () => {
+      forestZone?.wakeAmbience?.();
+    },
+
+    updateStreaming: (position, options = {}) => {
+      const lodCenter = options.viewPosition ?? position;
+      if (forest && lodCenter) forest.setCameraPosition(lodCenter);
+      if (forestZone && lodCenter) forestZone.setCameraPosition(lodCenter);
       roadworks?.updateLOD?.(position);
       trackside?.updateLOD?.(position);
       const current = {
@@ -968,15 +1044,27 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
     snapshot: () => ({
       liveChunks: liveChunks.size,
       trees: forest?.count ?? 0,
+      forestTrees: forestZone?.count ?? 0,
+      forestArchetypes: forestZone?.snapshot?.()?.forestArchetypes ?? 0,
+      forestNear: forestZone?.snapshot?.()?.forestNear ?? 0,
+      forestImpostors: forestZone?.snapshot?.()?.forestImpostors ?? 0,
+      forestRebinMs: forestZone?.snapshot?.()?.forestRebinMs ?? 0,
+      forestNearRadius: forestZone?.snapshot?.()?.forestNearRadius ?? 0,
+      forestFarRadius: forestZone?.snapshot?.()?.forestFarRadius ?? 0,
+      forestOffRoadPool: forestZone?.snapshot?.()?.forestOffRoadPool ?? 0,
+      forestAmbience: forestZone?.snapshot?.()?.forestAmbience ?? false,
       ...manager.getStats(),
     }),
 
     _manager: manager,
 
     dispose: () => {
+      clearForestLitterMask();
       forest?.dispose?.();
+      forestZone?.dispose?.();
       roadworks?.dispose?.();
       trackside?.dispose?.();
+      spectatorCrowd?.dispose?.();
       riverworks?.dispose?.();
       blueprints?.dispose?.();
       geometryIndex.dispose();

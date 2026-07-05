@@ -25,7 +25,7 @@ import { createGltfLoader } from '../utils/createGltfLoader.js';
  * GAME_CONFIG, WebGPU-friendly static geom.
  */
 
-const CROWD_DEFAULT_CAPACITY = 256;
+const CROWD_DEFAULT_CAPACITY = 2048;
 
 // Jitter factors hoisted from populate (addressing residual magic after ring hoisting).
 // These provide natural visual variation for standing crowd on sidewalks (not deterministic).

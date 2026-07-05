@@ -104,9 +104,12 @@ export class CameraSystem {
     this.smoothedHorizonPitch = 0;
     this.smoothedFov = config.vehicle.defaultFov;
     this.photoMode = false;
+    this.interiorFirstPerson = false;
+    this.onFootFirstPerson = false;
     this.comfortEnabled = true;
     this.cameraFeel = 'comfort';
     this.modeBlend = null;
+    this.rearViewBlend = 0;
     this.photoSettings = {
       fov: config.vehicle.defaultFov,
       aperture: 2.8,
@@ -120,6 +123,21 @@ export class CameraSystem {
     this.comfortEnabled = Boolean(enabled);
     const validFeels = GAME_CONFIG.camera.vehicle.feels;
     this.cameraFeel = validFeels?.[feel] ? feel : 'comfort';
+  }
+
+  setOnFootFirstPerson(enabled) {
+    this.onFootFirstPerson = Boolean(enabled);
+  }
+
+  setInteriorFirstPerson(enabled) {
+    this.interiorFirstPerson = Boolean(enabled);
+    if (!enabled) {
+      this.hasSmoothedTarget = false;
+    }
+  }
+
+  usesOnFootFirstPerson() {
+    return this.interiorFirstPerson || this.onFootFirstPerson;
   }
 
   getVehicleTuning() {
@@ -252,7 +270,7 @@ export class CameraSystem {
     vehicle = null,
   }) {
     if (vehicle) {
-      this.updateVehicleCamera({ delta, vehicle, viewport, character });
+      this.updateVehicleCamera({ delta, vehicle, viewport, character, input });
       return;
     }
 
@@ -262,12 +280,23 @@ export class CameraSystem {
       this.vehicleSteerOffset = 0;
       this.vehicleLateralOffset = 0;
       this.modeBlend = null;
+      this.rearViewBlend = 0;
       this._restoreCharacterVisibility(character);
     }
 
     const config = GAME_CONFIG.camera;
     const hookSwing = character?.hookSwing;
-    this.updateOrbitInput({ input, config, hookSwing });
+    this.updateOrbitInput({
+      input, config, hookSwing, allowZoom: !this.usesOnFootFirstPerson(), invertPitch: this.usesOnFootFirstPerson(),
+    });
+
+    if (this.usesOnFootFirstPerson()) {
+      this._setCharacterHiddenForFirstPerson(character, true);
+      this.updateOnFootFirstPerson({ delta, target, config });
+      return;
+    }
+
+    this._setCharacterHiddenForFirstPerson(character, false);
 
     const responsiveDistance = viewport?.aspect < 0.8 ? this.distance + 1.35 : this.distance;
     const responsiveHeight = viewport?.aspect < 0.8 ? config.followHeight + 0.42 : config.followHeight;
@@ -304,7 +333,27 @@ export class CameraSystem {
     });
   }
 
-  updateVehicleCamera({ delta, vehicle, viewport, character }) {
+  updateOnFootFirstPerson({ delta, target, config }) {
+    const eyeHeight = config.onFootEyeHeight ?? 1.62;
+    const eyeForward = config.onFootEyeForward ?? 0.06;
+    const smooth = config.onFootFirstPersonSmoothing ?? 28;
+
+    desiredPosition.set(
+      target.x + Math.sin(this.yaw) * eyeForward,
+      target.y + eyeHeight,
+      target.z + Math.cos(this.yaw) * eyeForward,
+    );
+    this.camera.position.lerp(desiredPosition, 1 - Math.exp(-smooth * delta));
+    this.camera.rotation.set(this.pitch, this.yaw, 0, 'YXZ');
+
+    this.updateFov({
+      delta,
+      targetFov: config.onFootFirstPersonFov ?? 74,
+      smoothing: 10,
+    });
+  }
+
+  updateVehicleCamera({ delta, vehicle, viewport, character, input }) {
     const chassis = vehicle.group;
     if (!chassis) {
       return;
@@ -313,6 +362,7 @@ export class CameraSystem {
     const enteringVehicle = !this.driving;
     this.driving = true;
     this._advanceModeBlend(delta);
+    this._updateRearViewBlend({ delta, input });
 
     if (this.vehicleCameraMode === 'firstPerson') {
       this._setCharacterHiddenForFirstPerson(character, true);
@@ -322,6 +372,17 @@ export class CameraSystem {
 
     this._setCharacterHiddenForFirstPerson(character, false);
     this.updateVehicleChaseCamera({ delta, vehicle, viewport, enteringVehicle });
+  }
+
+  _updateRearViewBlend({ delta, input }) {
+    const tuning = this.getVehicleTuning();
+    const target = input?.rearViewHeld ? 1 : 0;
+    const alpha = 1 - Math.exp(-(tuning.rearViewBlendSpeed ?? 14) * delta);
+    this.rearViewBlend = THREE.MathUtils.lerp(this.rearViewBlend, target, alpha);
+  }
+
+  _rearViewYawOffset() {
+    return this.rearViewBlend * Math.PI;
   }
 
   _computeVelocityLookYaw(headingYaw, vehicle, tuning) {
@@ -337,11 +398,24 @@ export class CameraSystem {
     }
 
     const velocityYaw = Math.atan2(-vehicleVelocity.x, -vehicleVelocity.z);
+    const fwdX = -Math.sin(headingYaw);
+    const fwdZ = -Math.cos(headingYaw);
+    const dot = vehicleVelocity.x * fwdX + vehicleVelocity.z * fwdZ;
+    const reversing = dot < 0;
+
     let delta = velocityYaw - headingYaw;
     while (delta > Math.PI) delta -= Math.PI * 2;
     while (delta < -Math.PI) delta += Math.PI * 2;
     const maxAngle = tuning.velocityLookMaxAngle ?? 0.42;
     delta = THREE.MathUtils.clamp(delta, -maxAngle, maxAngle);
+
+    if (reversing) {
+      // When reversing, velocityYaw ~ heading +/- PI. The sign after
+      // normalization+clamp is unstable and can flip the small yaw bias
+      // left/right. Prefer + (right side bias) to keep it simple and consistent.
+      delta = Math.abs(delta);
+    }
+
     return headingYaw + delta * tuning.velocityLookBlend;
   }
 
@@ -384,15 +458,17 @@ export class CameraSystem {
 
     const steer = getVehicleSteerInput(vehicle);
     const steerAlpha = 1 - Math.exp(-tuning.steerOffsetSmoothing * delta);
-    const desiredSteerOffset = steer * (tuning.steerLookStrength ?? 0);
+    const rearSteerScale = 1 - this.rearViewBlend;
+    const desiredSteerOffset = steer * (tuning.steerLookStrength ?? 0) * rearSteerScale;
     this.vehicleSteerOffset = THREE.MathUtils.lerp(this.vehicleSteerOffset, desiredSteerOffset, steerAlpha);
     this.vehicleLateralOffset = THREE.MathUtils.lerp(
       this.vehicleLateralOffset,
-      -steer * (tuning.lateralShift ?? 0),
+      -steer * (tuning.lateralShift ?? 0) * rearSteerScale,
       steerAlpha,
     );
 
-    const cameraYaw = this.vehicleCameraYaw + this.vehicleSteerOffset;
+    const rearYaw = this._rearViewYawOffset();
+    const cameraYaw = this.vehicleCameraYaw + this.vehicleSteerOffset + rearYaw;
     this.yaw = cameraYaw;
     this.pitch = mode.pitch;
 
@@ -431,7 +507,7 @@ export class CameraSystem {
     );
 
     vehicleForward.set(0, 0, -1).applyQuaternion(chassis.quaternion);
-    const lookYaw = this._computeVelocityLookYaw(headingYaw, vehicle, tuning);
+    const lookYaw = this._computeVelocityLookYaw(headingYaw, vehicle, tuning) + rearYaw;
     const lookForwardX = -Math.sin(lookYaw);
     const lookForwardZ = -Math.cos(lookYaw);
     vehicleTarget
@@ -477,12 +553,13 @@ export class CameraSystem {
       );
       this.camera.rotation.set(
         this.smoothedHorizonPitch,
-        chassisYaw,
+        chassisYaw + this._rearViewYawOffset(),
         tuning.cockpitRollLock !== false ? 0 : chassisRoll,
         'YXZ',
       );
     } else {
-      this.camera.quaternion.copy(chassis.quaternion);
+      chassisEuler.set(chassisPitch, chassisYaw + this._rearViewYawOffset(), chassisRoll, 'YXZ');
+      this.camera.quaternion.setFromEuler(chassisEuler);
       this.smoothedHorizonPitch = chassisPitch;
     }
 
@@ -526,20 +603,21 @@ export class CameraSystem {
     }
   }
 
-  updateOrbitInput({ input, config, hookSwing = null }) {
+  updateOrbitInput({ input, config, hookSwing = null, allowZoom = true, invertPitch = false }) {
     if (!input) {
       return;
     }
 
     const lookScale = hookSwing?.active ? 0.82 : 1;
     this.yaw -= input.lookX * config.lookSensitivity * lookScale;
+    const pitchDelta = input.lookY * config.lookSensitivity * lookScale;
     this.pitch = THREE.MathUtils.clamp(
-      this.pitch + input.lookY * config.lookSensitivity * lookScale,
+      this.pitch + (invertPitch ? -pitchDelta : pitchDelta),
       config.minPitch,
       config.maxPitch,
     );
 
-    if (input.zoomDelta) {
+    if (allowZoom && input.zoomDelta) {
       this.distance = THREE.MathUtils.clamp(
         this.distance + input.zoomDelta * config.zoomStep,
         config.minDistance,
@@ -586,8 +664,12 @@ export class CameraSystem {
       comfortEnabled: this.comfortEnabled,
       cameraFeel: this.cameraFeel,
       focusReticle: this.driving && this.comfortEnabled && this.vehicleCameraMode !== 'firstPerson',
+      rearViewBlend: Number(this.rearViewBlend.toFixed(3)),
       modeBlendT,
       photoMode: this.photoMode,
+      onFootFirstPerson: this.usesOnFootFirstPerson(),
+      interiorFirstPerson: this.interiorFirstPerson,
+      onFootFirstPersonPreference: this.onFootFirstPerson,
       photoSettings: { ...this.photoSettings },
     };
   }

@@ -53,6 +53,7 @@ async function spawnVehicle(physics, scene, y = 0) {
   });
   vehicle.spawnPosition.y = y + vehicle.getGroundSpawnClearance();
   await vehicle.spawn({ scene, physics });
+  vehicle.wakeForDrive(physics);
   return vehicle;
 }
 
@@ -160,4 +161,45 @@ console.log(`\nstraight drift at 15 m/s: peak |yawRate|=${drift.toFixed(3)} (max
 assert.ok(drift < 0.08, `straight-line drift too high: ${drift}`);
 
 vehicle.dispose({ scene, physics });
+
+// Mud-specific contact-local handling. Asphalt thresholds above remain the
+// regression contract; these cases only exercise the mud overlay.
+const mudVehicle = await spawnVehicle(physics, scene, 0);
+mudVehicle.setGroundSurface('mud');
+mudVehicle.setGroundSurfaceSampler((x) => (x < 0 ? 'mud' : 'asphalt'));
+settle(mudVehicle, physics, world, 30);
+assert.ok(mudVehicle.wheelTelemetry.some((wheel) => wheel.surface === 'mud'),
+  'road-edge sampling classifies mud wheels independently');
+assert.ok(mudVehicle.wheelTelemetry.some((wheel) => wheel.surface === 'asphalt'),
+  'road-edge sampling keeps the other wheels on asphalt');
+console.log('\nPASS mud road edge: wheel contacts retain independent surfaces');
+
+mudVehicle.setGroundSurfaceSampler(() => 'mud');
+mudVehicle.mudField = {
+  maxDepth: 0.2,
+  sampleAt: (x) => ({ depth: x < 0 ? 0.2 : 0, wetness: 1, tread: 1 }),
+};
+settle(mudVehicle, physics, world, 5);
+const deepRutWheels = mudVehicle.wheelTelemetry.filter((wheel) => wheel.rutDepth > 0.9);
+const shallowWheels = mudVehicle.wheelTelemetry.filter((wheel) => wheel.rutDepth < 0.1);
+assert.ok(deepRutWheels.length > 0 && shallowWheels.length > 0, 'test straddles a one-sided rut');
+assert.ok(Math.max(...deepRutWheels.map((wheel) => wheel.lateralGripScale))
+  < Math.min(...shallowWheels.map((wheel) => wheel.lateralGripScale)),
+'deep-rut wheels lose lateral grip without reducing every wheel');
+assert.ok(Math.min(...deepRutWheels.map((wheel) => wheel.longitudinalGripScale)) >= 0.65,
+  'additional rut grip loss remains capped for recovery');
+console.log('PASS mud rut: asymmetric per-wheel grip with capped loss');
+
+mudVehicle.mudField = null;
+const steerOnly = makeNeutralControls();
+steerOnly.steer = 1;
+for (let i = 0; i < 30; i += 1) {
+  mudVehicle.update({ dt: DT, controls: steerOnly, physics });
+  world.step();
+}
+assert.equal(Math.max(...mudVehicle.wheelTelemetry.map((wheel) => wheel.mudIntensity)), 0,
+  'steering without wheel torque does not create mud energy');
+console.log('PASS mud steering: steering alone adds no spray/oversteer energy');
+
+mudVehicle.dispose({ scene, physics });
 console.log('\nAll steering checks passed.');

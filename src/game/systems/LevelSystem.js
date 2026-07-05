@@ -92,7 +92,7 @@ export class LevelSystem {
     this.status = 'idle';
   }
 
-  async loadBaseLevel(scene, qualityPreset = {}, mode = 'city') {
+  async loadBaseLevel(scene, qualityPreset = {}, mode = 'city', renderer = null) {
     this.status = 'loading';
     this.mode = ['world', 'wilds', 'rally'].includes(mode) ? mode : 'city';
     if (this.mode === 'wilds') {
@@ -102,12 +102,14 @@ export class LevelSystem {
       const hasCity = (worldMap?.zones ?? []).some((zone) => zone.type === 'city');
       // Only spin up the city workers when the map actually has a city zone.
       this.level = hasCity
-        ? createComposedWorldLevel(qualityPreset, { worldMap, levelMode: this.mode })
-        : createStreamingTerrainLevel(qualityPreset, { worldMap, levelMode: this.mode });
+        ? createComposedWorldLevel(qualityPreset, { worldMap, levelMode: this.mode, renderer })
+        : createStreamingTerrainLevel(qualityPreset, { worldMap, levelMode: this.mode, renderer });
     } else {
       this.level = createBaseLevel(qualityPreset);
     }
     scene.add(this.level.group);
+
+    if (this.level.ready) await this.level.ready;
 
     await nextFrame();
     this.status = 'loaded';
@@ -161,9 +163,9 @@ export class LevelSystem {
     return visible;
   }
 
-  updateStreaming(position) {
+  updateStreaming(position, extra = {}) {
     const debugVisible = findDebugOverlays(this.level?.group).some((overlay) => overlay.visible === true);
-    return this.level?.updateStreaming?.(position, { debugVisible }) ?? null;
+    return this.level?.updateStreaming?.(position, { debugVisible, ...extra }) ?? null;
   }
 
   getGroundHeightAt(position, radius, options) {

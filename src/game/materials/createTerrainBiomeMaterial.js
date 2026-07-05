@@ -26,6 +26,7 @@ import {
   mix,
   float,
   vec3,
+  vec2,
   vec4,
   cameraPosition,
   cameraViewMatrix,
@@ -35,6 +36,9 @@ import {
 } from 'three/tsl';
 import { rainWetness, rainWind } from '../systems/weatherUniforms.js';
 import { puddleMaskAt, puddleRippleNormal } from './wetSurfaceNodes.js';
+import { applyForestLitterTint } from '../world/forest/forestLitter.js';
+import { createHexTileGrid, hexHash2, hexBlendWeights } from './hexTilingNodes.js';
+import { disablePbrEnvironment } from './disablePbrEnvironment.js';
 
 // Ground puddle parameters, ported from the reference repo's `puddleUniforms`
 // (src/main.js) — same constants, just with coverage driven by the live
@@ -136,21 +140,67 @@ function loadLayerArrayTex(kind, srgb) {
 /**
  * @param {object} [opts]
  * @param {{url:string, tiling:number, blend:number}|null} [opts.overlay]
+ * @param {{enabled?:boolean, falloffContrast?:number, exponent?:number}} [opts.hextile]
  *   Optional single blueprint terrain texture painted over the biome inside
  *   placed-blueprint footprints. Blended per-vertex by the `bpTexMask` geometry
  *   attribute (0 outside footprints → 1 inside), so chunks must carry that
  *   attribute when an overlay is supplied (createStreamingTerrainLevel does this).
  */
-export function createTerrainBiomeMaterial({ overlay = null } = {}) {
+export function createTerrainBiomeMaterial({ overlay = null, hextile = null } = {}) {
   const uv = positionWorld.xz.mul(TILES_PER_METRE);
 
   // Per-layer samples out of the two packed array textures (one sampler each —
   // see LAYER_FILES above). Roughness textures are intentionally dropped (a flat
   // value is used instead).
-  const albedoArray = texture(loadLayerArrayTex('albedo', true), uv);
-  const normalArray = texture(loadLayerArrayTex('normal', false), uv);
-  const albedo = (layer) => albedoArray.depth(layer).rgb;
-  const normalRaw = (layer) => normalArray.depth(layer).rgb; // raw [0,1]; normalMap unpacks
+  const albedoTexture = loadLayerArrayTex('albedo', true);
+  const normalTexture = loadLayerArrayTex('normal', false);
+  let albedo;
+  let normalRaw;
+
+  if (hextile?.enabled === true) {
+    // positionWorld is not camera-relative yet, so the RWS offset is zero. The
+    // explicit split in createHexTileGrid is ready for floating-origin support;
+    // at today's world scale this retains the existing world-space precision.
+    const grid = createHexTileGrid(positionWorld.xz, vec2(0), TILES_PER_METRE);
+    const uv1 = uv.add(hexHash2(grid.vertex1));
+    const uv2 = uv.add(hexHash2(grid.vertex2));
+    const uv3 = uv.add(hexHash2(grid.vertex3));
+    const falloff = hextile.falloffContrast ?? 0.6;
+    const exponent = hextile.exponent ?? 7;
+
+    albedo = (layer) => {
+      const c1 = texture(albedoTexture, uv1).depth(layer).rgb;
+      const c2 = texture(albedoTexture, uv2).depth(layer).rgb;
+      const c3 = texture(albedoTexture, uv3).depth(layer).rgb;
+      const luminance = vec3(
+        c1.dot(vec3(0.299, 0.587, 0.114)),
+        c2.dot(vec3(0.299, 0.587, 0.114)),
+        c3.dot(vec3(0.299, 0.587, 0.114)),
+      );
+      const weights = hexBlendWeights(grid.weights, luminance, falloff, exponent);
+      return c1.mul(weights.x).add(c2.mul(weights.y)).add(c3.mul(weights.z));
+    };
+
+    normalRaw = (layer) => {
+      const n1 = texture(normalTexture, uv1).depth(layer).rgb;
+      const n2 = texture(normalTexture, uv2).depth(layer).rgb;
+      const n3 = texture(normalTexture, uv3).depth(layer).rgb;
+      // With rotation disabled, blending encoded tangent normals is stable. Use
+      // horizontal magnitude as the reference paper's slope-sine detail metric.
+      const slopeMetric = vec3(
+        n1.xy.mul(2).sub(1).length(),
+        n2.xy.mul(2).sub(1).length(),
+        n3.xy.mul(2).sub(1).length(),
+      );
+      const weights = hexBlendWeights(grid.weights, slopeMetric, falloff, exponent);
+      return n1.mul(weights.x).add(n2.mul(weights.y)).add(n3.mul(weights.z));
+    };
+  } else {
+    const albedoArray = texture(albedoTexture, uv);
+    const normalArray = texture(normalTexture, uv);
+    albedo = (layer) => albedoArray.depth(layer).rgb;
+    normalRaw = (layer) => normalArray.depth(layer).rgb; // raw [0,1]; normalMap unpacks
+  }
 
   const y = positionWorld.y;
   const slope = float(1).sub(normalWorldGeometry.y); // 0 flat → 1 vertical
@@ -173,7 +223,9 @@ export function createTerrainBiomeMaterial({ overlay = null } = {}) {
   };
 
   const material = new MeshStandardNodeMaterial();
-  let biomeColor = blend(albedo(LAYERS.sand), albedo(LAYERS.grass), albedo(LAYERS.rock), albedo(LAYERS.snow));
+  let biomeColor = applyForestLitterTint(
+    blend(albedo(LAYERS.sand), albedo(LAYERS.grass), albedo(LAYERS.rock), albedo(LAYERS.snow)),
+  );
 
   // Blueprint terrain texture: blend a single overlay albedo over the biome
   // wherever the per-vertex footprint mask is non-zero (so a placed "all salt"
@@ -249,6 +301,7 @@ export function createTerrainBiomeMaterial({ overlay = null } = {}) {
   const rippleViewNormal = normalize(cameraViewMatrix.mul(vec4(rippleWorldNormal, 0)).xyz);
   material.normalNode = normalize(mix(biomeNormal, rippleViewNormal, puddleMask));
   material.metalness = 0;
+  disablePbrEnvironment(material);
   material.shadowSide = THREE.DoubleSide;
   material.name = 'Terrain Biome';
 

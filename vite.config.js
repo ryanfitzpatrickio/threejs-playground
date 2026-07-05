@@ -567,6 +567,7 @@ export default defineConfig(({ command, isPreview }) => {
         input: {
           main: mainHtml,
           webgpuGeneratorCity: cityGiExampleHtml,
+          forestProbe: fileURLToPath(new URL('./forest-probe.html', import.meta.url)),
         },
       },
     },

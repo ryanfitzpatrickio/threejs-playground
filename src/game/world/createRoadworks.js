@@ -19,6 +19,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { disposeObject3D } from '../utils/disposeObject3D.js';
 import { createRibbonRoadMaterial } from '../../three-addons/generators/CityGenerator.js';
 import { createRallySurfaceMaterial, loadRallyRutAtlas, loadRallySurfaceSet } from '../materials/rallySurfaceTextures.js';
+import { disablePbrEnvironment } from '../materials/disablePbrEnvironment.js';
 import { rainWetness, rainWind } from '../systems/weatherUniforms.js';
 import { BRIDGE_THRESH } from '../../world/worldMap/roadProfile.js';
 import { buildRibbonFrame, offsetPoint } from '../../world/worldMap/trackFrame.js';
@@ -30,6 +31,7 @@ import { getQualityPreset, getQualityLevel } from '../config/qualityPresets.js';
 // Read once at module load — the dirt material below is a build-once singleton,
 // matching the existing pattern for the other module-level road materials.
 const rallyParallaxOcclusion = getQualityPreset(getQualityLevel()).parallaxOcclusion ?? null;
+const rallyHextile = getQualityPreset(getQualityLevel()).terrainHextile ?? null;
 
 // Chunk size (metres) the merged ribbon geometry is split into so Three.js's
 // default per-mesh frustum culling can skip whole chunks that are off-screen —
@@ -56,7 +58,12 @@ const PIER_HALF = 0.7;
 // attribute (world-space asphalt, so it still tiles seamlessly). Built once.
 const roadMaterial = createRibbonRoadMaterial({ rainWetness, rainWind });
 roadMaterial.side = THREE.DoubleSide;
-const dirtRoadMaterial = createRallySurfaceMaterial(loadRallySurfaceSet('dirt'), { rainWetness, rainWind, parallaxOcclusion: rallyParallaxOcclusion });
+const dirtRoadMaterial = createRallySurfaceMaterial(loadRallySurfaceSet('dirt'), {
+  rainWetness,
+  rainWind,
+  parallaxOcclusion: rallyParallaxOcclusion,
+  hextile: rallyHextile,
+});
 dirtRoadMaterial.side = THREE.DoubleSide;
 const pierMaterial = new THREE.MeshStandardMaterial({ color: 0x555154, roughness: 0.9, metalness: 0.04 });
 const intersectionPaintMaterial = new THREE.MeshStandardMaterial({
@@ -67,6 +74,8 @@ const intersectionPaintMaterial = new THREE.MeshStandardMaterial({
   polygonOffsetFactor: -2,
   polygonOffsetUnits: -2,
 });
+disablePbrEnvironment(pierMaterial);
+disablePbrEnvironment(intersectionPaintMaterial);
 
 // POM marches in tangent space, so the rally ribbon meshes need a `tangent`
 // attribute. THREE.computeTangents() requires an index, but chunkGeometriesByGrid
@@ -271,6 +280,7 @@ export function createRoadworks({ profile, sampleHeight, mudField = null }) {
       heavyRutAtlas: loadRallyRutAtlas('rut-heavy'),
       mudSurface: true,
       parallaxOcclusion: rallyParallaxOcclusion,
+      hextile: rallyHextile,
       // Real geometric ruts: displace the dense ribbon down by the deform depth,
       // faded to zero beyond the (torus-wrapped) footprint around the car. Sized
       // to the ribbon's lift headroom so ruts bottom out at ~terrain height.

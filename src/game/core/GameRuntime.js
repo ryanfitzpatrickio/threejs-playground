@@ -1,6 +1,7 @@
 import * as THREE from 'three';
-import { FrameLoop } from './FrameLoop.js';
+import { rainWind } from '../systems/weatherUniforms.js';
 import { FrameStats } from './FrameStats.js';
+import { FrameLoop } from './FrameLoop.js';
 import { AllocationSampler } from './AllocationSampler.js';
 import { RenderRateLimiter } from './RenderRateLimiter.js';
 import { AnimationStateSystem } from '../systems/AnimationStateSystem.js';
@@ -17,6 +18,8 @@ import { InputSystem } from '../systems/InputSystem.js';
 import { LevelSystem } from '../systems/LevelSystem.js';
 import { BuildingEntrySystem } from '../systems/BuildingEntrySystem.js';
 import { createOfficeInteriorLevel } from '../world/office/createOfficeInteriorLevel.js';
+import { installInteriorEnvironment } from '../world/office/officeInteriorEnv.js';
+import { floorCountFromBuilding } from '../world/office/generateOfficeLayout.js';
 import { LedgeHangSystem } from '../systems/LedgeHangSystem.js';
 import { LedgeTraversalSystem } from '../systems/LedgeTraversalSystem.js';
 import { MovementSystem } from '../systems/MovementSystem.js';
@@ -45,11 +48,18 @@ import { getActiveWorldMapSync } from '../../world/worldMap/worldMapScenes.js';
 import { sanitizeWebGPUVertexBuffers } from '../geometry/prepareWebGPUGeometry.js';
 import { applyCityLevelOverrides } from '../config/cityPerformance.js';
 import {
+  getPhotorealismPresetId,
+  mergePhotorealismEnvironment,
+  setPhotorealismPresetId,
+} from '../config/photorealismPresets.js';
+import {
   cycleCameraFeel,
   getCameraFeel,
   getComfortEnabled,
+  getOnFootFirstPerson,
   setCameraFeel,
   setComfortEnabled,
+  setOnFootFirstPerson,
 } from '../config/cameraComfort.js';
 
 // Office interiors live persistently far below the map, one slot per building,
@@ -60,6 +70,10 @@ const OFFICE_INTERIOR_OWNER = 'office-interior';
 const INTERIOR_BASE_Y = -1000;
 const INTERIOR_SLOT_SPACING = 300;
 const INTERIOR_SLOTS_PER_ROW = 24;
+const SNAPSHOT_INTERVAL_NORMAL_MS = 100;
+const SNAPSHOT_INTERVAL_HEAVY_MS = 250;
+const SNAPSHOT_HEAVY_VEHICLE_SPEED = 18;
+const FULL_SNAPSHOT_INTERVAL_MS = 1000;
 
 // Deterministic seed for a building's interior so the same building regenerates
 // the same office each time (P1 WFC will consume it).
@@ -79,9 +93,19 @@ export class GameRuntime {
     this.levelMode = ['world', 'wilds', 'rally'].includes(levelMode) ? levelMode : 'city';
     this.qualityLevel = qualityLevel;
     this.qualityPreset = applyCityLevelOverrides(qualityPreset, qualityLevel, this.levelMode);
+    this.baseEnvironment = { ...this.qualityPreset.environment };
+    this.photorealismPresetId = getPhotorealismPresetId();
+    if (this.photorealismPresetId) {
+      this.qualityPreset = {
+        ...this.qualityPreset,
+        environment: mergePhotorealismEnvironment(this.baseEnvironment, this.photorealismPresetId),
+      };
+    }
     this.onSnapshot = onSnapshot ?? (() => {});
     this.frameLoop = new FrameLoop((timeMs) => this.update(timeMs));
     this.lastSnapshotAt = 0;
+    this.lastFullSnapshotAt = 0;
+    this._lastFullSnapshot = null;
     this.lastFrameAt = 0;
     this.stage = 'created';
     this.disposed = false;
@@ -98,6 +122,8 @@ export class GameRuntime {
     this.buildingEntrySystem = new BuildingEntrySystem();
     // Active office-interior session (null when outside). Set by _enterBuilding.
     this.insideBuilding = null;
+    this.screenFade = { alpha: 0 };
+    this._elevatorTransition = null;
     // Persistent interiors, keyed by building seed; built once, kept resident
     // below the map and reused (hidden when outside).
     this._interiorCache = new Map();
@@ -156,15 +182,30 @@ export class GameRuntime {
     if (this.disposed) {
       return;
     }
+    // Animated rally spectators bake flipbook frames whose per-frame instance
+    // count varies every tick; WebGPU captures that count into the instance
+    // binding at pipeline-build time. Weather/env changes (and resize) call
+    // invalidatePipeline, rebuilding those bindings at a stale small count so
+    // the crowd flickers. Re-prime the current level's crowd on each invalidate
+    // (looked up dynamically so it survives level swaps). The bare scene-fog
+    // toggle path is covered separately in the debug bridge.
+    this.rendererSystem.onPipelineInvalidated = () => {
+      this.levelSystem.level?.spectatorCrowd?.markPipelinesDirty?.();
+    };
     // Rally starts at midday under rain. Bake sky + IBL with the overcast
     // profile before the first environment capture so startup matches the live
     // weather (setWeather below still wires rain VFX/audio).
-    if (this.levelMode === 'rally') {
+    if (this.levelMode === 'rally' && !this.photorealismPresetId) {
       this.sceneSystem.skySystem?.setTimeOfDay?.(0.5);
       this.sceneSystem.skySystem?.setWeather?.('rain');
       this.sceneSystem.setWeather?.('rain');
       this.sceneSystem.setSceneFogEnabled?.(true);
       this.rendererSystem.setWeather?.('rain');
+    } else if (this.photorealismPresetId) {
+      this.sceneSystem.skySystem?.setWeather?.('clear');
+      this.sceneSystem.setWeather?.('clear');
+      this.sceneSystem.setSceneFogEnabled?.(false);
+      this.rendererSystem.setWeather?.('clear');
     }
     this.rendererSystem.installEnvironment(this.sceneSystem.scene, this.sceneSystem.skySystem);
     // Hand the volumetric sky/cloud provider (if active) to the renderer so its
@@ -176,7 +217,9 @@ export class GameRuntime {
       levelSystem: this.levelSystem,
       qualityPreset: this.qualityPreset,
     });
-    if (this.levelMode === 'rally') {
+    if (this.photorealismPresetId) {
+      this.weatherSystem.setWeather('clear');
+    } else if (this.levelMode === 'rally') {
       this.weatherSystem.setWeather('rain');
     }
 
@@ -185,6 +228,7 @@ export class GameRuntime {
       enabled: getComfortEnabled(),
       feel: getCameraFeel(),
     });
+    this.cameraSystem.setOnFootFirstPerson(getOnFootFirstPerson());
     this.sceneSystem.skySystem?.attachToCamera?.(this.cameraSystem.camera);
     this.sceneSystem.setShadowCamera(this.cameraSystem.camera);
     this.enemyCutSystem.initialize(this.sceneSystem.scene, this.qualityPreset);
@@ -208,6 +252,20 @@ export class GameRuntime {
     });
   }
 
+  _applyPhotorealismRuntime() {
+    const env = this.photorealismPresetId
+      ? mergePhotorealismEnvironment(this.baseEnvironment, this.photorealismPresetId)
+      : { ...this.baseEnvironment };
+    this.qualityPreset.environment = env;
+    this.sceneSystem.skySystem?.updateEnvironmentConfig?.(env);
+    if (this.photorealismPresetId) {
+      this.weatherSystem?.setWeather?.('clear');
+      this.sceneSystem.setSceneFogEnabled?.(false);
+    }
+    this.rendererSystem.applyEnvironmentPreset(env);
+    this.rendererSystem.installEnvironment(this.sceneSystem.scene, this.sceneSystem.skySystem);
+  }
+
   getCutTargets() {
     return [
       ...this.enemySystem.enemies,
@@ -217,7 +275,7 @@ export class GameRuntime {
   }
 
   async _streamAssetsInBackground() {
-    await this.levelSystem.loadBaseLevel(this.sceneSystem.scene, this.qualityPreset, this.levelMode);
+    await this.levelSystem.loadBaseLevel(this.sceneSystem.scene, this.qualityPreset, this.levelMode, this.rendererSystem.renderer);
     if (this.disposed) {
       return;
     }
@@ -480,6 +538,14 @@ export class GameRuntime {
     }
 
     let input = this.inputSystem.getState();
+    if (
+      !this._forestAmbienceAwake
+      && (input.forward || input.backward || input.left || input.right || input.jumpPressed)
+    ) {
+      if (this.levelSystem.level?.wakeForestAmbience?.()) {
+        this._forestAmbienceAwake = true;
+      }
+    }
     const character = this.characterSystem.character;
     if (input.photoModePressed) {
       this.setPhotoMode(!this.cameraSystem.photoMode);
@@ -494,7 +560,7 @@ export class GameRuntime {
         scene: this.sceneSystem.scene,
         camera: this.cameraSystem.camera,
       });
-      if (timeMs - this.lastSnapshotAt > 120) this.emitSnapshot(timeMs);
+      this.emitSnapshot(timeMs);
       return;
     }
     // Building enter/exit. Handled before the movement/hook pipeline so the E
@@ -502,10 +568,49 @@ export class GameRuntime {
     // input edge is already cleared by getState()). `prompt` is last frame's
     // detection — one frame stale is imperceptible.
     if (this.insideBuilding) {
-      // Exit the same way you entered: return to the interior door and press E.
+      if (this._elevatorTransition) {
+        this._tickElevatorTransition(delta, character);
+        this.emitSnapshot(timeMs);
+        return;
+      }
       this.insideBuilding.atDoor = this._isAtInteriorDoor(character);
+      this.insideBuilding.atElevator = this._isAtElevator(character);
+      this.insideBuilding.interior.updateDoors?.(delta);
+      this.insideBuilding.nearbyDoor = this.insideBuilding.interior.getNearbyDoor?.(character.group.position) ?? null;
       if (this.insideBuilding.atDoor && input.hookFirePressed) {
         this._exitBuilding(character);
+        this.emitSnapshot();
+        return;
+      }
+      if (this.insideBuilding.atElevator && !this.insideBuilding.atDoor
+        && this.insideBuilding.interior.floorCount > 1) {
+        const floorPick = this._readElevatorFloorInput(input);
+        if (floorPick != null) {
+          this._startElevatorRide(character, floorPick);
+          this.emitSnapshot();
+          return;
+        }
+        if (input.hookFirePressed) {
+          const fc = this.insideBuilding.interior.floorCount;
+          const next = (this.insideBuilding.currentFloor + 1) % fc;
+          this._startElevatorRide(character, next);
+          this.emitSnapshot();
+          return;
+        }
+        if (input.bracePressed) {
+          const fc = this.insideBuilding.interior.floorCount;
+          const prev = (this.insideBuilding.currentFloor - 1 + fc) % fc;
+          this._startElevatorRide(character, prev);
+          this.emitSnapshot();
+          return;
+        }
+      }
+      if (!this.insideBuilding.atDoor && !this.insideBuilding.atElevator
+        && this.insideBuilding.nearbyDoor && input.hookFirePressed) {
+        this.insideBuilding.interior.toggleDoor(
+          this.insideBuilding.nearbyDoor.door,
+          character.group.position,
+        );
         this.emitSnapshot();
         return;
       }
@@ -519,6 +624,17 @@ export class GameRuntime {
       inVehicle: Boolean(this.vehicleSystem?.activeVehicle),
     });
 
+    this.levelSystem.level?.updateForestEnvironment?.({
+      sunDirection: this.sceneSystem.skySystem?.sunDirection,
+      windVector: rainWind.value,
+    });
+
+    const ambPos = this.vehicleSystem?.activeVehicle?.group?.position
+      ?? character?.group?.position;
+    if (ambPos) {
+      this.levelSystem.level?.updateForestAmbience?.(ambPos, delta);
+    }
+
     if (input.collisionDebugPressed) {
       this.levelSystem.toggleCollisionDebug();
     }
@@ -527,7 +643,10 @@ export class GameRuntime {
     let streamingActive = false;
     if (character) {
       const streamStart = performance.now();
-      const streamingChanges = this.levelSystem.updateStreaming(character.group.position);
+      const viewPos = this.cameraSystem?.camera?.position ?? character.group.position;
+      const streamingChanges = this.levelSystem.updateStreaming(character.group.position, {
+        viewPosition: viewPos,
+      });
       const builtColliders = this.physicsSystem.applyStreamingChanges(streamingChanges);
       streamingMs = performance.now() - streamStart;
       streamingActive =
@@ -891,7 +1010,9 @@ export class GameRuntime {
     });
 
     const cameraInput = { ...input };
-    if (this.enemyCutSystem.state === 'aiming' || this.vehicleSystem?.activeVehicle) {
+    const inVehicle = Boolean(this.vehicleSystem?.activeVehicle);
+    cameraInput.rearViewHeld = inVehicle && input.wingsuitHeld;
+    if (this.enemyCutSystem.state === 'aiming' || inVehicle) {
       cameraInput.lookX = 0;
       cameraInput.lookY = 0;
     }
@@ -924,11 +1045,24 @@ export class GameRuntime {
       this.rendererSystem.installEnvironment(this.sceneSystem.scene, this.sceneSystem.skySystem);
     }
 
+    const spectatorCrowd = this.levelSystem.level?.spectatorCrowd;
+    if (spectatorCrowd?.update) {
+      const activeVehicle = this.vehicleSystem?.activeVehicle;
+      const focus = activeVehicle
+        ? {
+          position: activeVehicle.model?.position ?? character.group.position,
+          speed: activeVehicle.speed ?? 0,
+        }
+        : character.group.position;
+      spectatorCrowd.update(delta, this.cameraSystem.camera, focus);
+    }
+
     const renderStart = performance.now();
     this.rendererSystem.render({
       scene: this.sceneSystem.scene,
       camera: this.cameraSystem.camera,
     });
+    spectatorCrowd?.onAfterRender?.();
     const renderMs = performance.now() - renderStart;
 
     this.frameStats.recordSystem('render', renderMs);
@@ -944,7 +1078,7 @@ export class GameRuntime {
       const vy = veh ? veh.linearVelocity.y : 0;
       const dVy = vy - (this._jumpDiagPrevVy ?? vy);
       this._jumpDiagPrevVy = vy;
-      const snapped = timeMs - this.lastSnapshotAt > 120;
+      const snapped = this.shouldEmitSnapshot(timeMs);
       if (veh && Math.abs(dVy) > (this._jumpDiagThreshold ?? 0.25)) {
         (this._jumpDiagLog ??= []).push({
           t: +(timeMs / 1000).toFixed(2),
@@ -960,9 +1094,7 @@ export class GameRuntime {
       }
     }
 
-    if (timeMs - this.lastSnapshotAt > 120) {
-      this.emitSnapshot(timeMs);
-    }
+    this.emitSnapshot(timeMs);
   }
 
   queueStreamingCompile(roots = []) {
@@ -1012,11 +1144,18 @@ export class GameRuntime {
   // Teleport the character AND shift the chase camera by the same delta, so the
   // framing stays continuous across a large (pocket) teleport instead of the
   // camera flying across the world to catch up.
-  _teleportPlayer(character, target) {
+  _teleportPlayer(character, target, { yaw } = {}) {
     const shiftX = target.x - character.group.position.x;
     const shiftY = target.y - character.group.position.y;
     const shiftZ = target.z - character.group.position.z;
     character.group.position.set(target.x, target.y, target.z);
+    if (yaw != null) {
+      character.group.rotation.y = yaw;
+      if (this.cameraSystem) {
+        this.cameraSystem.yaw = yaw;
+        this.cameraSystem.camera.rotation.set(this.cameraSystem.pitch, yaw, 0, 'YXZ');
+      }
+    }
     const cam = this.cameraSystem?.camera;
     if (cam) cam.position.set(cam.position.x + shiftX, cam.position.y + shiftY, cam.position.z + shiftZ);
     if (this.cameraSystem?.smoothedTarget) {
@@ -1049,8 +1188,10 @@ export class GameRuntime {
       doorFacade: door.facade,
       origin,
       seed: key,
+      floorCount: floorCountFromBuilding(building),
     });
     interior.group.visible = false;
+    interior.slot = slot;
     this.sceneSystem.scene.add(interior.group);
     for (const collider of interior.colliders) {
       this.physicsSystem.createStaticCollider(collider, `${OFFICE_INTERIOR_OWNER}-${slot}`);
@@ -1073,12 +1214,22 @@ export class GameRuntime {
       exteriorLevel,
       returnPosition: character.group.position.clone(),
       enteredAt: performance.now(),
+      currentFloor: 0,
+      atElevator: false,
+      nearbyDoor: null,
     };
     // Facade over the interior so ground/blocking/streaming queries use it. The
     // interior's colliders already live in the physics world (below the map).
     this.levelSystem.level = interior;
     this._suppressOutdoorLighting();
-    this._teleportPlayer(character, interior.spawnPoint);
+    this.cameraSystem.setInteriorFirstPerson(true);
+    const spawn = interior.spawnPoint.clone();
+    const groundY = interior.getGroundHeightAt(spawn, 0.28);
+    spawn.y = groundY;
+    // The pocket interior entrance is mirrored relative to the exterior door.
+    // Turn the player/camera around so entry looks into the office, not back at
+    // the interior face of the doorway.
+    this._teleportPlayer(character, spawn, { yaw: interior.spawnYaw + Math.PI });
   }
 
   // Turn off the scene-level sun / hemisphere / sky IBL / background while inside
@@ -1089,13 +1240,17 @@ export class GameRuntime {
     const scene = this.sceneSystem.scene;
     this._savedLighting = {
       environment: scene.environment,
+      environmentIntensity: scene.environmentIntensity,
+      environmentRotationY: scene.environmentRotation.y,
       background: scene.background,
       fog: scene.fog,
     };
     this.sceneSystem.setSunEnabled(false);
     this.sceneSystem.setHemisphereEnabled(false);
     this.sceneSystem.skySystem?.setVisible(false);
-    scene.environment = null;
+    installInteriorEnvironment(scene, this.rendererSystem.renderer, {
+      size: this.qualityPreset.environment?.environmentMapSize >= 256 ? 128 : 64,
+    });
     scene.background = new THREE.Color(0x090a0d);
     scene.fog = null;
   }
@@ -1108,6 +1263,8 @@ export class GameRuntime {
     this.sceneSystem.setHemisphereEnabled(true);
     this.sceneSystem.skySystem?.setVisible(true);
     scene.environment = saved.environment;
+    scene.environmentIntensity = saved.environmentIntensity;
+    scene.environmentRotation.y = saved.environmentRotationY;
     scene.background = saved.background;
     scene.fog = saved.fog;
     this._savedLighting = null;
@@ -1119,10 +1276,99 @@ export class GameRuntime {
   // never spawn already "at the door".
   _isAtInteriorDoor(character) {
     const inside = this.insideBuilding;
-    if (!inside) return false;
+    if (!inside || inside.currentFloor !== 0) return false;
     const t = inside.interior.exitTrigger;
+    if (!t) return false;
     const p = character.group.position;
     return p.x >= t.minX && p.x <= t.maxX && p.z >= t.minZ && p.z <= t.maxZ;
+  }
+
+  _isAtElevator(character) {
+    const inside = this.insideBuilding;
+    if (!inside || inside.interior.floorCount <= 1) return false;
+    const t = inside.interior.elevatorTriggers?.[inside.currentFloor];
+    if (!t) return false;
+    const p = character.group.position;
+    return p.x >= t.minX && p.x <= t.maxX && p.z >= t.minZ && p.z <= t.maxZ;
+  }
+
+  _readElevatorFloorInput(input) {
+    const inside = this.insideBuilding;
+    if (!inside) return null;
+    for (let i = 1; i <= 9; i += 1) {
+      if (input[`elevatorFloor${i}`]) {
+        const floor = i - 1;
+        if (floor < inside.interior.floorCount) return floor;
+      }
+    }
+    return null;
+  }
+
+  _startElevatorRide(character, targetFloor) {
+    const inside = this.insideBuilding;
+    if (!inside || targetFloor === inside.currentFloor) return;
+    if (targetFloor < 0 || targetFloor >= inside.interior.floorCount) return;
+    this._elevatorTransition = { phase: 'fadeOut', targetFloor, character, t: 0 };
+  }
+
+  _tickElevatorTransition(delta, character) {
+    const tr = this._elevatorTransition;
+    if (!tr) return;
+    const fadeDur = 0.28;
+    tr.t += delta;
+    if (tr.phase === 'fadeOut') {
+      this.screenFade.alpha = Math.min(1, tr.t / fadeDur);
+      if (tr.t >= fadeDur) {
+        this._completeElevatorTeleport(tr.targetFloor, tr.character ?? character);
+        tr.phase = 'loading';
+        tr.t = 0;
+        this.screenFade.alpha = 1;
+
+        // A lazily-built floor can have new materials/pipelines. Keep the screen
+        // fully black until WebGPU finishes compiling that floor, otherwise the
+        // fade reveals a partial room or stalls halfway through fading in.
+        const floorGroup = this.insideBuilding?.interior?.builtFloors?.get(tr.targetFloor)?.floorGroup;
+        const renderer = this.rendererSystem?.renderer;
+        const camera = this.cameraSystem?.camera;
+        if (renderer?.compileAsync && floorGroup && camera) {
+          tr.compilePromise = renderer.compileAsync(floorGroup, camera)
+            .catch(() => {})
+            .finally(() => {
+              if (this._elevatorTransition !== tr || tr.phase !== 'loading') return;
+              tr.phase = 'fadeIn';
+              tr.t = 0;
+            });
+        } else {
+          tr.phase = 'fadeIn';
+        }
+      }
+      return;
+    }
+    if (tr.phase === 'loading') {
+      this.screenFade.alpha = 1;
+      return;
+    }
+    this.screenFade.alpha = Math.max(0, 1 - tr.t / fadeDur);
+    if (tr.t >= fadeDur) this._elevatorTransition = null;
+  }
+
+  _completeElevatorTeleport(targetFloor, character) {
+    const inside = this.insideBuilding;
+    if (!inside) return;
+    const { interior } = inside;
+    const slot = interior.slot ?? 0;
+    const newColliders = interior.buildFloor(targetFloor);
+    for (const collider of newColliders) {
+      this.physicsSystem.createStaticCollider(collider, `${OFFICE_INTERIOR_OWNER}-${slot}-f${targetFloor}`);
+    }
+    interior.setActiveFloor(targetFloor);
+    inside.currentFloor = targetFloor;
+    const spawn = interior.elevatorSpawns[targetFloor]?.clone();
+    if (spawn) {
+      spawn.y = interior.getGroundHeightAt(spawn, 0.28);
+      const yaw = interior.elevatorSpawnYaws?.[targetFloor] ?? interior.spawnYaw;
+      this._teleportPlayer(character, spawn, { yaw });
+    }
   }
 
   _exitBuilding(character) {
@@ -1134,13 +1380,33 @@ export class GameRuntime {
     inside.exteriorLevel.group.visible = true;
     this.levelSystem.level = inside.exteriorLevel;
     this._restoreOutdoorLighting();
+    this.cameraSystem.setInteriorFirstPerson(false);
     this._teleportPlayer(character, inside.returnPosition);
     this.insideBuilding = null;
   }
 
-  emitSnapshot(timeMs = performance.now()) {
+  snapshotIntervalMs() {
+    const vehicleSpeed = this.vehicleSystem?.activeVehicle?.speed ?? 0;
+    return this.cameraSystem?.photoMode
+      || this.insideBuilding
+      || vehicleSpeed >= SNAPSHOT_HEAVY_VEHICLE_SPEED
+      ? SNAPSHOT_INTERVAL_HEAVY_MS
+      : SNAPSHOT_INTERVAL_NORMAL_MS;
+  }
+
+  shouldEmitSnapshot(timeMs = performance.now()) {
+    return timeMs - this.lastSnapshotAt >= this.snapshotIntervalMs();
+  }
+
+  emitSnapshot(timeMs = performance.now(), { force = false } = {}) {
+    if (!force && !this.shouldEmitSnapshot(timeMs)) return false;
     this.lastSnapshotAt = timeMs;
-    this.onSnapshot(this.snapshot());
+    const full = force
+      || !this._lastFullSnapshot
+      || timeMs - this.lastFullSnapshotAt >= FULL_SNAPSHOT_INTERVAL_MS;
+    this.onSnapshot(this.snapshot({ full }));
+    if (full) this.lastFullSnapshotAt = timeMs;
+    return true;
   }
 
   handleVisibilityChange() {
@@ -1209,6 +1475,13 @@ export class GameRuntime {
     return this.snapshot();
   }
 
+  setOnFootFirstPersonEnabled(enabled) {
+    setOnFootFirstPerson(Boolean(enabled));
+    this.cameraSystem.setOnFootFirstPerson(getOnFootFirstPerson());
+    this.emitSnapshot();
+    return this.snapshot();
+  }
+
   cycleCameraFeel() {
     const next = cycleCameraFeel(getCameraFeel());
     return this.setCameraFeel(next);
@@ -1273,9 +1546,37 @@ export class GameRuntime {
     return this.characterSystem.character?.clothColliderEditor?.exportProfile?.() ?? null;
   }
 
-  snapshot() {
+  snapshot({ full = true } = {}) {
     const playerObj = this.characterSystem.character?.group?.position;
-    return {
+    if (!full && this._lastFullSnapshot) {
+      const renderer = this.rendererSystem.snapshot({ includeDrawStats: false });
+      return {
+        ...this._lastFullSnapshot,
+        stage: this.stage,
+        prewarm: this._cityPrewarmProgress,
+        frame: this.frameStats.summary(),
+        allocation: this.allocationSampler.status(),
+        player: playerObj
+          ? { x: playerObj.x, z: playerObj.z, yaw: this.cameraSystem.yaw ?? 0 }
+          : null,
+        buildingEntry: this.buildingEntrySnapshot(),
+        screenFade: { alpha: this.screenFade.alpha },
+        photorealismPreset: this.photorealismPresetId,
+        animation: this.animationStateSystem.snapshot(),
+        combat: this.combatSystem.snapshot(),
+        character: this.characterSystem.snapshot(),
+        vehicles: this.vehicleSystem.snapshot(),
+        camera: this.cameraSystem.snapshot(),
+        renderer: {
+          ...renderer,
+          drawStats: this._lastFullSnapshot.renderer?.drawStats ?? null,
+        },
+        viewport: this.rendererSystem.getViewport(),
+        timing: this.timingSnapshot(),
+      };
+    }
+
+    const result = {
       stage: this.stage,
       prewarm: this._cityPrewarmProgress,
       frame: this.frameStats.summary(),
@@ -1284,9 +1585,8 @@ export class GameRuntime {
         ? { x: playerObj.x, z: playerObj.z, yaw: this.cameraSystem.yaw ?? 0 }
         : null,
       level: this.levelSystem.snapshot(),
-      buildingEntry: this.insideBuilding
-        ? { prompt: this.insideBuilding.atDoor === true, action: 'exit' }
-        : { ...this.buildingEntrySystem.snapshot(), action: 'enter' },
+      buildingEntry: this.buildingEntrySnapshot(),
+      screenFade: { alpha: this.screenFade.alpha },
       physics: this.physicsSystem.snapshot(),
       ledgeHang: this.ledgeHangSystem.snapshot(),
       ledgeTraversal: this.ledgeTraversalSystem.snapshot(this.characterSystem.character),
@@ -1301,6 +1601,7 @@ export class GameRuntime {
       combat: this.combatSystem.snapshot(),
       character: this.characterSystem.snapshot(),
       crowd: this.crowdSystem?.snapshot?.() ?? null,
+      spectatorCrowd: this.levelSystem.level?.spectatorCrowd?.snapshot?.() ?? null,
       enemies: this.enemySystem.snapshot(),
       enemyCut: this.enemyCutSystem.snapshot(),
       horse: this.horseSystem.snapshot(),
@@ -1308,16 +1609,43 @@ export class GameRuntime {
       camera: this.cameraSystem.snapshot(),
       scene: this.sceneSystem.snapshot(),
       renderer: this.rendererSystem.snapshot(),
+      photorealismPreset: this.photorealismPresetId,
       viewport: this.rendererSystem.getViewport(),
-      timing: {
-        simTime: this.physicsSystem.simTime,
-        stepsPerFrame: this.physicsSystem.stepsLastFrame,
-        alpha: this.physicsSystem.interpolationAlpha,
-        renderCap60: this.renderCap60,
-        visibilityPaused: this._visibilityPaused,
-        showHud: this.showTimingHud,
-      },
+      timing: this.timingSnapshot(),
       telekinesis: this.telekinesisSystem.snapshot(),
+    };
+    this._lastFullSnapshot = result;
+    return result;
+  }
+
+  buildingEntrySnapshot() {
+    if (!this.insideBuilding) {
+      return { ...this.buildingEntrySystem.snapshot(), action: 'enter' };
+    }
+    return {
+      prompt: this.insideBuilding.atDoor === true
+        || (this.insideBuilding.atElevator === true && this.insideBuilding.interior.floorCount > 1)
+        || this.insideBuilding.nearbyDoor != null,
+      action: this.insideBuilding.atDoor
+        ? 'exit'
+        : (this.insideBuilding.atElevator && this.insideBuilding.interior.floorCount > 1)
+          ? 'elevator'
+          : this.insideBuilding.nearbyDoor
+            ? (this.insideBuilding.nearbyDoor.door.open ? 'close-door' : 'open-door')
+            : null,
+      floor: this.insideBuilding.currentFloor,
+      floorCount: this.insideBuilding.interior.floorCount,
+    };
+  }
+
+  timingSnapshot() {
+    return {
+      simTime: this.physicsSystem.simTime,
+      stepsPerFrame: this.physicsSystem.stepsLastFrame,
+      alpha: this.physicsSystem.interpolationAlpha,
+      renderCap60: this.renderCap60,
+      visibilityPaused: this._visibilityPaused,
+      showHud: this.showTimingHud,
     };
   }
 
@@ -1378,6 +1706,13 @@ export class GameRuntime {
       },
       setWeather: (weather = 'clear') => {
         this.weatherSystem.setWeather(weather);
+        return this.snapshot();
+      },
+      setPhotorealismPreset: (presetId = null) => {
+        const normalized = presetId && presetId !== 'default' ? presetId : null;
+        this.photorealismPresetId = setPhotorealismPresetId(normalized);
+        this._applyPhotorealismRuntime();
+        this.emitSnapshot();
         return this.snapshot();
       },
       // Traverse the scene and tally meshes by name (prefers the shared prefix).
@@ -1448,7 +1783,13 @@ export class GameRuntime {
         this.weatherSystem.setWeather(enabled ? 'fog' : 'clear');
         return this.snapshot();
       },
-      setSceneFog: (enabled) => this.sceneSystem.setSceneFogEnabled(Boolean(enabled)),
+      setSceneFog: (enabled) => {
+        const result = this.sceneSystem.setSceneFogEnabled(Boolean(enabled));
+        // Toggling scene.fog recompiles the crowd's basic material and rebuilds
+        // its instanced pipelines outside invalidatePipeline, so re-prime here.
+        this.levelSystem.level?.spectatorCrowd?.markPipelinesDirty?.();
+        return result;
+      },
       setShadows: (enabled) => {
         const on = Boolean(enabled);
         if (this.rendererSystem.renderer?.shadowMap) {

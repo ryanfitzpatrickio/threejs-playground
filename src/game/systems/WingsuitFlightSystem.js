@@ -41,7 +41,7 @@ export class WingsuitFlightSystem {
     }
 
     // Toggle handling: deploy when airborne, retract if pressed again while flying.
-    if (input?.wingsuitTogglePressed) {
+    if (input?.wingsuitTogglePressed && !character.vehicle?.active) {
       if (wingsuit?.active) {
         this.deactivate(character, { keepMomentum: true });
         character.forceFreeFallTimer = Math.max(character.forceFreeFallTimer ?? 0, cfg.exitFreeFallSeconds);

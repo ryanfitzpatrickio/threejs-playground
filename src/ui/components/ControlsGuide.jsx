@@ -14,6 +14,7 @@ const CONTROL_SECTIONS = [
       ['Shift', 'Handbrake / kick the tail out'],
       ['F', 'Enter / exit vehicle'],
       ['R (stuck)', 'Flip / recover onto the road'],
+      ['Q (hold)', 'Rear view'],
       ['Mouse', 'Look around (chase camera)'],
       ['Eye (Settings → Camera)', 'Driving camera: close · medium · far · cockpit'],
     ],

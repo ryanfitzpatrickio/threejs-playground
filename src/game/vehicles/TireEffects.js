@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { createAaaMudParticleRenderer } from '../render/createAaaMudParticleRenderer.js';
+import { resolveMudWheelDynamics } from './mudWheelDynamics.js';
 
 const MAX_STREAK_SEGMENTS = 320;
 const MIN_POINT_DISTANCE = 0.16;
@@ -446,7 +447,9 @@ export class DirtDustSystem {
 
     this.cursor = 0;
     this.emitCarry = 0;
+    this.wheelEmitCarry = [];
     this._emitStep = 0;
+    this._emittedByWheel = [0, 0, 0, 0];
     this._active = 0;
     this._opacityMax = 0;
     this._materialOpacity = 0;
@@ -455,7 +458,8 @@ export class DirtDustSystem {
   update({ dt, surface, speed, intensity, vehicle, throttle = 0, lateralSpeed = 0, lateralSign = 1, camera = null }) {
     // Swap to the mud profile on mud surfaces (reference swap, no per-frame alloc);
     // _emit + the ramp colour both read this.cfg, so the whole plume turns to clods.
-    this.cfg = surface === 'mud' && this.mudCfg ? this.mudCfg : this.baseCfg;
+    const wheelMud = (vehicle?.wheelTelemetry ?? []).some((wheel) => wheel?.surface === 'mud');
+    this.cfg = (surface === 'mud' || wheelMud) && this.mudCfg ? this.mudCfg : this.baseCfg;
     const cfg = this.cfg;
     // Point the mesh at the hard clod texture on mud, the soft puff otherwise.
     // Swapped only when it actually changes (surface boundary), not every frame.
@@ -551,8 +555,37 @@ export class DirtDustSystem {
     this._materialOpacity += (targetOpacity - this._materialOpacity) * opacityLerp;
     this.mesh.material.opacity = this._materialOpacity;
 
-    const onLooseSurface = surface === 'dirt' || surface === 'offroad' || surface === 'mud';
-    if (onLooseSurface && vehicle?.groundedFraction > 0 && speed > 1.5) {
+    const onMud = surface === 'mud' || wheelMud;
+    const onLooseSurface = surface === 'dirt' || surface === 'offroad' || onMud;
+    if (cfg.clod && onMud && vehicle?.groundedFraction > 0) {
+      const mudDynamics = resolveMudWheelDynamics(vehicle?.config?.ground?.mudWheelDynamics);
+      (vehicle.wheelTelemetry ?? []).forEach((wheel, wheelIndex) => {
+        if (wheelIndex >= vehicle.wheelAnchors.length || !wheel?.inContact || !wheel.contactPoint
+          || (wheel.surface ?? surface) !== 'mud') {
+          this.wheelEmitCarry[wheelIndex] = 0;
+          return;
+        }
+        const wheelIntensity = THREE.MathUtils.clamp(wheel.mudIntensity ?? 0, 0, 1);
+        if (wheelIntensity <= 0) {
+          this.wheelEmitCarry[wheelIndex] = 0;
+          return;
+        }
+        this.wheelEmitCarry[wheelIndex] = (this.wheelEmitCarry[wheelIndex] ?? 0)
+          + step * mudDynamics.emission.clodPerIntensity * wheelIntensity;
+        const emitCount = Math.min(cfg.emitRate.maxPerFrame, Math.floor(this.wheelEmitCarry[wheelIndex]));
+        this.wheelEmitCarry[wheelIndex] -= emitCount;
+        const slot = {
+          contact: wheel.contactPoint,
+          slip: wheel.slipRatio ?? 0,
+          angularVelocity: wheel.angularVelocity ?? 0,
+          wheelIndex,
+          anchor: vehicle.wheelAnchors[wheelIndex],
+          wheel,
+          intensity: wheelIntensity,
+        };
+        for (let i = 0; i < emitCount; i += 1) this._emit(slot, vehicle, speed, wheelIntensity, lateralSpeed, lateralSign);
+      });
+    } else if (onLooseSurface && !onMud && vehicle?.groundedFraction > 0 && speed > 1.5) {
       const er = cfg.emitRate;
       const driftBoost = lateralSpeed > (er.driftThreshold ?? 3) ? (er.driftBoost ?? 0) : 0;
       this.emitCarry += step * (er.base + Math.min(speed, er.speedCap) * er.perSpeed
@@ -572,6 +605,8 @@ export class DirtDustSystem {
           slip: wheel.slipRatio ?? 0,
           angularVelocity: wheel.angularVelocity ?? 0,
           wheelIndex: index,
+          anchor: vehicle.wheelAnchors[index],
+          wheel,
         });
       });
       const burstAt = er.burstAtIntensity ?? 0.72;
@@ -589,6 +624,7 @@ export class DirtDustSystem {
       }
     } else {
       this.emitCarry = 0;
+      if (!onMud) this.wheelEmitCarry.fill(0);
     }
 
     this.mesh.instanceMatrix.needsUpdate = true;
@@ -609,7 +645,7 @@ export class DirtDustSystem {
 
   _emit(slot, vehicle, speed, intensity, lateralSpeed, lateralSign, burstIndex = 0) {
     const cfg = this.cfg;
-    const { contact, slip, angularVelocity = 0, wheelIndex = -1 } = slot;
+    const { contact, slip, angularVelocity = 0, wheelIndex = -1, anchor, wheel: telemetry } = slot;
     const index = this.cursor;
     this.cursor = (this.cursor + 1) % this.max;
     const p = this.particles[index];
@@ -617,6 +653,12 @@ export class DirtDustSystem {
     // Chassis forward is -Z, so +Z applied is backward (roost trails behind).
     _forward.set(0, 0, 1).applyQuaternion(vehicle.group.quaternion).setY(0).normalize();
     _side.set(1, 0, 0).applyQuaternion(vehicle.group.quaternion).setY(0).normalize();
+    const sideSign = Math.sign(anchor?.x ?? 0) || 1;
+    if (telemetry?.braking) {
+      _forward.multiplyScalar(-0.45).addScaledVector(_side, sideSign * 0.9).normalize();
+    } else if ((telemetry?.landingTimeRemaining ?? 0) > 0) {
+      _forward.multiplyScalar(0.25).addScaledVector(_side, sideSign).normalize();
+    }
 
     const burstSpread = burstIndex * 0.11;
     // Spawn at the contact, nudged back and up with jitter.
@@ -656,6 +698,7 @@ export class DirtDustSystem {
     p.wheelIndex = wheelIndex;
     p.isClod = Boolean(cfg.clod);
     p.floorY = contact.y + 0.015;
+    this._emittedByWheel[wheelIndex] = (this._emittedByWheel[wheelIndex] ?? 0) + 1;
     // No per-instance write here: the next update() loop sees life > 0 and
     // writes this particle's matrix + color; until then it stays collapsed.
   }
@@ -665,6 +708,7 @@ export class DirtDustSystem {
       activeParticles: this._active ?? 0,
       opacityMax: Number((this._opacityMax ?? 0).toFixed(3)),
       poolSize: this.max,
+      emittedByWheel: [...this._emittedByWheel],
     };
   }
 
@@ -739,6 +783,7 @@ export class MudLiquidSpraySystem {
 
     this.cursor = 0;
     this.emitCarry = 0;
+    this.wheelEmitCarry = [];
     this.emitStep = 0;
     this._active = 0;
     this._fragmentsSpawned = 0;
@@ -799,30 +844,41 @@ export class MudLiquidSpraySystem {
     }
     this._active = active;
 
-    const contacts = [];
-    if (surface === 'mud' && throttle > 0.08 && speed > 0.75 && vehicle?.groundedFraction > 0) {
+    const wheelMud = (vehicle?.wheelTelemetry ?? []).some((wheel) => wheel?.surface === 'mud');
+    if ((surface === 'mud' || wheelMud) && vehicle?.groundedFraction > 0) {
+      const mudDynamics = resolveMudWheelDynamics(vehicle?.config?.ground?.mudWheelDynamics);
       (vehicle.wheelTelemetry ?? []).forEach((wheel, wheelIndex) => {
-        if (!wheel?.inContact || !wheel.contactPoint || wheelIndex >= vehicle.wheelAnchors.length) return;
-        contacts.push({ wheel, wheelIndex, anchor: vehicle.wheelAnchors[wheelIndex] });
+        if (!wheel?.inContact || !wheel.contactPoint || wheelIndex >= vehicle.wheelAnchors.length
+          || (wheel.surface ?? surface) !== 'mud') {
+          this.wheelEmitCarry[wheelIndex] = 0;
+          return;
+        }
+        const intensity = THREE.MathUtils.clamp(wheel.mudIntensity ?? 0, 0, 1);
+        if (intensity <= 0) {
+          this.wheelEmitCarry[wheelIndex] = 0;
+          return;
+        }
+        const er = cfg.emitRate;
+        this.wheelEmitCarry[wheelIndex] = (this.wheelEmitCarry[wheelIndex] ?? 0)
+          + step * mudDynamics.emission.liquidPerIntensity * intensity;
+        const count = Math.min(er.maxPerFrame, Math.floor(this.wheelEmitCarry[wheelIndex]));
+        this.wheelEmitCarry[wheelIndex] -= count;
+        const contact = { wheel, wheelIndex, anchor: vehicle.wheelAnchors[wheelIndex] };
+        for (let i = 0; i < count; i += 1) {
+          this.emitStep += 1;
+          this._emit(contact, vehicle, speed, intensity);
+        }
       });
-      const er = cfg.emitRate;
-      this.emitCarry += step * (er.base + Math.min(speed, er.speedCap) * er.perSpeed + throttle * er.perThrottle);
-      const count = Math.min(er.maxPerFrame, Math.floor(this.emitCarry));
-      this.emitCarry -= count;
-      for (let i = 0; i < count && contacts.length; i += 1) {
-        const contact = contacts[this.emitStep % contacts.length];
-        this.emitStep += 1;
-        this._emit(contact, vehicle, speed, throttle);
-      }
     } else {
       this.emitCarry = 0;
+      this.wheelEmitCarry.fill(0);
     }
 
     this._elapsed += step;
     this.aaaMud?.update({ camera, elapsedTime: this._elapsed });
   }
 
-  _emit({ wheel, wheelIndex, anchor }, vehicle, speed, throttle) {
+  _emit({ wheel, wheelIndex, anchor }, vehicle, speed, intensity = 1) {
     const cfg = this.cfg;
     const p = this.particles[this.cursor];
     this.cursor = (this.cursor + 1) % this.max;
@@ -861,8 +917,18 @@ export class MudLiquidSpraySystem {
     if (!isFront && Math.random() < 0.38) {
       yaw += (Math.random() - 0.5) * 2 * THREE.MathUtils.degToRad(launch.rearFanDeg ?? 0);
     }
-    const dirX = _forward.x * Math.cos(yaw) + _side.x * Math.sin(yaw);
-    const dirZ = _forward.z * Math.cos(yaw) + _side.z * Math.sin(yaw);
+    let dirX = _forward.x * Math.cos(yaw) + _side.x * Math.sin(yaw);
+    let dirZ = _forward.z * Math.cos(yaw) + _side.z * Math.sin(yaw);
+    if (wheel.braking) {
+      dirX = -_forward.x * 0.65 + _side.x * sideSign * 0.76;
+      dirZ = -_forward.z * 0.65 + _side.z * sideSign * 0.76;
+    } else if ((wheel.landingTimeRemaining ?? 0) > 0) {
+      dirX = _forward.x * 0.2 + _side.x * sideSign;
+      dirZ = _forward.z * 0.2 + _side.z * sideSign;
+    }
+    const directionLength = Math.hypot(dirX, dirZ) || 1;
+    dirX /= directionLength;
+    dirZ /= directionLength;
     p.vx = dirX * throwSpeed + (inherit.x ?? 0) * launch.inheritVelocity;
     p.vz = dirZ * throwSpeed + (inherit.z ?? 0) * launch.inheritVelocity;
     const elevationDeg = (isFront ? launch.frontElevationDeg : launch.rearElevationDeg)
@@ -891,6 +957,7 @@ export class MudLiquidSpraySystem {
     p.wheelIndex = wheelIndex;
     p.broken = false;
     p.fragment = false;
+    p.intensity = intensity;
     this._emittedByWheel[wheelIndex] = (this._emittedByWheel[wheelIndex] ?? 0) + 1;
   }
 

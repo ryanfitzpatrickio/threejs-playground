@@ -656,7 +656,8 @@ export class PhysicsSystem {
     const desc = this.RAPIER.ColliderDesc.cuboid(halfX, halfY, halfZ)
       .setTranslation(centerX, centerY, centerZ);
 
-    this.world.createCollider(desc, body);
+    const rapierCollider = this.world.createCollider(desc, body);
+    if (collider.interactive) collider.rapierCollider = rapierCollider;
     this.registerStaticBody(body, ownerKey);
     return true;
   }

@@ -119,6 +119,35 @@ const ok = (name) => { passed += 1; console.log(`  ✓ ${name}`); };
   ok('BaseVehicle.stampMudRuts gates on speed + mud surface');
 }
 
+// --------------------------------------------------- per-wheel surface / dig energy
+{
+  const field = createMudDeformField({ cellSize: 0.25, resolution: 64, maxDepth: 0.2 });
+  const vehicle = {
+    groundSurface: 'mud', controllerSpeed: 0,
+    wheelTelemetry: [
+      {
+        inContact: true, surface: 'mud', contactPoint: { x: -2, z: 0 },
+        normalizedLoad: 1, slipRatio: 0.85, mudDigEnergy: 1,
+      },
+      {
+        inContact: true, surface: 'mud', contactPoint: { x: 2, z: 0 },
+        normalizedLoad: 1, slipRatio: 0.2, mudDigEnergy: 0.08,
+      },
+      {
+        inContact: true, surface: 'dirt', contactPoint: { x: 5, z: 0 },
+        normalizedLoad: 1, slipRatio: 1, mudDigEnergy: 1,
+      },
+    ],
+  };
+  for (let i = 0; i < 30; i += 1) BaseVehicle.prototype.stampMudRuts.call(vehicle, field, 1 / 60);
+  const spunDepth = field.sampleDepthAt(-2, 0);
+  const rollingDepth = field.sampleDepthAt(2, 0);
+  assert.ok(spunDepth > rollingDepth * 4,
+    `loaded wheelspin digs much deeper than a rolling wheel (${spunDepth.toFixed(3)} > ${rollingDepth.toFixed(3)})`);
+  assert.equal(field.sampleDepthAt(5, 0), 0, 'off-mud wheel does not inherit the chassis surface');
+  ok('per-wheel surface and dig energy produce asymmetric rut depth');
+}
+
 // ---------------------------------------------------------------- progressive dig
 {
   const f = createMudDeformField({ cellSize: 0.5, resolution: 32, maxDepth: 0.2 });

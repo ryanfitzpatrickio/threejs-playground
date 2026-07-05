@@ -37,9 +37,10 @@ export const ZONE_TYPES = {
   city: { label: 'City', color: '#5a6470' },
   loopout: { label: 'Loop-out', color: '#7a5a8a' },
   wilds: { label: 'Wilds', color: '#2f5a36' },
+  forest: { label: 'Forest', color: '#3e7a2f' },
 };
 
-export const ZONE_TYPE_ORDER = ['terrain', 'city', 'loopout', 'wilds'];
+export const ZONE_TYPE_ORDER = ['terrain', 'city', 'loopout', 'wilds', 'forest'];
 
 export const CITY_STYLES = {
   downtown: { label: 'Downtown' },
@@ -61,6 +62,14 @@ export const TERRAIN_BIOMES = {
 };
 
 export const TERRAIN_BIOME_ORDER = ['plains', 'hills', 'mountains', 'alpine'];
+
+export const FOREST_SPECIES = {
+  pine: { label: 'Ponderosa Pine' },
+};
+
+export const FOREST_SPECIES_ORDER = ['pine'];
+
+export const DEFAULT_FOREST_DENSITY = 150;
 
 export const POI_KINDS = {
   spawn: { label: 'Spawn', color: '#e8c34a' },
@@ -155,6 +164,14 @@ export function normalizeZone(raw) {
   const props = raw.props && typeof raw.props === 'object' ? { ...raw.props } : {};
   if (type === 'city') {
     props.cityStyle = CITY_STYLES[props.cityStyle] ? props.cityStyle : 'downtown';
+    props.seed = Number.isFinite(Number(props.seed)) ? Number(props.seed) : 1;
+  }
+  if (type === 'forest') {
+    const speciesRaw = typeof props.species === 'string' ? props.species.trim() : 'pine';
+    props.species = speciesRaw || 'pine';
+    props.density = Number.isFinite(Number(props.density)) && Number(props.density) > 0
+      ? Number(props.density)
+      : DEFAULT_FOREST_DENSITY;
     props.seed = Number.isFinite(Number(props.seed)) ? Number(props.seed) : 1;
   }
 

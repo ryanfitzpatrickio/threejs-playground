@@ -5,7 +5,7 @@ const RALLY_MAP_SOURCE = Object.freeze({
   name: 'Pine Ridge Rally',
   chunkSize: 32,
   bounds: { minX: -384, minZ: -384, maxX: 384, maxZ: 384 },
-  spawn: { x: -132, z: 136, yaw: 138 },
+  spawn: { x: -132, z: 136, yaw: -45 },
   zones: [
     {
       id: 'rally_hills',
@@ -49,6 +49,8 @@ const RALLY_MAP_SOURCE = Object.freeze({
         { x: 106, z: -54 }, { x: 58, z: -106 }, { x: -9, z: -92 },
         { x: -57, z: -137 }, { x: -22, z: -202 }, { x: 62, z: -225 },
         { x: 132, z: -190 }, { x: 168, z: -122 },
+        { x: 210, z: -50 }, { x: 195, z: 35 }, { x: 100, z: 90 },
+        { x: 10, z: 125 }, { x: -70, z: 152 }, { x: -140, z: 150 },
       ],
     },
     {
@@ -65,7 +67,7 @@ const RALLY_MAP_SOURCE = Object.freeze({
   rivers: [],
   pois: [
     { id: 'rally_start', name: 'Stage Start', kind: 'landmark', x: -140, z: 150 },
-    { id: 'rally_finish', name: 'Stage Finish', kind: 'landmark', x: 168, z: -122 },
+    { id: 'rally_finish', name: 'Start/Finish', kind: 'landmark', x: -140, z: 150 },
   ],
   entities: [],
   createdAt: 0,

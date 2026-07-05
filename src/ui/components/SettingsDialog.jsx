@@ -262,6 +262,28 @@ export function SettingsDialog(props) {
                 </SettingSection>
 
                 <SettingSection
+                  title="On-foot camera"
+                  hint={snapshot()?.camera?.interiorFirstPerson
+                    ? 'First person is locked while you are inside a building.'
+                    : 'Optional first-person view outdoors. Interiors always use first person.'}
+                >
+                  <ChipGroup
+                    label="On-foot view"
+                    value={snapshot()?.camera?.onFootFirstPerson ? 'first' : 'third'}
+                    onChange={(value) => props.onOnFootFirstPersonChange?.(value === 'first')}
+                    options={[
+                      { id: 'third', label: 'Third person', title: 'Chase camera while on foot' },
+                      {
+                        id: 'first',
+                        label: 'First person',
+                        title: 'Eye-level camera while on foot',
+                        disabled: Boolean(snapshot()?.camera?.interiorFirstPerson),
+                      },
+                    ]}
+                  />
+                </SettingSection>
+
+                <SettingSection
                   title="Photo mode"
                   hint="Pause gameplay and fly a free camera. Shortcut: K"
                 >

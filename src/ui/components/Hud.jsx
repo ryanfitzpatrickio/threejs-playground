@@ -79,8 +79,32 @@ export function Hud(props) {
           style="position: absolute; left: 50%; bottom: 24%; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; padding: 8px 16px; background: rgb(22 21 18 / 82%); border: 1px solid rgb(247 244 232 / 22%); border-radius: 999px; color: rgb(247 244 232 / 95%); font-size: 14px; letter-spacing: 0.02em; box-shadow: 0 8px 24px rgb(0 0 0 / 35%); pointer-events: none;"
         >
           <kbd style="display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding: 0 5px; background: rgb(247 244 232 / 92%); color: rgb(22 21 18); border-radius: 5px; font-weight: 700; font-size: 12px;">E</kbd>
-          <span>{snapshot().buildingEntry?.action === 'exit' ? 'Exit building' : 'Enter building'}</span>
+          <span>
+            {snapshot().buildingEntry?.action === 'exit'
+              ? 'Exit building'
+              : snapshot().buildingEntry?.action === 'elevator'
+                ? `Elevator · floor ${(snapshot().buildingEntry?.floor ?? 0) + 1}/${snapshot().buildingEntry?.floorCount ?? 1} — E up · Shift down · 1-9`
+                : snapshot().buildingEntry?.action === 'open-door'
+                  ? 'Open door'
+                  : snapshot().buildingEntry?.action === 'close-door'
+                    ? 'Close door'
+                : 'Enter building'}
+          </span>
         </div>
+      </Show>
+
+      <Show when={(snapshot().screenFade?.alpha ?? 0) > 0.01}>
+        <div
+          aria-hidden="true"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            'background-color': '#090a0d',
+            opacity: snapshot().screenFade?.alpha ?? 0,
+            'pointer-events': 'none',
+            'z-index': 200,
+          }}
+        />
       </Show>
 
       <Show when={snapshot().character?.districtNotification}>

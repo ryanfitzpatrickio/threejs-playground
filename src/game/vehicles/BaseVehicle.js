@@ -20,6 +20,11 @@ import { resolveEngineSounds } from './engineProfiles.js';
 import { ExteriorIdleAudio } from './ExteriorIdleAudio.js';
 import { VehicleCrashAudio } from './VehicleCrashAudio.js';
 import { TireEffects } from './TireEffects.js';
+import {
+  computeMudGripScales,
+  computeMudWheelIntensity,
+  resolveMudWheelDynamics,
+} from './mudWheelDynamics.js';
 import { rainWetness } from '../systems/weatherUniforms.js';
 
 // ---------------------------------------------------------------------------
@@ -306,6 +311,9 @@ export class BaseVehicle {
     // VehicleSystem from the level. Null in every non-rally mode / mud-less map,
     // so the mud stamp + visual-sink paths are inert. See setGroundSurface.
     this.mudField = null;
+    // Level-owned sampler used at wheel contact points. The chassis-level
+    // groundSurface remains the pre-telemetry/fallback classification.
+    this.groundSurfaceSampler = null;
     this.wheelSpinAngle = 0;
     this.steerWheelMesh = null;
     // Current steering-wheel spin angle (rad). Shared by the wheel mesh and the
@@ -1647,14 +1655,8 @@ export class BaseVehicle {
 
     let grounded = 0;
     const wheels = ctrl.numWheels();
-    // Rally mud bog: a deep rut under the car saps grip, so flooring it just
-    // spins the wheels → digs deeper → saps more grip (the "stuck" feedback
-    // loop). Capped at 40% loss so careful throttle can still crawl you out.
-    let bogGrip = 1;
-    if (this.mudField && this.groundSurface === 'mud' && this.group) {
-      const rut = this.mudField.sampleDepthAt(this.group.position.x, this.group.position.z);
-      bogGrip = 1 - 0.4 * Math.min(1, rut / (this.mudField.maxDepth || 0.2));
-    }
+    const mudDynamics = resolveMudWheelDynamics(cfg.mudWheelDynamics);
+    let mudContactCount = 0;
     for (let i = 0; i < wheels; i += 1) {
       const inContact = ctrl.wheelIsInContact(i);
       if (inContact) grounded += 1;
@@ -1678,32 +1680,117 @@ export class BaseVehicle {
         ? Math.abs(wheelSurfaceSpeed - Math.abs(speedFwd)) / Math.max(Math.abs(speedFwd), 2)
         : 0;
       const groundObject = inContact ? ctrl.wheelGroundObject(i) : null;
+      const contactPoint = copyRapierVector(ctrl.wheelContactPoint(i), old?.contactPoint);
+      const contactNormal = copyRapierVector(ctrl.wheelContactNormal(i), old?.contactNormal);
+      const hardPoint = copyRapierVector(ctrl.wheelHardPoint(i), old?.hardPoint);
+      const wheelSurface = inContact && contactPoint
+        ? this._sampleGroundSurfaceAt(contactPoint.x, contactPoint.z)
+        : this.groundSurface;
+      if (inContact && wheelSurface === 'mud') mudContactCount += 1;
       const surfaceFriction = groundObject?.friction?.() ?? 0.8;
       const surfaceGrip = THREE.MathUtils.clamp(surfaceFriction / 0.8, 0.45, 1.3);
       const handbrakeGrip = controls.handbrake && !wheelIsFront(this.wheelAnchors[i])
         ? (surface.handbrakeRearGripScale ?? cfg.handbrakeRearGripScale ?? 0.1)
         : 1;
-      ctrl.setWheelFrictionSlip(i, (surface.frictionSlip ?? rc.frictionSlip ?? 2) * surfaceGrip * handbrakeGrip * bogGrip);
+      // Keep every established non-mud tune untouched away from mud. At a mud
+      // boundary, however, resolve each contact directly so one wheel can enter
+      // or leave the soft corridor without switching the whole chassis early.
+      const wheelTuning = wheelSurface === 'mud' || this.groundSurface === 'mud'
+        ? this._surfaceProfileFor(wheelSurface)
+        : surface;
+      const suspensionForce = ctrl.wheelSuspensionForce(i) ?? 0;
+      const normalizedLoad = THREE.MathUtils.clamp(suspensionForce / mudDynamics.loadForce, 0, 1.5);
+      const mudSample = wheelSurface === 'mud' && contactPoint && this.mudField?.sampleAt
+        ? this.mudField.sampleAt(contactPoint.x, contactPoint.z)
+        : null;
+      const rutDepth = mudSample
+        ? THREE.MathUtils.clamp(mudSample.depth / (this.mudField.maxDepth || 0.2), 0, 1)
+        : 0;
+      const mudSoftness = wheelSurface === 'mud'
+        ? THREE.MathUtils.clamp(mudDynamics.baseSoftness + (mudSample?.wetness ?? 0) * mudDynamics.rutSoftness, 0, 1)
+        : 0;
+      const grip = wheelSurface === 'mud'
+        ? computeMudGripScales(rutDepth, slipRatio, mudDynamics)
+        : { longitudinal: 1, lateral: 1 };
+      ctrl.setWheelFrictionSlip(
+        i,
+        (wheelTuning.frictionSlip ?? rc.frictionSlip ?? 2) * surfaceGrip * handbrakeGrip * grip.longitudinal,
+      );
       if (ctrl.setWheelSideFrictionStiffness) {
         ctrl.setWheelSideFrictionStiffness(
           i,
-          (surface.sideFrictionStiffness ?? rc.sideFrictionStiffness ?? 1) * surfaceGrip * handbrakeGrip * bogGrip,
+          (wheelTuning.sideFrictionStiffness ?? rc.sideFrictionStiffness ?? 1)
+            * surfaceGrip * handbrakeGrip * grip.lateral,
         );
       }
+      const isFront = wheelIsFront(this.wheelAnchors[i]);
+      const contactStarted = Boolean(inContact && old && !old.inContact);
+      const airborneTime = inContact ? 0 : (old?.airborneTime ?? 0) + dt;
+      const landedAfterAir = contactStarted && (old?.airborneTime ?? 0) >= mudDynamics.landing.minAirTime;
+      const landingDuration = landedAfterAir
+        ? THREE.MathUtils.lerp(
+          mudDynamics.landing.minDuration,
+          mudDynamics.landing.maxDuration,
+          THREE.MathUtils.clamp(normalizedLoad, 0, 1),
+        )
+        : (old?.landingDuration ?? 0);
+      const landingLoad = landedAfterAir
+        ? THREE.MathUtils.clamp(normalizedLoad, 0, 1.5)
+        : (old?.landingLoad ?? 0);
+      const landingTimeRemaining = landedAfterAir
+        ? landingDuration
+        : Math.max(0, (old?.landingTimeRemaining ?? 0) - dt);
+      const landingIntensity = wheelSurface === 'mud' && landingDuration > 0
+        ? mudDynamics.landing.intensity * landingLoad * (landingTimeRemaining / landingDuration)
+        : 0;
+      const torqueInput = braking
+        ? Math.max(controls.brake ?? 0, controls.handbrake ? 1 : 0)
+        : (wheelReceivesDrive(this.wheelAnchors[i], layout) ? Math.abs(controls.throttle ?? 0) : 0);
+      const mudDigEnergy = wheelSurface === 'mud' && inContact
+        ? computeMudWheelIntensity({
+          slip: slipRatio,
+          torque: torqueInput,
+          braking,
+          isFront,
+          load: normalizedLoad,
+          softness: mudSoftness,
+          rutDepth,
+          speed: Math.abs(speedFwd),
+          landing: 0,
+        }, mudDynamics)
+        : 0;
+      const mudIntensity = THREE.MathUtils.clamp(Math.max(mudDigEnergy, landingIntensity), 0, 1);
       this.wheelTelemetry[i] = {
         inContact,
+        contactStarted,
+        contactTransition: contactStarted ? 'landed' : (!inContact && old?.inContact ? 'airborne' : 'stable'),
+        airborneTime,
+        landingDuration,
+        landingLoad,
+        landingTimeRemaining,
         rotation,
         angularVelocity,
         slipRatio,
         forwardImpulse: ctrl.wheelForwardImpulse(i) ?? 0,
         sideImpulse: ctrl.wheelSideImpulse(i) ?? 0,
-        suspensionForce: ctrl.wheelSuspensionForce(i) ?? 0,
+        suspensionForce,
+        normalizedLoad,
         suspensionLength,
-        contactPoint: copyRapierVector(ctrl.wheelContactPoint(i), old?.contactPoint),
-        contactNormal: copyRapierVector(ctrl.wheelContactNormal(i), old?.contactNormal),
-        hardPoint: copyRapierVector(ctrl.wheelHardPoint(i), old?.hardPoint),
+        contactPoint,
+        contactNormal,
+        hardPoint,
         groundColliderHandle: groundObject?.handle ?? null,
+        surface: wheelSurface,
         surfaceFriction,
+        rutDepth,
+        mudSoftness,
+        mudIntensity,
+        mudDigEnergy,
+        braking,
+        isFront,
+        torqueInput,
+        longitudinalGripScale: grip.longitudinal,
+        lateralGripScale: grip.lateral,
         tractionControl: controls.throttle !== 0 && old?.slipRatio > (rc.tractionSlipThreshold ?? 0.32),
         abs: braking && old?.slipRatio > (rc.absSlipThreshold ?? 0.48),
       };
@@ -1721,7 +1808,7 @@ export class BaseVehicle {
         _force.copy(_forward).multiplyScalar(-speedFwd * rolling * mass * this.groundedFraction);
         body.addForce(toRapier(_force), false);
       }
-      if (controls.throttle > 0 && Math.abs(controls.steer) > 0.04 && (cfg.powerOversteer ?? 0) > 0) {
+      if (mudContactCount === 0 && controls.throttle > 0 && Math.abs(controls.steer) > 0.04 && (cfg.powerOversteer ?? 0) > 0) {
         const yawAccel = -controls.steer * controls.throttle * cfg.powerOversteer
           * (surface.powerOversteerScale ?? 1) * this.groundedFraction;
         _force.copy(_up).multiplyScalar(yawAccel * mass);
@@ -2236,6 +2323,34 @@ export class BaseVehicle {
       : 'offroad';
   }
 
+  setGroundSurfaceSampler(sampler) {
+    this.groundSurfaceSampler = sampler ?? null;
+  }
+
+  _sampleGroundSurfaceAt(x, z) {
+    const sampler = this.groundSurfaceSampler;
+    if (!sampler) return this.groundSurface;
+    const sampled = typeof sampler === 'function'
+      ? sampler(x, z)
+      : sampler?.getRoadSurfaceAt?.(x, z);
+    return sampled === 'asphalt' || sampled === 'dirt' || sampled === 'mud'
+      ? sampled
+      : 'offroad';
+  }
+
+  _surfaceProfileFor(surface) {
+    const profiles = this.config.ground?.surfaces;
+    let profile = profiles?.[surface] ?? profiles?.offroad ?? this.surfaceTuning;
+    if (isLooseGroundSurface(surface)) {
+      profile = applyLooseSurfaceTraction(
+        profile,
+        profiles?.asphalt,
+        this.config.ground?.traction,
+      );
+    }
+    return profile;
+  }
+
   // Rally mud: stamp tyre ruts into the shared deform field from this frame's
   // wheel telemetry. All four wheels cut the rut (front carves, rear follows in).
   // A rolling wheel lays a shallow continuous rut; a SPINNING/bogged wheel bores
@@ -2243,7 +2358,7 @@ export class BaseVehicle {
   // control digs you a hole. Parked cars (speed < 0.5, no spin) don't bore.
   // (docs/rally-mud-tread-plan.md §6)
   stampMudRuts(mudField, dt = 1 / 60) {
-    if (!mudField || this.groundSurface !== 'mud') return;
+    if (!mudField) return;
     const speed = Math.abs(this.controllerSpeed ?? this.speed ?? 0);
     const speedFactor = Math.min(1, speed / 8);
     // Fresh ruts are wet + churned; rain raises the baseline (M3).
@@ -2260,12 +2375,13 @@ export class BaseVehicle {
       }
     }
     for (const t of this.wheelTelemetry) {
-      if (!t?.inContact || !t.contactPoint) continue;
-      const load = Math.min(1, (t.suspensionForce ?? 0) / 3000);
-      const slip = Math.min(1, (t.slipRatio ?? 0) / 0.6);
+      if (!t?.inContact || !t.contactPoint || (t.surface ?? this.groundSurface) !== 'mud') continue;
+      const load = THREE.MathUtils.clamp(t.normalizedLoad ?? (t.suspensionForce ?? 0) / 3000, 0, 1.5);
+      const slip = THREE.MathUtils.clamp(t.slipRatio ?? 0, 0, 1);
+      const digEnergy = THREE.MathUtils.clamp(t.mudDigEnergy ?? t.mudIntensity ?? (slip * load), 0, 1);
       // Base rut only when actually moving; wheelspin digs even standing still.
-      const base = speed >= 0.5 ? 0.08 + 0.15 * speedFactor * (0.5 + 0.5 * load) : 0;
-      const dig = slip * 0.2 * step; // ~0.2 m/s of digging at full wheelspin
+      const base = speed >= 0.5 ? 0.035 + 0.08 * speedFactor * (0.5 + 0.5 * load) : 0;
+      const dig = digEnergy * 0.2 * step; // ~0.2 m/s at full loaded wheelspin
       if (base <= 0 && dig <= 0) continue;
       // A ~0.22 m brush (spans ~2 of the field's 0.15 m cells) so the rut is a
       // TIGHT tyre-width trough — one wheel, not a wide merged wallow — while
@@ -3158,6 +3274,16 @@ export class BaseVehicle {
       rayCastController: !!this.vehicleController,
       controllerSpeed: Number((this.controllerSpeed ?? 0).toFixed(2)),
       maxWheelSlip: Number(Math.max(0, ...this.wheelTelemetry.map((wheel) => wheel?.slipRatio ?? 0)).toFixed(3)),
+      mudIntensity: Number(Math.max(0, ...this.wheelTelemetry.map((wheel) => wheel?.mudIntensity ?? 0)).toFixed(3)),
+      wheelMud: this.wheelTelemetry.map((wheel, index) => ({
+        index,
+        surface: wheel?.surface ?? this.groundSurface,
+        intensity: Number((wheel?.mudIntensity ?? 0).toFixed(3)),
+        slip: Number((wheel?.slipRatio ?? 0).toFixed(3)),
+        load: Number((wheel?.normalizedLoad ?? 0).toFixed(3)),
+        rutDepth: Number((wheel?.rutDepth ?? 0).toFixed(3)),
+        contactTransition: wheel?.contactTransition ?? 'unknown',
+      })),
       dust: this.tireEffects?.dust?.snapshot?.() ?? null,
       mudSplash: this.tireEffects?.mudSplash?.snapshot?.() ?? null,
       glassBurst: this.tireEffects?.glassBurst?.snapshot?.() ?? null,

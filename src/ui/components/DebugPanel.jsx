@@ -1,5 +1,6 @@
 import { Show, For, createSignal } from 'solid-js';
 import { listCloudTypePresets, DEFAULT_CLOUD_TYPE } from '../../game/render/cloud/cloudConfig.js';
+import { listPhotorealismPresets } from '../../game/config/photorealismPresets.js';
 
 const EMPTY = { renderer: null, scene: null };
 
@@ -19,6 +20,7 @@ export function DebugPanel(props) {
   const [worldZones, setWorldZones] = createSignal(false);
   const [cloudType, setCloudType] = createSignal(DEFAULT_CLOUD_TYPE);
   const cloudPresets = listCloudTypePresets();
+  const lookPresets = listPhotorealismPresets();
 
   // Experimental volumetric sky (CloudSkyProvider) is opt-in and off by default;
   // the default sky uses the simple SkyMesh dome clouds. Switching pipelines
@@ -33,6 +35,16 @@ export function DebugPanel(props) {
     location.reload();
   };
 
+  const readSpectatorCrowd = () => {
+    try { return localStorage.getItem('dreamfall:spectator-crowd') === 'true'; } catch { return false; }
+  };
+  const [spectatorCrowd, setSpectatorCrowd] = createSignal(readSpectatorCrowd());
+  const toggleSpectatorCrowd = (on) => {
+    setSpectatorCrowd(on);
+    try { localStorage.setItem('dreamfall:spectator-crowd', on ? 'true' : 'false'); } catch { /* ignore */ }
+    location.reload();
+  };
+
   const apply = (key, checked) => {
     const bridge = dbg();
     if (!bridge) return;
@@ -42,6 +54,9 @@ export function DebugPanel(props) {
         break;
       case 'heightFog':
         bridge.setFog(checked);
+        break;
+      case 'photorealismPreset':
+        bridge.setPhotorealismPreset?.(checked || null);
         break;
       case 'weather':
         bridge.setWeather(checked);
@@ -166,6 +181,18 @@ export function DebugPanel(props) {
           Sample allocation (3s → console)
         </button>
 
+        <div class="debug-section">Look preset</div>
+        <select
+          class="dbg-select"
+          value={snap().photorealismPreset ?? ''}
+          onChange={(e) => apply('photorealismPreset', e.currentTarget.value)}
+        >
+          <option value="">Quality default</option>
+          <For each={lookPresets}>
+            {(preset) => <option value={preset.id}>{preset.label}</option>}
+          </For>
+        </select>
+
         <div class="debug-section">Weather</div>
         <select
           class="dbg-select"
@@ -209,6 +236,13 @@ export function DebugPanel(props) {
           step="0.001"
           value={timeOfDay()}
           onInput={(e) => dbg()?.setTimeOfDay(Number(e.currentTarget.value))}
+        />
+
+        <div class="debug-section">Rally</div>
+        <Toggle
+          label="Animated spectator crowd (GLB)"
+          checked={spectatorCrowd}
+          onChange={(v) => toggleSpectatorCrowd(v)}
         />
 
         <div class="debug-section">Debug overlays</div>

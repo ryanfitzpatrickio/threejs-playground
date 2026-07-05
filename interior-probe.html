@@ -1,0 +1,118 @@
+<!doctype html>
+<html><head><meta charset="utf-8"></head>
+<body>
+<canvas id="c"></canvas>
+<script type="module">
+import { WebGPURenderer } from 'three/webgpu';
+import * as THREE from 'three';
+import { createInteriorMappingMaterial } from '/src/game/world/office/interiorMappingMaterial.js';
+import { createOfficeWallMaterial, createOfficeFeatureWallMaterial } from '/src/game/world/office/officeWallMaterial.js';
+import { createOfficeTerrazzoMaterial, createOfficeColumnMaterial, createOfficeCeilingMaterial } from '/src/game/world/office/officeContemporaryMaterials.js';
+import { createOfficeGlassMaterial, createOfficeAluminumMaterial, createOfficeDoorMaterial } from '/src/game/world/office/officeGlassMaterial.js';
+import { createOfficeInteriorLevel } from '/src/game/world/office/createOfficeInteriorLevel.js';
+import { installInteriorEnvironment } from '/src/game/world/office/officeInteriorEnv.js';
+
+window.__probeResult = null;
+async function run() {
+  try {
+    const canvas = document.getElementById('c');
+    const renderer = new WebGPURenderer({ canvas, antialias: true });
+    await renderer.init();
+    renderer.setSize(640, 480);
+    // Slightly off-axis so the ray hits furniture in front of the back wall.
+    const camera = new THREE.PerspectiveCamera(50, 640 / 480, 0.1, 100);
+    camera.position.set(3.4, 1.6, 5.8);
+    camera.lookAt(0, 0.35, 0);
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x20242a);
+    const interiorEnvironment = installInteriorEnvironment(scene, renderer, { size: 32 });
+    scene.add(new THREE.HemisphereLight(0xf6f1e7, 0x39404a, 2.2));
+    const key = new THREE.DirectionalLight(0xffdfba, 3.0);
+    key.position.set(-2, 4, 3);
+    scene.add(key);
+    const geom = new THREE.PlaneGeometry(1.7, 1.5);
+    geom.computeTangents();
+    geom.setAttribute('aRoomSeed', new THREE.BufferAttribute(new Float32Array(4).fill(0.42), 1));
+    const mat = createInteriorMappingMaterial({ width: 1.7, height: 1.5, depth: 3.0 });
+    const mesh = new THREE.Mesh(geom, mat);
+    mesh.position.x = -2.4;
+    scene.add(mesh);
+
+    const wallGeom = new THREE.BoxGeometry(1.8, 2.4, 0.12);
+    wallGeom.computeTangents();
+    const wall = new THREE.Mesh(wallGeom, createOfficeWallMaterial({ interiorWallScale: 0.04 }));
+    wall.position.set(0, 0.45, -0.2);
+    scene.add(wall);
+
+    const floorGeom = new THREE.BoxGeometry(2.4, 0.08, 2.4);
+    floorGeom.computeTangents();
+    const floor = new THREE.Mesh(floorGeom, createOfficeTerrazzoMaterial({ cellW: 2.4, cellD: 2.4 }));
+    floor.position.set(0, -0.82, 0.4);
+    scene.add(floor);
+
+    const columnGeom = new THREE.BoxGeometry(0.42, 2.2, 0.42);
+    columnGeom.computeTangents();
+    const column = new THREE.Mesh(columnGeom, createOfficeColumnMaterial());
+    column.position.set(1.65, 0.25, 0.2);
+    scene.add(column);
+
+    const featureGeom = new THREE.BoxGeometry(0.85, 1.1, 0.1);
+    featureGeom.computeTangents();
+    const feature = new THREE.Mesh(featureGeom, createOfficeFeatureWallMaterial());
+    feature.position.set(-1.25, 0.55, 0.05);
+    scene.add(feature);
+
+    const glass = new THREE.Mesh(new THREE.BoxGeometry(0.7, 1.4, 0.035), createOfficeGlassMaterial({ quality: 'ultra' }));
+    glass.position.set(0.95, 0.05, 0.75);
+    scene.add(glass);
+    const aluminum = new THREE.Mesh(new THREE.BoxGeometry(0.75, 0.035, 0.06), createOfficeAluminumMaterial());
+    aluminum.position.set(0.95, 0.78, 0.75);
+    scene.add(aluminum);
+    const door = new THREE.Mesh(new THREE.BoxGeometry(0.55, 1.25, 0.06), createOfficeDoorMaterial());
+    door.position.set(-0.6, -0.1, 0.8);
+    scene.add(door);
+
+    const ceilingGeom = new THREE.BoxGeometry(2.2, 0.08, 1.2);
+    ceilingGeom.computeTangents();
+    const ceiling = new THREE.Mesh(ceilingGeom, createOfficeCeilingMaterial());
+    ceiling.position.set(0, 1.72, 0.2);
+    scene.add(ceiling);
+    renderer.render(scene, camera);
+
+    const office = createOfficeInteriorLevel({ width: 24, depth: 20, seed: 7, floorCount: 2 });
+    const stats = { coveLights: 0, glass: 0, glassFrames: 0, featureWalls: 0, ceilingTiles: 0, trofferFrames: 0, trofferDiffusers: 0, doors: 0, frontages: 0, frontagePillars: 0 };
+    office.group.traverse((object) => {
+      if (object.userData?.officeCoveLight) stats.coveLights += 1;
+      if (object.material?.userData?.officeGlass) stats.glass += 1;
+      if (object.name === 'Office Glass Aluminum Frame') stats.glassFrames += 1;
+      if (object.userData?.officeFeatureWall) stats.featureWalls += 1;
+      if (object.name.startsWith('Office Acoustic Ceiling Tiles')) stats.ceilingTiles += 1;
+      if (object.name.startsWith('Office Recessed Troffer Frames')) stats.trofferFrames += 1;
+      if (object.name.startsWith('Office Recessed Troffer Diffusers')) stats.trofferDiffusers += 1;
+      if (object.name === 'Office Perimeter Window Bay') stats.frontages += 1;
+      if (object.name === 'Office Perimeter Feature Pillar') stats.frontagePillars += 1;
+    });
+    stats.coveCap = Math.max(10, Math.min(32, Math.round((24 * 20) / 18)));
+    stats.environment = interiorEnvironment?.name ?? '';
+    const probeDoor = office.doorsByFloor?.[0]?.[0];
+    stats.doors = office.doorsByFloor?.[0]?.length ?? 0;
+    if (probeDoor) {
+      stats.doorClosedCollision = probeDoor.collider.disabled === false;
+      office.toggleDoor(probeDoor, { x: probeDoor.x, z: probeDoor.z + 1 });
+      office.updateDoors(1);
+      stats.doorOpened = Math.abs(probeDoor.angle) > 1.4 && probeDoor.collider.disabled === true;
+      office.toggleDoor(probeDoor);
+      office.updateDoors(1);
+      stats.doorClosedAgain = Math.abs(probeDoor.angle) < 0.01 && probeDoor.collider.disabled === false;
+    }
+    office.dispose();
+    window.__probeResult = { ok: true, stats };
+    console.log('PROBE_OK');
+  } catch (e) {
+    window.__probeResult = { ok: false, error: String(e), stack: (e && e.stack) ? String(e.stack) : null };
+    console.error('PROBE_FAIL', e);
+  }
+}
+run();
+</script>
+</body></html>

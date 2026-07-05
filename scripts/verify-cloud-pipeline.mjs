@@ -12,6 +12,7 @@ import {
   CLOUD_TYPE_PRESETS,
   DEFAULT_CLOUD_TYPE,
 } from '../src/game/render/cloud/cloudConfig.js';
+import { resolveDomeWeatherProfile } from '../src/game/systems/SkySystem.js';
 
 const low = getQualityPreset('low');
 const high = getQualityPreset('high');
@@ -28,6 +29,32 @@ assert.equal(resolveCloudConfig(high), null);
 assert.equal(resolveCloudConfig(high, { force: true }).march.maxSteps, 96);
 assert.equal(resolveCloudConfig(ultra, { force: true }).volumetric.godRays, true);
 assert.equal(resolveCloudConfig(ultra, { force: true }).volumetric.shadowResolution, 1024);
+
+// --- SkyMesh weather profiles ----------------------------------------------
+// The physical disc feeds a 19,000x HDR term. Rain and overcast require exact
+// zeroes rather than relying on dense clouds or a merely small multiplier.
+const domeProfiles = Object.fromEntries(
+  ['clear', 'fog', 'overcast', 'rain'].map((weather) => [
+    weather,
+    resolveDomeWeatherProfile(high.environment, weather),
+  ]),
+);
+assert.ok(domeProfiles.clear.sunDiscVisibility > 0, 'clear weather retains a visible sun');
+assert.ok(
+  domeProfiles.fog.sunDiscVisibility > 0
+    && domeProfiles.fog.sunDiscVisibility < domeProfiles.clear.sunDiscVisibility * 0.1,
+  'fog retains only a faint disc',
+);
+assert.equal(domeProfiles.overcast.sunDiscVisibility, 0, 'overcast fully hides the disc');
+assert.equal(domeProfiles.rain.sunDiscVisibility, 0, 'rain fully hides the disc');
+assert.ok(domeProfiles.overcast.mieDirectionalG < domeProfiles.clear.mieDirectionalG);
+assert.ok(domeProfiles.rain.mieDirectionalG < domeProfiles.overcast.mieDirectionalG);
+assert.ok(domeProfiles.rain.cloudCoverage > domeProfiles.overcast.cloudCoverage);
+assert.equal(
+  resolveDomeWeatherProfile({ ...high.environment, clouds: 'off' }, 'rain').sunDiscVisibility,
+  0,
+  'rain disc occlusion does not depend on the dome-cloud checkbox',
+);
 
 // --- Cloud-type presets (distinct morphologies) -----------------------------
 const presetList = listCloudTypePresets();

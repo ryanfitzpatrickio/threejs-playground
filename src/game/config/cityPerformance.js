@@ -73,7 +73,7 @@ export function applyCityLevelOverrides(qualityPreset, qualityLevel, levelMode) 
 
   const env = qualityPreset.environment ?? {};
   const aerialEndBase = env.aerialEnd ?? 1400;
-  const aerialOpacityBase = env.aerialMaxOpacity ?? 0.52;
+  const aerialOpacityBase = env.aerialMaxOpacity ?? 0.22;
   const shadowClipmap = resolveCityShadowClipmap(qualityPreset, qualityLevel);
   const clipmapOn = shadowClipmap.enabled === true;
 

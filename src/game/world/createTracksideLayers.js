@@ -18,10 +18,14 @@
 
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { createRallySpectatorGeometry } from './rallySpectatorGeometry.js';
 import { disposeObject3D } from '../utils/disposeObject3D.js';
 import { buildRibbonFrame, offsetPoint, placementsAlong } from '../../world/worldMap/trackFrame.js';
 import { resolveCrossSection } from './trackCrossSection.js';
 import { createRallySurfaceMaterial, loadRallySurfaceSet } from '../materials/rallySurfaceTextures.js';
+import { disablePbrEnvironment } from '../materials/disablePbrEnvironment.js';
+import { collectRallyCrowdPlacements } from './rallyCrowdPlacements.js';
+import { getQualityPreset, getQualityLevel } from '../config/qualityPresets.js';
 
 const SURFACE_LIFT = 0.08;   // align curbs/trackside ribbons with the lifted road skin
 const WALL_BURY_DEPTH = 0.55; // minimum foundation below the authored road grade
@@ -86,7 +90,9 @@ const chevronCurbMaterial = new THREE.MeshStandardMaterial({
 });
 chevronCurbMaterial.userData.trackTexture = 'curb_chevron_red.png';
 
-const grassShoulderMaterial = createRallySurfaceMaterial(loadRallySurfaceSet('grass'));
+const grassShoulderMaterial = createRallySurfaceMaterial(loadRallySurfaceSet('grass'), {
+  hextile: getQualityPreset(getQualityLevel()).terrainHextile ?? null,
+});
 grassShoulderMaterial.side = THREE.DoubleSide;
 grassShoulderMaterial.userData.rallySurface = 'grass';
 
@@ -129,6 +135,7 @@ function getAssetMaterial(filename) {
     });
     material.userData.trackTexture = filename;
     assetMaterialCache.set(filename, material);
+    disablePbrEnvironment(material);
   }
   return assetMaterialCache.get(filename);
 }
@@ -143,6 +150,18 @@ const standMaterial = new THREE.MeshStandardMaterial({
   metalness: 0.02,
   side: THREE.DoubleSide,
 });
+
+for (const mat of [
+  tracksideMaterial,
+  wallMaterial,
+  chevronCurbMaterial,
+  fenceMaterial,
+  ...sponsorMaterials,
+  propMaterial,
+  standMaterial,
+]) {
+  disablePbrEnvironment(mat);
+}
 
 const _color = new THREE.Color();
 // Scratch for the wall collider's oriented-box basis (avoids per-segment allocs).
@@ -159,7 +178,7 @@ const _cardMat = new THREE.Matrix4();
 const _cardScale = new THREE.Matrix4();
 const _cardPos = new THREE.Vector3();
 
-export function createTracksideLayers({ profile, sampleHeight, resolve = resolveCrossSection }) {
+export function createTracksideLayers({ profile, sampleHeight, resolve = resolveCrossSection, crowdQuality = 'low' }) {
   const group = new THREE.Group();
   group.name = 'TracksideLayers';
   group.userData.noCollision = true;
@@ -170,6 +189,8 @@ export function createTracksideLayers({ profile, sampleHeight, resolve = resolve
   const chevronCurbGeoms = [];
   const wallGeoms = [];
   const instanced = []; // InstancedMesh objects (fences + sponsor boards)
+  const crowdPlacements = [];
+  const useAnimatedCrowd = crowdQuality !== 'low';
 
   profile.roads.forEach((b, roadIndex) => {
     const section = resolve(b.road?.trackStyle);
@@ -239,8 +260,14 @@ export function createTracksideLayers({ profile, sampleHeight, resolve = resolve
           if (rope) instanced.push(rope);
           uOut[side] = uInner;
         } else if (band.kind === 'crowd') {
-          const crowd = buildRallyCrowd({ frame, band, sign, uLine: uInner, sampleHeight, allowedAtArc });
-          if (crowd) instanced.push(crowd);
+          const placements = collectRallyCrowdPlacements({
+            frame, band, sign, uLine: uInner, sampleHeight, allowedAtArc, roadIndex, side,
+          });
+          crowdPlacements.push(...placements);
+          if (!useAnimatedCrowd) {
+            const crowd = buildRallyCrowdMesh(placements);
+            if (crowd) instanced.push(crowd);
+          }
           uOut[side] = uInner + (band.depth ?? 3.5);
         } else if (band.kind === 'prop') {
           const mesh = buildPropRow({ frame, band, sign, uLine: uInner, sampleHeight, allowedAtArc });
@@ -335,6 +362,7 @@ export function createTracksideLayers({ profile, sampleHeight, resolve = resolve
   return {
     group,
     colliders,
+    crowdPlacements,
     updateLOD: (position) => updateDistanceLOD(group, position),
     dispose: () => disposeObject3D(group),
   };
@@ -1030,39 +1058,8 @@ function buildRallyRope({ frame, band, sign, uLine, sampleHeight, allowedAtArc }
 
 // Authored low-poly spectators. Density increases on the outside of bends while
 // remaining capped per road/side, keeping the stage cheap and deterministic.
-function buildRallyCrowd({ frame, band, sign, uLine, sampleHeight, allowedAtArc }) {
-  const every = Math.max(1.4, band.every ?? 2.4);
-  const depth = Math.max(1, band.depth ?? 3.5);
-  const maxInstances = Math.max(1, Math.floor(band.maxInstances ?? 260));
-  const anchors = placementsAlong(frame, every, {
-    phase: every * 0.5,
-    lateral: sign * uLine,
-  }).filter((a) => allowedAtArc(a.s));
-  if (!anchors.length) return null;
-
-  const placements = [];
-  let frameIndex = 1;
-  for (const a of anchors) {
-    while (frameIndex < frame.n - 2 && frame.arc[frameIndex] < a.s) frameIndex += 1;
-    const i0 = Math.max(0, frameIndex - 2);
-    const i1 = Math.min(frame.n - 1, frameIndex + 2);
-    const cross = frame.tanX[i0] * frame.tanZ[i1] - frame.tanZ[i0] * frame.tanX[i1];
-    const bend = Math.min(1, Math.abs(cross) * 6);
-    const outside = sign * cross >= 0;
-    const copies = 1 + (outside && bend > 0.22 ? 1 : 0) + (outside && bend > 0.62 ? 1 : 0);
-    for (let copy = 0; copy < copies && placements.length < maxInstances; copy += 1) {
-      const seed = hash01(a.s * 0.173 + copy * 17.13 + sign * 9.7);
-      const lateral = 0.45 + seed * depth;
-      placements.push({
-        ...a,
-        x: a.x + a.nx * sign * lateral,
-        z: a.z + a.nz * sign * lateral,
-        scale: 0.88 + hash01(seed * 31.7) * 0.22,
-        color: [0xc84b36, 0x356a83, 0xd19a35, 0x52613d, 0x7c4d78][Math.floor(seed * 5) % 5],
-      });
-    }
-    if (placements.length >= maxInstances) break;
-  }
+function buildRallyCrowdMesh(placements) {
+  if (!placements?.length) return null;
 
   const geometry = buildRallySpectatorGeometry();
   const mesh = new THREE.InstancedMesh(geometry, propMaterial, placements.length);
@@ -1071,8 +1068,7 @@ function buildRallyCrowd({ frame, band, sign, uLine, sampleHeight, allowedAtArc 
   mesh.receiveShadow = true;
   for (let i = 0; i < placements.length; i += 1) {
     const a = placements[i];
-    const groundY = sampleHeight(a.x, a.z);
-    setPropMatrix(-sign * a.nx, -sign * a.nz, a.x, groundY, a.z, a.scale);
+    setPropMatrix(-a.sign * a.nx, -a.sign * a.nz, a.x, a.y, a.z, a.scale);
     mesh.setMatrixAt(i, _cardMat);
     mesh.setColorAt(i, _color.setHex(a.color));
   }
@@ -1082,19 +1078,7 @@ function buildRallyCrowd({ frame, band, sign, uLine, sampleHeight, allowedAtArc 
 }
 
 function buildRallySpectatorGeometry() {
-  return mergeColored([
-    coloredBox(0.38, 0.68, 0.24, 0, 1.18, 0, 0xd8d2c3),
-    coloredBox(0.16, 0.68, 0.17, -0.12, 0.5, 0, 0x34383c),
-    coloredBox(0.16, 0.68, 0.17, 0.12, 0.5, 0, 0x34383c),
-    coloredBox(0.13, 0.62, 0.13, -0.31, 1.35, 0, 0xd8d2c3),
-    coloredBox(0.13, 0.82, 0.13, 0.29, 1.58, 0, 0xd8d2c3),
-    coloredBox(0.27, 0.27, 0.25, 0, 1.72, 0, 0xd8b08a),
-  ]);
-}
-
-function hash01(value) {
-  const x = Math.sin(value * 12.9898) * 43758.5453;
-  return x - Math.floor(x);
+  return createRallySpectatorGeometry();
 }
 
 // Build a vertical card transform into _cardMat: a (width × height) plane centered at

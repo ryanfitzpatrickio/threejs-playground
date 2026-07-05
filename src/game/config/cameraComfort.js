@@ -83,3 +83,25 @@ export function formatCameraFeel(feel) {
       return 'Comfort';
   }
 }
+
+const ON_FOOT_FP_KEY = 'dreamfall:on-foot-first-person';
+
+/** Optional on-foot first person outdoors (always on inside office interiors). */
+export function getOnFootFirstPerson() {
+  try {
+    const stored = localStorage.getItem(ON_FOOT_FP_KEY);
+    if (stored === '1' || stored === 'true') return true;
+    if (stored === '0' || stored === 'false') return false;
+  } catch {
+    // ignore
+  }
+  return false;
+}
+
+export function setOnFootFirstPerson(enabled) {
+  try {
+    localStorage.setItem(ON_FOOT_FP_KEY, enabled ? '1' : '0');
+  } catch {
+    // ignore
+  }
+}

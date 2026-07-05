@@ -17,6 +17,12 @@ import {
   wgslFn,
   attribute,
 } from 'three/tsl';
+import {
+  RALLY_MUD_WET_LINEAR,
+  RALLY_MUD_BODY_LINEAR,
+  RALLY_MUD_DECAL_DARK_LINEAR,
+  RALLY_MUD_DECAL_LIGHT_LINEAR,
+} from '../materials/rallyMudPalette.js';
 
 const DEFAULT_SUN_DIRECTION = new THREE.Vector3(-8, 12, 7).normalize();
 
@@ -58,7 +64,9 @@ fn evaluateAaaMud(
   seed: f32,
   lightDirView: vec3f,
   lightColor: vec3f,
-  ambient: vec3f
+  ambient: vec3f,
+  wetCol: vec3f,
+  dryCol: vec3f
 ) -> vec4f {
   let c = uvCoord * 2.0 - vec2f(1.0);
   let r = length(c);
@@ -82,21 +90,19 @@ fn evaluateAaaMud(
   let diff = clamp(dot(nptr, L), 0.0, 1.0);
   let wet = 1.0 - smoothstep(0.0, 0.85, life);
 
-  let wetCol = vec3f(0.11, 0.07, 0.04);
-  let dryCol = vec3f(0.34, 0.24, 0.15);
-  let tone = clamp(life * 0.8 + (n - 0.5) * 0.4 + (mud_hash(vec2f(seed, seed)) - 0.5) * 0.2, 0.0, 1.0);
-  let albedo = mix(wetCol, dryCol, tone);
-  let ao = mix(0.6, 1.0, n);
+  let tone = clamp(life * 0.65 + (n - 0.5) * 0.35 + (mud_hash(vec2f(seed, seed)) - 0.5) * 0.15, 0.0, 1.0);
+  let albedo = mix(wetCol, dryCol, tone) * 1.18;
+  let ao = mix(0.72, 1.0, n);
 
-  var color = albedo * (ambient * ao + diff * lightColor);
+  var color = albedo * (ambient * ao + diff * lightColor * 1.12);
 
   let V = vec3f(0.0, 0.0, 1.0);
   let H = normalize(L + V);
   let spec = pow(clamp(dot(nptr, H), 0.0, 1.0), 48.0);
-  color += spec * wet * vec3f(1.0, 0.95, 0.85) * 0.8;
+  color += spec * wet * vec3f(1.0, 0.95, 0.85) * 0.42;
 
   let fres = pow(1.0 - clamp(nrm.z, 0.0, 1.0), 3.0);
-  color += fres * wet * 0.22 * vec3f(0.8, 0.85, 0.9);
+  color += fres * wet * 0.12 * vec3f(0.8, 0.85, 0.9);
 
   let fadeIn = smoothstep(0.0, 0.06, life);
   let fadeOut = 1.0 - smoothstep(0.7, 1.0, life);
@@ -105,7 +111,7 @@ fn evaluateAaaMud(
 `, [ MUD_NOISE_WGSL ]);
 
 const DECAL_WGSL = wgslFn(/* wgsl */ `
-fn evaluateMudDecal(uvCoord: vec2f, age: f32, seed: f32) -> vec4f {
+fn evaluateMudDecal(uvCoord: vec2f, age: f32, seed: f32, darkCol: vec3f, lightCol: vec3f) -> vec4f {
   if (age < 0.0 || age > 1.0) {
     return vec4f(0.0);
   }
@@ -118,7 +124,7 @@ fn evaluateMudDecal(uvCoord: vec2f, age: f32, seed: f32) -> vec4f {
     return vec4f(0.0);
   }
   let fade = 1.0 - smoothstep(0.55, 1.0, age);
-  let col = mix(vec3f(0.07, 0.045, 0.028), vec3f(0.16, 0.10, 0.06), n);
+  let col = mix(darkCol, lightCol, n);
   return vec4f(col, mask * fade * 0.85);
 }
 `, [ MUD_NOISE_WGSL ]);
@@ -193,8 +199,12 @@ export function createAaaMudParticleRenderer({
   name = 'AAA Mud Particles',
 }) {
   const lightDirView = uniform(new THREE.Vector3(0, 0, 1));
-  const lightColor = uniform(new THREE.Vector3(1.0, 0.95, 0.86));
-  const ambient = uniform(new THREE.Vector3(0.34, 0.33, 0.32));
+  const lightColor = uniform(new THREE.Vector3(1.05, 0.98, 0.90));
+  const ambient = uniform(new THREE.Vector3(0.44, 0.42, 0.40));
+  const wetCol = uniform(new THREE.Vector3(...RALLY_MUD_WET_LINEAR));
+  const dryCol = uniform(new THREE.Vector3(...RALLY_MUD_BODY_LINEAR));
+  const decalDark = uniform(new THREE.Vector3(...RALLY_MUD_DECAL_DARK_LINEAR));
+  const decalLight = uniform(new THREE.Vector3(...RALLY_MUD_DECAL_LIGHT_LINEAR));
 
   const geometry = new THREE.PlaneGeometry(1, 1);
   const lifeAttr = new THREE.InstancedBufferAttribute(new Float32Array(poolSize), 1);
@@ -211,7 +221,7 @@ export function createAaaMudParticleRenderer({
   material.transparent = true;
   material.depthWrite = false;
   material.side = THREE.DoubleSide;
-  material.toneMapped = false;
+  material.toneMapped = true;
 
   const shaded = AAA_MUD_WGSL({
     uvCoord: uv(),
@@ -220,6 +230,8 @@ export function createAaaMudParticleRenderer({
     lightDirView,
     lightColor,
     ambient,
+    wetCol,
+    dryCol,
   });
   material.colorNode = shaded.xyz;
   material.opacityNode = shaded.w;
@@ -255,12 +267,14 @@ export function createAaaMudParticleRenderer({
   decalMaterial.polygonOffset = true;
   decalMaterial.polygonOffsetFactor = -2;
   decalMaterial.polygonOffsetUnits = -2;
-  decalMaterial.toneMapped = false;
+  decalMaterial.toneMapped = true;
 
   const decalShaded = DECAL_WGSL({
     uvCoord: uv(),
     age: dLife,
     seed: dSeed,
+    darkCol: decalDark,
+    lightCol: decalLight,
   });
   decalMaterial.colorNode = decalShaded.xyz;
   decalMaterial.opacityNode = decalShaded.w;

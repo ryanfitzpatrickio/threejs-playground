@@ -15,6 +15,7 @@ import { ssr } from 'three/examples/jsm/tsl/display/SSRNode.js';
 import { ssao } from '../../three-addons/tsl/display/SSAONode.js';
 import { dualKawaseBloom } from '../../three-addons/tsl/display/DualKawaseBloomNode.js';
 import { getPostEffectMode, getRecommendedFogMaxDistance, getToneMappingMode } from '../config/qualityPresets.js';
+import { normalizeAerialHazeColor } from '../config/photorealismPresets.js';
 import { buildPostPipelinePlan } from '../render/postPipelinePlan.js';
 import { DrawCallProfiler } from '../render/drawCallProfiler.js';
 import { CITY_FURNITURE_LAYER } from '../render/renderLayers.js';
@@ -85,6 +86,7 @@ export class RendererSystem {
     this.fogEnabled = false;
     this.weather = 'clear';
     this.aerialPerspectiveEnabled = true;
+    this.aerialHazeColor = [0.32, 0.42, 0.48];
     this.fogMarchSteps = 16;
     this.fogMaxDistance = 165; // overwritten in initialize() via getRecommendedFogMaxDistance
     this.environmentRenderTarget = null;
@@ -100,6 +102,11 @@ export class RendererSystem {
     // does not free the output-node chain's render targets, so we track them
     // here and dispose them on invalidate.
     this._pipelineNodes = [];
+    // Notified after invalidatePipeline(). WebGPU captures mesh.count into an
+    // InstancedMesh's instance binding at pipeline-build time, so a rebuild
+    // (weather/env change, resize) strands crowds that vary count per frame —
+    // listeners re-prime those bindings so animated instances don't flicker out.
+    this.onPipelineInvalidated = null;
     this.lastFrameDrawCalls = 0;
     this.lastFrameTriangles = 0;
     this.drawCallProfiler = new DrawCallProfiler();
@@ -112,6 +119,7 @@ export class RendererSystem {
     this.weather = environmentPreset.weather ?? 'clear';
     this.fogEnabled = this.weather === 'fog';
     this.aerialPerspectiveEnabled = environmentPreset.aerialPerspective !== false;
+    this.aerialHazeColor = normalizeAerialHazeColor(environmentPreset.aerialHazeColor);
     this.fogMarchSteps = preset.fogMarchSteps ?? 16;
     this.fogMaxDistance = preset.fogMaxDistance ?? getRecommendedFogMaxDistance(preset);
     const maxPixelRatio = preset.maxPixelRatio ?? 2;
@@ -151,7 +159,7 @@ export class RendererSystem {
     this.renderer.shadowMap.enabled = preset.shadows === true;
     this.renderer.shadowMap.type = PCFShadowMap;
     this.renderer.outputColorSpace = SRGBColorSpace;
-    const toneMappingMode = getToneMappingMode() ?? environmentPreset.toneMapping;
+    const toneMappingMode = environmentPreset.toneMapping ?? getToneMappingMode();
     this.renderer.toneMapping = toneMappingMode === 'AgX'
       ? AgXToneMapping
       : toneMappingMode === 'None'
@@ -161,11 +169,13 @@ export class RendererSystem {
     this._applyWeatherExposure();
     this.resizeIfNeeded();
     await this.renderer.init();
+    // Clustered light-culling globally, so scenes (especially office interiors)
+    // can use many physical lights without the forward-renderer light cap. This
+    // is the culling BACKEND and is independent of the hemisphere/clustered *look*
+    // mode (streetlights/sky), which lives in SceneSystem.
     this.defaultLighting = this.renderer.lighting ?? new Lighting();
-    if (this.lightingMode === 'clustered') {
-      this.clusteredLighting ??= new ClusteredLighting(128, 32, 16, 32);
-      this.renderer.lighting = this.clusteredLighting;
-    }
+    this.clusteredLighting ??= new ClusteredLighting(128, 32, 16, 32);
+    this.renderer.lighting = this.clusteredLighting;
     this.backend = resolveRendererBackend(this.renderer);
     this.requestedPostEffectMode = getPostEffectMode();
     this.postPipelinePlan = buildPostPipelinePlan({
@@ -194,7 +204,7 @@ export class RendererSystem {
         { size: this.qualityPreset.environment?.environmentMapSize ?? 128 },
       );
       scene.environment = this.environmentRenderTarget.texture;
-      const baseIntensity = this.qualityPreset.environment?.environmentIntensity ?? 0.72;
+      const baseIntensity = this.qualityPreset.environment?.environmentIntensity ?? 0.45;
       scene.environmentIntensity = baseIntensity * (WEATHER_ENVIRONMENT_SCALE[this.weather] ?? 1);
       scene.environmentRotation.y = 0;
       return scene.environment;
@@ -210,15 +220,11 @@ export class RendererSystem {
       return this.snapshot();
     }
 
-    if (normalizedMode === 'clustered') {
-      this.clusteredLighting ??= new ClusteredLighting(128, 32, 16, 32);
-      this.renderer.lighting = this.clusteredLighting;
-    } else {
-      this.renderer.lighting = this.defaultLighting ?? new Lighting();
-    }
-
+    // The clustered culling backend stays on globally in both look modes; only the
+    // snapshot label changes here (the streetlight/sky look lives in SceneSystem).
+    this.clusteredLighting ??= new ClusteredLighting(128, 32, 16, 32);
+    this.renderer.lighting = this.clusteredLighting;
     this.lightingMode = normalizedMode;
-    this.invalidatePipeline();
     return this.snapshot();
   }
 
@@ -251,7 +257,7 @@ export class RendererSystem {
     return this.viewport;
   }
 
-  snapshot() {
+  snapshot({ includeDrawStats = true } = {}) {
     const info = this.renderer?.info;
     return {
       api: 'webgpu',
@@ -286,10 +292,12 @@ export class RendererSystem {
       renderCalls: this.lastFrameDrawCalls,
       drawCalls: this.lastFrameDrawCalls,
       triangles: this.lastFrameTriangles,
-      drawStats: this.drawCallProfiler.snapshot({
-        totalDrawCalls: this.lastFrameDrawCalls,
-        totalTriangles: this.lastFrameTriangles,
-      }),
+      drawStats: includeDrawStats
+        ? this.drawCallProfiler.snapshot({
+          totalDrawCalls: this.lastFrameDrawCalls,
+          totalTriangles: this.lastFrameTriangles,
+        })
+        : null,
       environmentLighting: Boolean(this.environmentRenderTarget),
     };
   }
@@ -312,7 +320,9 @@ export class RendererSystem {
       this.lastFrameTriangles = renderInfo.triangles ?? 0;
     }
     this.drawCallProfiler.recordFrame(this.lastFrameDrawCalls);
-    this.drawProfileCounter = (this.drawProfileCounter + 1) % 8;
+    // profileScene traverses the full scene. Draw totals are sampled every frame;
+    // the expensive attribution breakdown only needs to refresh twice a second.
+    this.drawProfileCounter = (this.drawProfileCounter + 1) % 30;
     if (this.drawProfileCounter === 0) {
       this.drawCallProfiler.profileScene({
         scene,
@@ -485,9 +495,10 @@ export class RendererSystem {
               sceneColor,
               sceneDepth,
               camera,
-              startDistance: this.qualityPreset.environment?.aerialStart ?? 180,
-              endDistance: this.qualityPreset.environment?.aerialEnd ?? 1400,
-              maxOpacity: this.qualityPreset.environment?.aerialMaxOpacity ?? 0.52,
+              startDistance: this.qualityPreset.environment?.aerialStart ?? 550,
+              endDistance: this.qualityPreset.environment?.aerialEnd ?? 1600,
+              maxOpacity: this.qualityPreset.environment?.aerialMaxOpacity ?? 0.22,
+              hazeColor: this.aerialHazeColor,
             })
           : sceneColor;
     }
@@ -530,6 +541,7 @@ export class RendererSystem {
     this._prepassCamera = null;
     this.pipelineScene = null;
     this.pipelineCamera = null;
+    this.onPipelineInvalidated?.();
   }
 
   setExposure(exposure = DEFAULT_EXPOSURE) {
@@ -555,6 +567,39 @@ export class RendererSystem {
     this.fogEnabled = this.weather === 'fog';
     this.invalidatePipeline();
     return this.weather;
+  }
+
+  applyEnvironmentPreset(environmentPreset = {}) {
+    this.qualityPreset = { ...this.qualityPreset, environment: environmentPreset };
+    this.aerialPerspectiveEnabled = environmentPreset.aerialPerspective !== false;
+    this.aerialHazeColor = normalizeAerialHazeColor(environmentPreset.aerialHazeColor);
+
+    if (this.renderer) {
+      const toneMappingMode = environmentPreset.toneMapping ?? getToneMappingMode();
+      this.renderer.toneMapping = toneMappingMode === 'AgX'
+        ? AgXToneMapping
+        : toneMappingMode === 'None'
+          ? NoToneMapping
+          : ACESFilmicToneMapping;
+    }
+
+    this.baseExposure = environmentPreset.exposure ?? DEFAULT_EXPOSURE;
+    this._applyWeatherExposure();
+
+    this.postPipelinePlan = buildPostPipelinePlan({
+      requestedMode: this.requestedPostEffectMode,
+      qualityPreset: this.qualityPreset,
+      backend: this.backend,
+    });
+    this.invalidatePipeline();
+
+    const scene = this.pipelineScene;
+    if (scene) {
+      const baseIntensity = environmentPreset.environmentIntensity ?? 0.45;
+      scene.environmentIntensity = baseIntensity * (WEATHER_ENVIRONMENT_SCALE[this.weather] ?? 1);
+    }
+
+    return environmentPreset;
   }
 }
 
@@ -637,9 +682,10 @@ function createAerialPerspectiveOutputNode({
   startDistance,
   endDistance,
   maxOpacity,
+  hazeColor = [0.32, 0.42, 0.48],
 }) {
   const cameraProjectionMatrixInverse = uniform(camera.projectionMatrixInverse);
-  const horizonColor = vec3(0.48, 0.64, 0.78);
+  const horizonColor = vec3(hazeColor[0], hazeColor[1], hazeColor[2]);
 
   return Fn(() => {
     const uvNode = screenUV;
@@ -651,7 +697,7 @@ function createAerialPerspectiveOutputNode({
     const distanceHaze = smoothstep(startDistance, endDistance, viewDistance);
     const horizonWeight = float(1).sub(smoothstep(0.05, 0.72, normalize(viewPosition).y.abs()));
     const hazeAlpha = distanceHaze
-      .mul(horizonWeight.mul(0.35).add(0.65))
+      .mul(horizonWeight.mul(0.5).add(0.32))
       .mul(maxOpacity)
       .mul(geometryMask);
     return vec4(mix(sceneTexel.rgb, horizonColor, hazeAlpha), sceneTexel.a);

@@ -19,6 +19,11 @@ export const GAME_CONFIG = {
     targetSmoothing: 16,
     rootMotionTargetSmoothing: 3.2,
     maxTargetLag: 8,
+    // On-foot first person (interiors always use this regardless of the toggle).
+    onFootEyeHeight: 1.62,
+    onFootEyeForward: 0.06,
+    onFootFirstPersonFov: 74,
+    onFootFirstPersonSmoothing: 28,
     // Chase / cockpit camera while driving. Comfort-first defaults; per-feel overrides
     // in `vehicle.feels` restore older dramatic tuning when requested.
     vehicle: {
@@ -45,6 +50,7 @@ export const GAME_CONFIG = {
       velocityLookBlend: 0.38,
       velocityLookMaxAngle: 0.42,
       focusReticleOpacity: 0.22,
+      rearViewBlendSpeed: 14,
       feels: {
         comfort: {
           steerLookStrength: 0,

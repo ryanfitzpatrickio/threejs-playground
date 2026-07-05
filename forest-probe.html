@@ -1,0 +1,98 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Forest Probe</title></head>
+<body>
+<canvas id="c"></canvas>
+<script type="module">
+import { WebGPURenderer } from 'three/webgpu';
+import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { buildForestArchetypes } from '/src/game/world/forest/forestArchetypes.js';
+import { buildLod2Tree } from '/src/game/world/forest/forestTreeBuilder.js';
+import { loadForestSpeciesAssets } from '/src/game/world/forest/forestAssets.js';
+import { getForestSpecies } from '/src/game/world/forest/forestSpecies.js';
+
+window.__probeResult = null;
+
+async function run() {
+  try {
+    const canvas = document.getElementById('c');
+    const renderer = new WebGPURenderer({ canvas, antialias: true });
+    await renderer.init();
+    renderer.setSize(960, 640);
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xcfd8e6);
+    scene.fog = new THREE.Fog(0xcfd8e6, 40, 220);
+
+    const camera = new THREE.PerspectiveCamera(50, 960 / 640, 0.1, 400);
+    camera.position.set(18, 10, 24);
+
+    const controls = new OrbitControls(camera, canvas);
+    controls.target.set(0, 8, 0);
+    controls.enableDamping = true;
+
+    scene.add(new THREE.HemisphereLight(0xe8f0ff, 0x4a5a40, 1.2));
+    const sun = new THREE.DirectionalLight(0xfff2e0, 3.2);
+    sun.position.set(40, 60, 20);
+    sun.castShadow = true;
+    scene.add(sun);
+
+    const ground = new THREE.Mesh(
+      new THREE.CircleGeometry(80, 64),
+      new THREE.MeshStandardNodeMaterial({ color: 0x5a7a48, roughness: 0.95 }),
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    const assets = await loadForestSpeciesAssets('pine');
+    const species = getForestSpecies('pine');
+
+    // M0: single archetype LOD2
+    const hero = buildLod2Tree(species, 'pine:probe:0', assets);
+    scene.add(hero.lod2Group);
+
+    // M2 preview: small static grove from archetype pack
+    const pack = await buildForestArchetypes({ species: 'pine', count: 3, speciesSeed: 99 });
+    const { buildStaticForestBuckets } = await import('/src/game/world/forest/forestInstancing.js');
+    const placements = [];
+    for (let i = 0; i < 12; i += 1) {
+      const a = (i / 12) * Math.PI * 2;
+      placements.push({
+        x: Math.cos(a) * 14,
+        y: 0,
+        z: Math.sin(a) * 14,
+        rotY: a,
+        scale: 0.75 + (i % 3) * 0.1,
+        archetypeIndex: i % 3,
+      });
+    }
+    scene.add(buildStaticForestBuckets(pack.archetypes, placements));
+
+    let frames = 0;
+    function tick() {
+      controls.update();
+      renderer.render(scene, camera);
+      frames += 1;
+      if (frames >= 3) {
+        window.__probeResult = {
+          ok: true,
+          archetypes: pack.archetypes.length,
+          placements: placements.length,
+          stems: hero.branches?.geometry?.attributes?.position?.count ?? 0,
+        };
+      } else {
+        requestAnimationFrame(tick);
+      }
+    }
+    requestAnimationFrame(tick);
+  } catch (error) {
+    window.__probeResult = { ok: false, error: String(error?.message || error) };
+  }
+}
+
+run();
+</script>
+</body></html>

@@ -256,6 +256,7 @@ export function getBlockingColliderAt({ position, radius, feetY, height, stepHei
 
   const consider = (collider) => {
     if (found) return;
+    if (collider?.disabled === true) return;
     const overlapsX = position.x + radius > collider.minX && position.x - radius < collider.maxX;
     const overlapsZ = position.z + radius > collider.minZ && position.z - radius < collider.maxZ;
     const hitsSideHeight = bodyTop > collider.bottomY + 0.05 && bodyBottom < collider.topY - stepHeight;

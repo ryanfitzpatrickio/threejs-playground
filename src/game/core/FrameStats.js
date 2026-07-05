@@ -12,6 +12,7 @@ const WINDOW_SIZE = 120; // rolling window (~2s at 60fps)
 export class FrameStats {
   constructor() {
     this.window = new Float64Array(WINDOW_SIZE);
+    this.sortedWindow = new Float64Array(WINDOW_SIZE);
     this.index = 0;
     this.filled = false;
     this.hitches = 0; // cumulative frames >= HITCH_MS since reset
@@ -70,7 +71,11 @@ export class FrameStats {
       return emptySummary();
     }
 
-    const sorted = Array.from(this.window.subarray(0, len)).sort((a, b) => a - b);
+    // Keep percentile calculation allocation-free. Array.from() here used to
+    // create 120 boxed numbers plus a new array on every UI snapshot.
+    this.sortedWindow.set(this.window.subarray(0, len), 0);
+    const sorted = this.sortedWindow.subarray(0, len);
+    sorted.sort();
     const pick = (quantile) => sorted[Math.min(len - 1, Math.floor(len * quantile))];
 
     return {

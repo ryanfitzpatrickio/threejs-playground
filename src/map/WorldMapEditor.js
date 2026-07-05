@@ -38,7 +38,7 @@ const HISTORY_LIMIT = 100;
 // Click priority for overlapping zones. Non-terrain zones (city/loopout/wilds)
 // beat terrain so a large base terrain zone does not block selecting/editing
 // contained feature zones. Within same priority, last-in-array wins (matches draw).
-const ZONE_CLICK_PRIORITY = { terrain: 0, city: 2, loopout: 2, wilds: 2 };
+const ZONE_CLICK_PRIORITY = { terrain: 0, city: 2, loopout: 2, wilds: 2, forest: 2 };
 
 export class WorldMapEditor {
   constructor({ canvas, onChange = null } = {}) {
@@ -1283,6 +1283,39 @@ export class WorldMapEditor {
     }
   }
 
+  setSelectedForestSpecies(species) {
+    if (this.selection?.kind !== 'zone') return;
+    const zone = this._zoneById(this.selection.id);
+    if (zone?.type === 'forest') {
+      const value = String(species ?? 'pine').trim() || 'pine';
+      this._commit(() => { zone.props = { ...zone.props, species: value }; });
+      this.emitChange();
+    }
+  }
+
+  setSelectedForestDensity(density) {
+    if (this.selection?.kind !== 'zone') return;
+    const zone = this._zoneById(this.selection.id);
+    if (zone?.type !== 'forest') return;
+    const n = Number(density);
+    this._commit(() => {
+      zone.props = {
+        ...zone.props,
+        density: density === '' || !Number.isFinite(n) || n <= 0 ? undefined : n,
+      };
+    });
+    this.emitChange();
+  }
+
+  setSelectedForestSeed(seed) {
+    if (this.selection?.kind !== 'zone') return;
+    const zone = this._zoneById(this.selection.id);
+    if (zone?.type === 'forest') {
+      this._commit(() => { zone.props = { ...zone.props, seed: Number(seed) || 1 }; });
+      this.emitChange();
+    }
+  }
+
   setSelectedBiome(biome) {
     if (this.selection?.kind !== 'zone') return;
     const zone = this._zoneById(this.selection.id);
@@ -1427,7 +1460,7 @@ export class WorldMapEditor {
   // Snapshot for the controls panel
   // ----------------------------------------------------------------------
   getSnapshot() {
-    const byType = { terrain: 0, city: 0, loopout: 0, wilds: 0 };
+    const byType = { terrain: 0, city: 0, loopout: 0, wilds: 0, forest: 0 };
     for (const z of this.map.zones) byType[z.type] = (byType[z.type] ?? 0) + 1;
     let selected = null;
     if (this.selection?.kind === 'zone') {
@@ -1435,6 +1468,7 @@ export class WorldMapEditor {
       if (z) {
         selected = {
           kind: 'zone', id: z.id, type: z.type, shape: z.shape, seed: z.props?.seed, cityStyle: z.props?.cityStyle ?? 'downtown', biome: z.props?.biome ?? '',
+          forestSpecies: z.props?.species ?? 'pine', forestDensity: z.props?.density ?? '',
           minHeight: z.props?.minHeight ?? '', maxHeight: z.props?.maxHeight ?? '', relief: z.props?.relief ?? '',
         };
       }
@@ -1534,7 +1568,7 @@ export class WorldMapEditor {
     const b = this.map.bounds;
     const width = b.maxX - b.minX;
     const depth = b.maxZ - b.minZ;
-    const byType = { terrain: 0, city: 0, loopout: 0, wilds: 0 };
+    const byType = { terrain: 0, city: 0, loopout: 0, wilds: 0, forest: 0 };
     for (const z of this.map.zones) byType[z.type] = (byType[z.type] ?? 0) + 1;
 
     const describeRel = (x, z) => {

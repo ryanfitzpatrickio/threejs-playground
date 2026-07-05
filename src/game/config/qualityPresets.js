@@ -32,11 +32,22 @@ const PRESETS = {
       radius: 1.5,
       intensity: 4,
       blur: false,
+      // The normal/depth pre-pass is a full CPU-side scene traversal. Reuse AO
+      // for one frame on High as well as Ultra; the low-frequency result is
+      // visually stable while halving the dominant office-interior pre-pass cost.
+      updateInterval: 2,
     },
     // Parallax occlusion mapping (per-fragment height-field raymarch) for rally
     // road surfaces. Off on low/high — it is ultra-only fragment work, gated like
     // SSAO. See docs/silhouette-pom-plan.md.
     parallaxOcclusion: { enabled: false },
+    terrainHextile: {
+      enabled: true,
+      falloffContrast: 0.6,
+      exponent: 7,
+      roadRotStrength: 0.35,
+      roadExponent: 2,
+    },
     environment: {
       toneMapping: 'ACESFilmic',
       exposure: 1.0,
@@ -47,14 +58,17 @@ const PRESETS = {
       mieDirectionalG: 0.82,
       sunIntensity: 4.2,
       sunDiscIntensity: 0.06,
-      hemisphereIntensity: 1.6,
+      // Hemisphere = ground-bounce fill only; sky diffuse comes from the env map.
+      // Stacking both at full strength washed shadows toward a milky 1:2 ambient:direct
+      // ratio; V-Rally-style exteriors read closer to 1:5.
+      hemisphereIntensity: 0.5,
       environmentMapSize: 128,
-      environmentIntensity: 0.72,
+      environmentIntensity: 0.45,
       weather: 'clear',
       aerialPerspective: true,
-      aerialStart: 180,
-      aerialEnd: 1400,
-      aerialMaxOpacity: 0.52,
+      aerialStart: 550,
+      aerialEnd: 1600,
+      aerialMaxOpacity: 0.22,
       // Default sky is the simple SkyMesh dome-cloud layer. The experimental
       // volumetric pipeline (CloudSkyProvider) is opt-in via the debug panel
       // checkbox (localStorage `dreamfall:clouds` = 'volumetric'); the
@@ -103,6 +117,13 @@ const PRESETS = {
       updateBudget: 1,
     },
 
+    forestRealTrees: true,
+    forestLodMode: 'blend',
+    forestTreeBudget: 8000,
+    forestNearCount: 200,
+    forestNearRadius: 145,
+    forestFarRadius: 480,
+
     // InfiniteCityLevel streaming
     initialLoadRadius: 1,
     loadRadius: 1,
@@ -147,6 +168,7 @@ const PRESETS = {
     ssr: { enabled: false },
     ssao: { enabled: false },
     parallaxOcclusion: { enabled: false },
+    terrainHextile: { enabled: false },
     environment: {
       toneMapping: 'ACESFilmic',
       exposure: 1.0,
@@ -157,14 +179,14 @@ const PRESETS = {
       mieDirectionalG: 0.82,
       sunIntensity: 4.2,
       sunDiscIntensity: 0.06,
-      hemisphereIntensity: 1.6,
+      hemisphereIntensity: 0.5,
       environmentMapSize: 64,
-      environmentIntensity: 0.72,
+      environmentIntensity: 0.45,
       weather: 'clear',
       aerialPerspective: true,
-      aerialStart: 150,
+      aerialStart: 480,
       aerialEnd: 900,
-      aerialMaxOpacity: 0.48,
+      aerialMaxOpacity: 0.2,
       clouds: 'dome',
       cloudCoverage: 0.46,
       cloudDensity: 0.82,
@@ -189,6 +211,14 @@ const PRESETS = {
 
     // Wilds scene — fewer trees so LQ loads faster.
     wildsForestCount: 120000,
+
+    // Forest zones — real trees with a tight near→impostor blend.
+    forestRealTrees: true,
+    forestLodMode: 'blend',
+    forestTreeBudget: 2500,
+    forestNearCount: 45,
+    forestNearRadius: 48,
+    forestFarRadius: 220,
 
     // InfiniteCityLevel streaming
     loadRadius: 1,
@@ -316,6 +346,12 @@ PRESETS.ultra = {
     carDensity: 1,
   },
   wildsForestCount: 650000,
+  forestRealTrees: true,
+  forestLodMode: 'real',
+  forestTreeBudget: 12000,
+  forestNearCount: 12000,
+  forestNearRadius: 520,
+  forestFarRadius: 520,
   rainMaxDrops: 20000,
   terrainLoadRadius: 10,
   terrainUnloadRadius: 11,
