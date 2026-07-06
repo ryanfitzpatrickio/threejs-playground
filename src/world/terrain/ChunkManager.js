@@ -49,6 +49,9 @@ export class ChunkManager {
     this.resolution = resolution;
 
     this.procedural = createProceduralSampler({ seed, amplitude, octaves });
+    this.fallbackHeightSampler = typeof options.fallbackHeightSampler === 'function'
+      ? options.fallbackHeightSampler
+      : null;
 
     // Authored chunks: key -> chunkData (the only ones that get saved)
     this.authored = new Map(); // Map<string, chunkData>
@@ -229,6 +232,15 @@ export class ChunkManager {
 
   getLoadedChunks() {
     return Array.from(this.liveChunks.values());
+  }
+
+  /**
+   * Override height queries outside live/authored chunks.
+   * Runtime terrain uses this to apply biome/elevation/road/river shaping even
+   * before streaming has materialized the corresponding chunk.
+   */
+  setFallbackHeightSampler(sampler) {
+    this.fallbackHeightSampler = typeof sampler === 'function' ? sampler : null;
   }
 
   unloadChunk(cx, cz) {
@@ -505,8 +517,10 @@ export class ChunkManager {
       return hx0 + (hx1 - hx0) * ty;
     }
 
-    // Outside any loaded authored — pure procedural (the infinity case)
-    return this.procedural(worldX, worldZ);
+    // Outside loaded/authored terrain, runtime callers may still need the fully
+    // shaped analytic surface (biomes, elevation zones, roads, rivers, etc.).
+    return this.fallbackHeightSampler?.(worldX, worldZ)
+      ?? this.procedural(worldX, worldZ);
   }
 
   // ------------------------------------------------------------------

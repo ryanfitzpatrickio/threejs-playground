@@ -63,11 +63,10 @@ export const TERRAIN_BIOMES = {
 
 export const TERRAIN_BIOME_ORDER = ['plains', 'hills', 'mountains', 'alpine'];
 
-export const FOREST_SPECIES = {
-  pine: { label: 'Ponderosa Pine' },
-};
-
-export const FOREST_SPECIES_ORDER = ['pine'];
+export {
+  FOREST_SPECIES,
+  FOREST_SPECIES_ORDER,
+} from '../../game/world/forest/forestSpecies.js';
 
 export const DEFAULT_FOREST_DENSITY = 150;
 

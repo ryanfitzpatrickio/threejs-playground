@@ -23,10 +23,55 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { POI_KINDS } from '../world/worldMap/worldMapSchema.js';
 import { zoneBounds } from '../world/worldMap/zoneGeometry.js';
 import { createComposedWorldLevel } from '../game/world/createComposedWorldLevel.js';
-import { getQualityPreset, getQualityLevel } from '../game/config/qualityPresets.js';
+import { getQualityPreset } from '../game/config/qualityPresets.js';
 
 const MOVE_SPEED = 120;        // metres / second for WASD flythrough
-const STREAM_INTERVAL = 0.25;  // seconds between streaming updates around the focus
+const STREAM_INTERVAL = 0.5;   // seconds between streaming updates around the focus
+const FRAME_INTERVAL_MS = 1000 / 24;
+const MAX_PIXEL_RATIO = 0.75;
+
+// This viewport is a navigation/testing aid, not a second gameplay renderer.
+// Keep the authored terrain, roads, rivers, and city massing, but spend as little
+// CPU/GPU time as possible while the editor itself is active.
+const PREVIEW_QUALITY = {
+  ...getQualityPreset('low'),
+  maxPixelRatio: MAX_PIXEL_RATIO,
+  antialias: false,
+  shadows: false,
+  shadowClipmap: { enabled: false },
+  forestRealTrees: true,
+  forestLodMode: 'blend',
+  forestTreeBudget: 200,
+  forestNearCount: 200,
+  forestNearRadius: 100,
+  forestFarRadius: 100,
+  initialLoadRadius: 0,
+  loadRadius: 0,
+  unloadRadius: 1,
+  workerCount: 1,
+  citySkylineRadius: 2,
+  cityFurnitureRadius: 0,
+  cityTraversalRadius: 0,
+  cityCastShadows: false,
+  cityFurniture: {
+    streetlight: false,
+    trafficlight: false,
+    trashcan: false,
+    hydrant: false,
+    bench: false,
+    tree: false,
+    car: false,
+    person: false,
+  },
+  terrainLoadRadius: 2,
+  terrainUnloadRadius: 3,
+  terrainLodRings: [0, 1],
+  terrainLodResolutions: [9, 7, 5],
+  terrainChunkBuildsPerFrame: 1,
+  terrainChunkRemovesPerFrame: 2,
+  terrainIdlePrefetchRadius: 0,
+  terrainPhysicsRadius: 0,
+};
 
 export class WorldMapPreview3D {
   constructor({ canvas }) {
@@ -43,7 +88,7 @@ export class WorldMapPreview3D {
     // The app aliases `three` to the WebGPU build, so use WebGPURenderer (async
     // init). The render loop holds off drawing until the backend is ready.
     this._ready = false;
-    this.renderer = new THREE.WebGPURenderer({ canvas, antialias: true });
+    this.renderer = new THREE.WebGPURenderer({ canvas, antialias: false });
     this.renderer.setClearColor(0x10130e, 1);
     this.renderer.init().then(() => { this._ready = true; }).catch((err) => {
       console.error('WorldMapPreview3D renderer init failed', err);
@@ -115,7 +160,9 @@ export class WorldMapPreview3D {
     const tick = (now) => {
       if (!this._running) return;
       this._raf = requestAnimationFrame(tick);
-      const dt = Math.min(0.05, (now - this._lastTime) / 1000);
+      const elapsed = now - this._lastTime;
+      if (elapsed < FRAME_INTERVAL_MS) return;
+      const dt = Math.min(0.1, elapsed / 1000);
       this._lastTime = now;
       this._applyMovement(dt);
       this.controls.update();
@@ -185,8 +232,7 @@ export class WorldMapPreview3D {
 
     this._disposeLevel();
     try {
-      const preset = getQualityPreset(getQualityLevel());
-      this.level = createComposedWorldLevel(preset, { worldMap: map });
+      this.level = createComposedWorldLevel(PREVIEW_QUALITY, { worldMap: map });
       this.scene.add(this.level.group);
     } catch (err) {
       console.error('WorldMapPreview3D level build failed', err);
@@ -259,7 +305,7 @@ export class WorldMapPreview3D {
     const rect = this.canvas.getBoundingClientRect();
     const w = Math.max(1, Math.round(rect.width));
     const h = Math.max(1, Math.round(rect.height));
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO));
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();

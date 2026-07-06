@@ -38,11 +38,13 @@ import { TelekinesisSystem } from '../systems/TelekinesisSystem.js';
 import { HookSwingSystem } from '../systems/HookSwingSystem.js';
 import { WingsuitSystem } from '../systems/WingsuitSystem.js';
 import { WingsuitFlightSystem } from '../systems/WingsuitFlightSystem.js';
+import { RallyCinematicDemo } from '../systems/RallyCinematicDemo.js';
 import { VehicleSystem } from '../systems/VehicleSystem.js';
 import { VehicleDamageSystem } from '../systems/VehicleDamageSystem.js';
 import { WeatherSystem } from '../systems/WeatherSystem.js';
 import { computeRunOverHits, computeRunOverLaunch } from '../vehicles/runOver.js';
 import { BaseVehicle } from '../vehicles/BaseVehicle.js';
+import { QuadBikeVehicle } from '../vehicles/QuadBikeVehicle.js';
 import { spawnVehicleOptions } from '../vehicles/garageBuilds.js';
 import { getActiveWorldMapSync } from '../../world/worldMap/worldMapScenes.js';
 import { sanitizeWebGPUVertexBuffers } from '../geometry/prepareWebGPUGeometry.js';
@@ -158,6 +160,7 @@ export class GameRuntime {
     this.wingsuitSystem = new WingsuitSystem();
     this.wingsuitFlightSystem = new WingsuitFlightSystem();
     this.vehicleSystem = new VehicleSystem();
+    this.rallyCinematicDemo = new RallyCinematicDemo();
     this.vehicleDamageSystem = new VehicleDamageSystem();
     this.weatherSystem = new WeatherSystem();
     this.frameStats = new FrameStats();
@@ -280,6 +283,13 @@ export class GameRuntime {
       return;
     }
 
+    const levelViewDistance = this.levelSystem.level?.viewDistance;
+    if (Number.isFinite(levelViewDistance) && levelViewDistance > 0) {
+      this.cameraSystem.camera.far = levelViewDistance;
+      this.cameraSystem.camera.updateProjectionMatrix();
+      this.sceneSystem.setViewDistance?.(levelViewDistance);
+    }
+
     await this.characterSystem.loadMara(this.sceneSystem.scene);
     if (this.disposed || !this.characterSystem.character) {
       return;
@@ -395,8 +405,11 @@ export class GameRuntime {
         ? -Math.PI / 4
         : (this.horseSystem.group?.rotation.y ?? 0);
       const garageVehicleOptions = spawnVehicleOptions(this.levelMode);
+      const VehicleConstructor = garageVehicleOptions.vehicleKind === 'quad'
+        ? QuadBikeVehicle
+        : BaseVehicle;
       const spawnCar = await this.vehicleSystem.spawnVehicle({
-        vehicle: new BaseVehicle({
+        vehicle: new VehicleConstructor({
           ...garageVehicleOptions,
           name: 'Spawn Car',
           position: carPosition,
@@ -405,6 +418,18 @@ export class GameRuntime {
       });
       if (this.levelMode === 'rally' && character && spawnCar) {
         await this.vehicleSystem.enterVehicle(character, spawnCar, { warmup: true });
+      }
+      if (this.levelMode === 'rally') {
+        const quadSpawns = [
+          { name: 'Rally Quad 1', position: new THREE.Vector3(-124.5, 0, 132.5), rotationY: -Math.PI / 4 },
+          { name: 'Rally Quad 2', position: new THREE.Vector3(-121.5, 0, 136), rotationY: -Math.PI / 4 },
+        ];
+        const parkedQuadSpawns = garageVehicleOptions.vehicleKind === 'quad'
+          ? quadSpawns.slice(1)
+          : quadSpawns;
+        for (const spec of parkedQuadSpawns) {
+          await this.vehicleSystem.spawnVehicle({ vehicle: new QuadBikeVehicle(spec) });
+        }
       }
     }
     if (this.disposed) {
@@ -455,17 +480,16 @@ export class GameRuntime {
     this.stage = 'prewarming';
     this.emitSnapshot();
 
-    this._prewarmShaders().then(() => {
+    const finishPrewarm = () => {
       if (!this.disposed) {
+        // Prewarm deliberately renders expensive first-seen shader/shadow
+        // contexts. Do not report those loading frames as gameplay FPS.
+        this.frameStats.reset();
         this.stage = 'running';
         this.emitSnapshot();
       }
-    }).catch(() => {
-      if (!this.disposed) {
-        this.stage = 'running';
-        this.emitSnapshot();
-      }
-    });
+    };
+    this._prewarmShaders().then(finishPrewarm).catch(finishPrewarm);
   }
 
   async _prewarmShaders() {
@@ -480,7 +504,16 @@ export class GameRuntime {
       // render objects before Three builds the asynchronous render list.
       sanitizeWebGPUVertexBuffers(scene);
       if (renderer && typeof renderer.compileAsync === 'function' && scene && camera) {
-        await renderer.compileAsync(scene, camera);
+        // Three r185's async pipeline descriptor is incomplete for the custom
+        // MeshSSSNodeMaterial used by hero foliage (missing depthStencil), which
+        // poisons the prewarm command stream. Let those bounded objects compile
+        // through their real render context instead of compileAsync(scene).
+        const restoreUnsafeMaterials = hideUnsafeAsyncCompileObjects(scene);
+        try {
+          await renderer.compileAsync(scene, camera);
+        } finally {
+          restoreUnsafeMaterials();
+        }
       }
 
       // Compile one material's Mesh + InstancedMesh pair at a time. A single
@@ -507,9 +540,16 @@ export class GameRuntime {
         }
         this._cityPrewarmProgress.completed += 1;
       }
+
     } catch (e) {
       // Non-fatal
     } finally {
+      // compileAsync can reject before covering every real RenderPipeline
+      // context. Always keep the loading stage up while actual shadow/SSAO
+      // renders populate their caches; finishPrewarm then resets these samples.
+      for (let frame = 0; frame < 4; frame += 1) {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
       warmup?.removeFromParent();
       warmup?.userData?.disposeWarmup?.();
       this._cityPrewarmProgress = null;
@@ -643,8 +683,14 @@ export class GameRuntime {
     let streamingActive = false;
     if (character) {
       const streamStart = performance.now();
-      const viewPos = this.cameraSystem?.camera?.position ?? character.group.position;
-      const streamingChanges = this.levelSystem.updateStreaming(character.group.position, {
+      const mountedHorse = this.mountSystem?.state !== 'idle'
+        ? this.horseSystem?.group
+        : null;
+      const streamingFocus = this.vehicleSystem?.activeVehicle?.group?.position
+        ?? mountedHorse?.position
+        ?? character.group.position;
+      const viewPos = this.cameraSystem?.camera?.position ?? streamingFocus;
+      const streamingChanges = this.levelSystem.updateStreaming(streamingFocus, {
         viewPosition: viewPos,
       });
       const builtColliders = this.physicsSystem.applyStreamingChanges(streamingChanges);
@@ -652,7 +698,8 @@ export class GameRuntime {
       streamingActive =
         builtColliders > 0 ||
         (streamingChanges?.addedChunks?.length ?? 0) > 0 ||
-        (streamingChanges?.removedChunkKeys?.length ?? 0);
+        (streamingChanges?.removedChunkKeys?.length ?? 0) > 0 ||
+        (streamingChanges?.terrainVisualChanges ?? 0) > 0;
 
       // Pre-warm render pipelines for freshly attached chunks. WebGPU compiles pipelines
       // asynchronously; kicking this off at attach time (while the chunk is still offscreen,
@@ -662,12 +709,12 @@ export class GameRuntime {
         this.queueStreamingCompile(streamingChanges.addedChunks.map((chunk) => chunk.group));
       }
 
-      // Drive the shadow volume to follow the player (the sun is otherwise locked to
+      // Drive the shadow volume to follow the active locomotion root (the sun is otherwise locked to
       // the origin, so shadows disappear once you walk away from spawn). Placed here
       // so both render paths (cut-mode + normal) are covered by one call; the one-frame
       // lag behind movement is invisible because the follow point is texel-snapped.
-      this.sceneSystem.updateShadowFollow(character.group.position);
-      this.sceneSystem.updateStreetLights(character.group.position);
+      this.sceneSystem.updateShadowFollow(streamingFocus);
+      this.sceneSystem.updateStreetLights(streamingFocus);
     }
     this.frameStats.recordSystem('streaming', streamingMs);
 
@@ -757,7 +804,31 @@ export class GameRuntime {
 
     // 5. Construct gameplay input: lock locomotion/combat when aiming, but allow rotating/positioning the plane
     let gameplayInput = input;
-    if (this.enemyCutSystem.state === 'aiming') {
+    if (this.rallyCinematicDemo?.active) {
+      gameplayInput = {
+        ...input,
+        moveX: 0,
+        moveZ: 0,
+        jump: false,
+        jumpPressed: false,
+        brace: false,
+        bracePressed: false,
+        slide: false,
+        slidePressed: false,
+        lightAttackPressed: false,
+        heavyAttackPressed: false,
+        drawSheathePressed: false,
+        shoulderThrowPressed: false,
+        cutModePressed: false,
+        telekinesisPressed: false,
+        hookFirePressed: false,
+        hookAimHeld: false,
+        dodgeDirection: null,
+        mountPressed: false,
+        lookX: 0,
+        lookY: 0,
+      };
+    } else if (this.enemyCutSystem.state === 'aiming') {
       gameplayInput = {
         ...input,
         moveX: 0,
@@ -1017,15 +1088,23 @@ export class GameRuntime {
       cameraInput.lookY = 0;
     }
 
-    this.cameraSystem.update({
-      delta: scaledDelta,
-      target: character.group.position,
-      viewport: this.rendererSystem.getViewport(),
-      input: cameraInput,
-      rootMotionActive: isRootMotionCameraSmoothingActive(character),
-      character,
-      vehicle: this.vehicleSystem?.activeVehicle ?? null,
-    });
+    if (this.rallyCinematicDemo?.active) {
+      this.rallyCinematicDemo.update(scaledDelta, {
+        vehicle: this.vehicleSystem?.activeVehicle,
+        camera: this.cameraSystem.camera,
+        level: this.levelSystem,
+      });
+    } else {
+      this.cameraSystem.update({
+        delta: scaledDelta,
+        target: character.group.position,
+        viewport: this.rendererSystem.getViewport(),
+        input: cameraInput,
+        rootMotionActive: isRootMotionCameraSmoothingActive(character),
+        character,
+        vehicle: this.vehicleSystem?.activeVehicle ?? null,
+      });
+    }
 
     this.rendererSystem.resizeIfNeeded((viewport) => {
       this.cameraSystem.resize(viewport);
@@ -1061,6 +1140,10 @@ export class GameRuntime {
     this.rendererSystem.render({
       scene: this.sceneSystem.scene,
       camera: this.cameraSystem.camera,
+      // SSAO's nested scene pre-pass is the worst possible companion to a
+      // first-seen terrain object. Reuse the previous AO target until the
+      // bounded streaming/compile queue is quiet.
+      deferExpensivePasses: streamingActive || this._streamingCompileActive,
     });
     spectatorCrowd?.onAfterRender?.();
     const renderMs = performance.now() - renderStart;
@@ -1223,6 +1306,7 @@ export class GameRuntime {
     this.levelSystem.level = interior;
     this._suppressOutdoorLighting();
     this.cameraSystem.setInteriorFirstPerson(true);
+    this.rendererSystem.setSceneContext('interior');
     const spawn = interior.spawnPoint.clone();
     const groundY = interior.getGroundHeightAt(spawn, 0.28);
     spawn.y = groundY;
@@ -1381,6 +1465,7 @@ export class GameRuntime {
     this.levelSystem.level = inside.exteriorLevel;
     this._restoreOutdoorLighting();
     this.cameraSystem.setInteriorFirstPerson(false);
+    this.rendererSystem.setSceneContext('exterior');
     this._teleportPlayer(character, inside.returnPosition);
     this.insideBuilding = null;
   }
@@ -1433,6 +1518,57 @@ export class GameRuntime {
       document.exitPointerLock?.();
     }
     this.emitSnapshot();
+  }
+
+  startRallyCinematicDemo() {
+    if (this.levelMode !== 'rally') {
+      console.warn('[rally-cinematic] only available in rally mode');
+      return this.snapshot();
+    }
+    if (this.rallyCinematicDemo.active) {
+      return this.snapshot();
+    }
+    const vehicle = this.vehicleSystem?.activeVehicle;
+    if (!vehicle) {
+      console.warn('[rally-cinematic] enter a vehicle first');
+      return this.snapshot();
+    }
+    const ok = this.rallyCinematicDemo.start({
+      vehicle,
+      level: this.levelSystem,
+      physics: this.physicsSystem,
+      camera: this.cameraSystem.camera,
+    });
+    if (ok) {
+      this.vehicleSystem.cinematicDemoActive = true;
+      if (document.pointerLockElement === this.canvas) {
+        document.exitPointerLock?.();
+      }
+      this.emitSnapshot();
+    } else {
+      console.warn('[rally-cinematic] failed to build track cameras');
+    }
+    return this.snapshot();
+  }
+
+  stopRallyCinematicDemo() {
+    if (!this.rallyCinematicDemo.active) {
+      return this.snapshot();
+    }
+    this.rallyCinematicDemo.stop();
+    this.vehicleSystem.cinematicDemoActive = false;
+    if (this.vehicleSystem.activeVehicle) {
+      delete this.vehicleSystem.activeVehicle.autopilot;
+    }
+    this.emitSnapshot();
+    return this.snapshot();
+  }
+
+  toggleRallyCinematicDemo() {
+    if (this.rallyCinematicDemo.active) {
+      return this.stopRallyCinematicDemo();
+    }
+    return this.startRallyCinematicDemo();
   }
 
   setPhotoSetting(name, value) {
@@ -1573,6 +1709,7 @@ export class GameRuntime {
         },
         viewport: this.rendererSystem.getViewport(),
         timing: this.timingSnapshot(),
+        rallyCinematic: this.rallyCinematicDemo?.snapshot?.() ?? { active: false },
       };
     }
 
@@ -1613,6 +1750,7 @@ export class GameRuntime {
       viewport: this.rendererSystem.getViewport(),
       timing: this.timingSnapshot(),
       telekinesis: this.telekinesisSystem.snapshot(),
+      rallyCinematic: this.rallyCinematicDemo?.snapshot?.() ?? { active: false },
     };
     this._lastFullSnapshot = result;
     return result;
@@ -2284,6 +2422,22 @@ export class GameRuntime {
         }
         return this.snapshot();
       },
+      enterVehicleByName: async (name) => {
+        const character = this.characterSystem.character;
+        const target = this.vehicleSystem.vehicles.find((vehicle) => vehicle.name === name);
+        if (!character || !target) return { entered: false, error: 'vehicle not found' };
+        if (this.vehicleSystem.activeVehicle) {
+          this.vehicleSystem._exit({ character, level: this.levelSystem });
+        }
+        const entered = await this.vehicleSystem.enterVehicle(character, target);
+        return {
+          entered,
+          vehicleKind: target.vehicleKind ?? 'car',
+          animationState: character.vehicle?.animationState ?? null,
+          handTargets: Boolean(character.vehicle?.handTargets?.left && character.vehicle?.handTargets?.right),
+          footTargets: Boolean(character.vehicle?.footTargets?.left && character.vehicle?.footTargets?.right),
+        };
+      },
       setHorseYaw: (degrees = 0) => {
         if (this.horseSystem.group) {
           this.horseSystem.group.rotation.set(
@@ -2435,6 +2589,9 @@ export class GameRuntime {
           };
         });
       },
+      startRallyCinematicDemo: () => this.startRallyCinematicDemo(),
+      stopRallyCinematicDemo: () => this.stopRallyCinematicDemo(),
+      toggleRallyCinematicDemo: () => this.toggleRallyCinematicDemo(),
     };
     globalThis.__DREAMFALL_DEBUG__ = this.debugBridge;
   }
@@ -2456,6 +2613,7 @@ export class GameRuntime {
     this.horseSystem.dispose();
     this.vehicleDamageSystem.dispose();
     this.vehicleSystem.dispose();
+    this.rallyCinematicDemo?.stop?.();
     this.ledgeHangSystem.dispose();
     this.characterSystem.dispose();
     this.levelSystem.dispose();
@@ -2469,6 +2627,22 @@ export class GameRuntime {
       delete globalThis.__DREAMFALL_DEBUG__;
     }
   }
+}
+
+function hideUnsafeAsyncCompileObjects(scene) {
+  const hidden = [];
+  scene.traverse((object) => {
+    const materials = Array.isArray(object.material) ? object.material : [object.material];
+    const unsafe = materials.some((material) =>
+      material?.type === 'MeshSSSNodeMaterial'
+      || material?.constructor?.name === 'MeshSSSNodeMaterial');
+    if (!unsafe || object.visible === false) return;
+    hidden.push(object);
+    object.visible = false;
+  });
+  return () => {
+    for (const object of hidden) object.visible = true;
+  };
 }
 
 function isRootMotionCameraSmoothingActive(character) {

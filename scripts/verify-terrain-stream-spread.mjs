@@ -33,14 +33,26 @@ const pass = (msg) => console.log('  ✓', msg);
 // stress the cap harder by crossing a boundary every few frames).
 let maxBuilt = 0;
 const pos = new THREE.Vector3(0, 0, 0);
+const meshCoordinateByUuid = new Map();
 for (let frame = 0; frame < 200; frame += 1) {
   pos.x += 8;
   const changes = level.updateStreaming(pos);
-  const built = changes?.addedTerrainChunks?.length ?? 0;
+  // addedTerrainChunks also reports already-live chunks entering the physics
+  // radius, so it can exceed the visual build budget without building anything.
+  const built = changes?.builtTerrainChunks ?? 0;
   if (built > maxBuilt) maxBuilt = built;
   if (built > CAP) fail(`frame ${frame}: built ${built} chunks (> cap ${CAP})`);
+  for (const child of level.group.children) {
+    if (!child.name?.startsWith('TerrainChunk t:')) continue;
+    const previousName = meshCoordinateByUuid.get(child.uuid);
+    if (previousName && previousName !== child.name) {
+      fail(`frame ${frame}: terrain mesh ${child.uuid} retargeted from ${previousName} to ${child.name}`);
+    }
+    meshCoordinateByUuid.set(child.uuid, child.name);
+  }
 }
 if (maxBuilt <= CAP) pass(`drive sweep: max chunks built in one frame = ${maxBuilt} (cap ${CAP})`);
+if (failures === 0) pass('drive sweep: streamed coordinates never reuse a prior Mesh/GPU buffer identity');
 
 // ---- 2. Ring still fills when stationary ----
 // Park well away from anything built above and let streaming drain for enough
@@ -55,7 +67,7 @@ const live = level.snapshot().liveChunks;
 let missingInRing = 0;
 // Re-run one update and confirm it has nothing new to add (ring already full).
 const after = level.updateStreaming(park);
-const stillAdding = after?.addedTerrainChunks?.length ?? 0;
+const stillAdding = after?.builtTerrainChunks ?? 0;
 if (stillAdding > 0) missingInRing = stillAdding;
 
 if (missingInRing === 0) {

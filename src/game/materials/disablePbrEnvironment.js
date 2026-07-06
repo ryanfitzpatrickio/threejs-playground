@@ -13,9 +13,9 @@ let blackEnvironmentMap = null;
 
 function getBlackEnvironmentMap() {
   if (blackEnvironmentMap) return blackEnvironmentMap;
-  const data = new Uint8Array([0, 0, 0]);
+  const data = new Uint8Array([0, 0, 0, 255]);
   const faces = Array.from({ length: 6 }, () => {
-    const face = new THREE.DataTexture(data, 1, 1, THREE.RGBFormat);
+    const face = new THREE.DataTexture(data, 1, 1, THREE.RGBAFormat);
     face.needsUpdate = true;
     return face;
   });

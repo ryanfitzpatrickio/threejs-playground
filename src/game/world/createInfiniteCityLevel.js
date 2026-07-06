@@ -258,6 +258,10 @@ export function createInfiniteCityLevel(qualityPreset = {}, { chunkFilter = null
         : MAX_MESH_REVEALS_PER_UPDATE;
       revealChunkMeshes(current, revealBudget);
 
+      // Full geometry attached but skeleton mesh still in scene — can happen if
+      // skeleton registration raced the attach queue; scrub every frame.
+      reconcileSkeletonPlaceholders();
+
       // Drain full-chunk attach queue (1 per frame to avoid geometry spike).
       attachCompletedChunks({ addedChunks: addedChunksScratch, debugVisible, current, maxCount: MAX_CHUNK_ATTACHMENTS_PER_UPDATE });
 
@@ -473,11 +477,8 @@ export function createInfiniteCityLevel(qualityPreset = {}, { chunkFilter = null
       }
       const request = [...pendingChunks.values()].find((entry) => entry.id === id);
 
-      if (!request) {
-        return;
-      }
-
       if (type === 'skeleton') {
+        if (!request) return;
         // Queue skeleton for throttled processing in updateStreaming rather than
         // handling synchronously — avoids an onmessage burst creating 24 BoxGeometry
         // sets and pushing hundreds of colliders between a single pair of frames.
@@ -485,11 +486,23 @@ export function createInfiniteCityLevel(qualityPreset = {}, { chunkFilter = null
         return;
       }
 
-      // Complete (or error) phase.
-      const key = chunkKey(request.chunkX, request.chunkZ);
-      pendingChunks.delete(key);
+      const key = request
+        ? chunkKey(request.chunkX, request.chunkZ)
+        : payload?.chunkKey ?? null;
+
+      if (!request && !key) {
+        return;
+      }
+
+      if (request) {
+        pendingChunks.delete(key);
+      } else if (key && chunks.has(key)) {
+        // Late duplicate completion after the chunk already attached.
+        return;
+      }
 
       if (error) {
+        if (!request) return;
         console.warn('City chunk worker failed, falling back to main thread.', key, error.message);
         const fallback = createGeneratorCityLevel({
           seed: seedForChunk(request.chunkX, request.chunkZ, request.district?.zoneSeed),
@@ -513,7 +526,9 @@ export function createInfiniteCityLevel(qualityPreset = {}, { chunkFilter = null
       // transferred buffers + mesh reconstruction happens LATER in
       // attachCompletedChunks (throttled to MAX=1 per frame). Not in this
       // onmessage handler, avoiding burst.
-      completedChunks.push(payload);
+      if (payload && key && !chunks.has(key)) {
+        completedChunks.push(payload);
+      }
     };
     cityWorker.onerror = (event) => {
       console.warn('City chunk worker error.', event.message);
@@ -538,13 +553,22 @@ export function createInfiniteCityLevel(qualityPreset = {}, { chunkFilter = null
     }
   }
 
+  function reconcileSkeletonPlaceholders() {
+    for (const key of skeletonGroups.keys()) {
+      if (chunks.has(key)) cleanupSkeleton(key);
+    }
+  }
+
   // Register skeleton box colliders and show a wireframe placeholder group.
   // Returns the tagged colliders so the caller can forward them to Rapier via addedColliders,
   // or null if the chunk is already loaded / outside unload radius.
   function registerSkeleton(request, rawColliders, { layout, floorW, floorD, originX, originZ, cityZone }, current) {
     const key = chunkKey(request.chunkX, request.chunkZ);
 
-    if (chunks.has(key)) return null;
+    if (chunks.has(key)) {
+      cleanupSkeleton(key);
+      return null;
+    }
 
     // Skip if the player has already moved away.
     if (
@@ -553,6 +577,9 @@ export function createInfiniteCityLevel(qualityPreset = {}, { chunkFilter = null
     ) {
       return null;
     }
+
+    // Replace any stale placeholder for this key before adding a new one.
+    if (skeletonGroups.has(key)) cleanupSkeleton(key);
 
     const tagged = rawColliders.map((c) => ({ ...c, chunkKey: key }));
     colliderIndex.addChunk(key, tagged);
@@ -637,7 +664,12 @@ export function createInfiniteCityLevel(qualityPreset = {}, { chunkFilter = null
     let attached = 0;
 
     while (completedChunks.length > 0 && attached < maxCount) {
-      const payload = completedChunks.shift();
+      const pickIndex = pickCompletedChunkIndex(current);
+      if (pickIndex < 0) {
+        break;
+      }
+
+      const payload = completedChunks.splice(pickIndex, 1)[0];
       const markId = `city-attach-${payload.chunkKey ?? attachCount}`;
       performance.mark(`${markId}-start`);
       const attachStartedAt = performance.now();
@@ -672,10 +704,46 @@ export function createInfiniteCityLevel(qualityPreset = {}, { chunkFilter = null
       attached += 1;
       finishAttachMeasure();
     }
+
+    // Drop one far-ahead payload per frame so a backlog of out-of-radius
+    // completions cannot block the in-radius queue forever.
+    if (attached === 0 && completedChunks.length > 0) {
+      discardOneOutOfRadiusCompletedChunk(current);
+    }
+  }
+
+  function pickCompletedChunkIndex(current) {
+    let bestIndex = -1;
+    let bestDist2 = Infinity;
+    for (let index = 0; index < completedChunks.length; index += 1) {
+      const coords = payloadChunkCoords(completedChunks[index]);
+      if (!isChunkWithinUnloadRadius(coords, current)) continue;
+      const dx = coords.chunkX - current.x;
+      const dz = coords.chunkZ - current.z;
+      const dist2 = dx * dx + dz * dz;
+      if (dist2 < bestDist2) {
+        bestDist2 = dist2;
+        bestIndex = index;
+      }
+    }
+    return bestIndex;
+  }
+
+  function discardOneOutOfRadiusCompletedChunk(current) {
+    for (let index = 0; index < completedChunks.length; index += 1) {
+      const coords = payloadChunkCoords(completedChunks[index]);
+      if (isChunkWithinUnloadRadius(coords, current)) continue;
+      const payload = completedChunks.splice(index, 1)[0];
+      const prepared = payload.group ? payload : createGeneratorCityChunkFromPayload(payload);
+      prepared.dispose?.();
+      cleanupSkeleton(prepared.chunkKey ?? coords.chunkKey);
+      return;
+    }
   }
 
   function addPreparedChunk(chunk) {
     if (chunks.has(chunk.chunkKey)) {
+      cleanupSkeleton(chunk.chunkKey);
       chunk.dispose?.();
       return null;
     }
@@ -959,6 +1027,29 @@ function rectInsideDistrictZone(zone, x, z, width, depth) {
 
 function chunkKey(chunkX, chunkZ) {
   return `${chunkX}:${chunkZ}`;
+}
+
+function payloadChunkCoords(payload) {
+  if (Number.isFinite(payload?.chunkX) && Number.isFinite(payload?.chunkZ)) {
+    return {
+      chunkKey: payload.chunkKey ?? chunkKey(payload.chunkX, payload.chunkZ),
+      chunkX: payload.chunkX,
+      chunkZ: payload.chunkZ,
+    };
+  }
+  const group = payload?.group;
+  if (group?.userData) {
+    return {
+      chunkKey: group.userData.cityChunkKey ?? payload?.chunkKey ?? '0:0',
+      chunkX: group.userData.cityChunkX ?? 0,
+      chunkZ: group.userData.cityChunkZ ?? 0,
+    };
+  }
+  return {
+    chunkKey: payload?.chunkKey ?? '0:0',
+    chunkX: 0,
+    chunkZ: 0,
+  };
 }
 
 export function seedForChunk(chunkX, chunkZ, zoneSeed = CITY_SEED) {

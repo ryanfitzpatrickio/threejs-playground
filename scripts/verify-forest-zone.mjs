@@ -15,7 +15,8 @@ import {
 } from '../src/game/world/forest/forestCorridor.js';
 import { FOREST_CORRIDOR_MARGIN } from '../src/game/world/forest/forestPlacement.js';
 import { isForestCorridorExcluded } from '../src/game/world/createZoneForest.js';
-import { parseForestSpeciesMix } from '../src/game/world/forest/forestSpecies.js';
+import { parseForestSpeciesMix, normalizeForestSpecies } from '../src/game/world/forest/forestSpecies.js';
+import { computeFoliageInstancingBudget } from '../src/game/world/forest/forestFoliageBudget.js';
 
 const flatGround = () => 12;
 
@@ -80,6 +81,19 @@ const mix = parseForestSpeciesMix('pine:0.6,douglas-fir:0.4');
 assert.equal(mix.length, 2);
 assert.equal(mix[0].key, 'pine');
 
+assert.equal(normalizeForestSpecies('noble-fir'), 'noble-fir');
+assert.equal(normalizeForestSpecies('giant-sequoia'), 'giant-sequoia');
+assert.equal(normalizeForestSpecies('unknown-tree'), 'pine');
+assert.equal(parseForestSpeciesMix('red-spruce:0.5,sitka-spruce:0.5').length, 2);
+
+// Foliage instancing must survive archetypes with hundreds of leaf cards per tree.
+const denseArchetype = computeFoliageInstancingBudget(897, 200);
+assert.ok(denseArchetype, 'dense foliage budget is non-null');
+assert.ok(denseArchetype.maxInstances > 0, 'dense foliage budget allocates instances');
+assert.ok(denseArchetype.k < 897, 'dense foliage subsamples leaf cards');
+assert.equal(denseArchetype.trees * denseArchetype.k, denseArchetype.maxInstances);
+assert.ok(denseArchetype.maxInstances <= 512, 'dense foliage respects WebGPU cap');
+
 // Corridor exclusion
 assert.equal(isForestZoneCorridorExcluded(50, 50, road, null, FOREST_CORRIDOR_MARGIN), true,
   'forest corridor margin rejects road center');
@@ -141,5 +155,33 @@ for (let i = 0; i < placements2.length; i += 1) {
   assert.equal(placements2[i].z, placements3[i].z);
   assert.equal(placements2[i].archetypeIndex, placements3[i].archetypeIndex);
 }
+
+// 1000 trees/ha across 19 one-hectare plots — the dense-plantation target.
+// Each plot carries its OWN density now (the old zones[0]-global form silently
+// flattened every plot to zones[0]'s rate, so per-plot density didn't compose).
+const PLOT_HA = 100; // 100×100 m = 1 ha
+const densePlots = Array.from({ length: 19 }, (_, i) => ({
+  id: `forest_plot_${i}`,
+  type: 'forest',
+  shape: 'rect',
+  rect: {
+    minX: i * PLOT_HA,
+    minZ: 0,
+    maxX: i * PLOT_HA + PLOT_HA,
+    maxZ: PLOT_HA,
+  },
+  props: { species: 'pine', density: 1000, seed: 100 + i },
+}));
+const denseTarget = computeForestPlacementTarget(densePlots, 24000);
+assert.equal(denseTarget, 19000, '19 plots × 1ha × 1000 trees/ha = 19000 placements');
+assert.ok(denseTarget <= 24000, 'dense target respects placement cap');
+
+// Per-plot density composes: a 1000/ha plot next to a 150/ha plot sums, instead
+// of both inheriting zones[0].
+const mixedTarget = computeForestPlacementTarget(
+  [{ ...testZone, props: { density: 1000, seed: 1 } }, testZone],
+  100000,
+);
+assert.equal(mixedTarget, 1150, 'per-zone density sums (1000 + 150), not zones[0]-global');
 
 console.log(`Forest zone verification passed (${placements.length} placements checked).`);

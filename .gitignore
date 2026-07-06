@@ -7,6 +7,16 @@ npm-debug.log*
 # Local editor / project data (SQLite DB, autosaves, authored maps, blueprints, garage)
 # These are personal dev artifacts. See data/.gitkeep for notes.
 data/
+
+# Forest needle PBR lives under data/forest-leaves/ (npm run pull:forest-textures).
+# Extended species bark folders under public/ are also local-only.
+public/assets/textures/forest/*/
+!public/assets/textures/forest/pine/
+!public/assets/textures/forest/douglas-fir/
+!public/assets/textures/forest/loblolly/
+public/assets/textures/forest/pine/*_needle_*
+public/assets/textures/forest/douglas-fir/*_needle_*
+public/assets/textures/forest/loblolly/*_needle_*
 !data/.gitkeep
 
 # Internal design docs, plans, and analysis notes (kept locally only)

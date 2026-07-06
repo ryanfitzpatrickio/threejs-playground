@@ -1,52 +1,11 @@
 import { placementToTrunkCollider } from './forestColliders.js';
+import { buildForestSpatialIndex, queryForestSpatialIndex } from './forestSpatialIndex.js';
 
 const DEFAULT_POOL_SIZE = 20;
 const DEFAULT_RADIUS = 32;
 const CELL_SIZE = 10;
 const UPDATE_INTERVAL_MS = 120;
 const MOVE_THRESHOLD_SQ = 16;
-
-function cellKey(cx, cz) {
-  return `${cx},${cz}`;
-}
-
-function buildPlacementGrid(placements, cellSize = CELL_SIZE) {
-  const grid = new Map();
-  for (let i = 0; i < placements.length; i += 1) {
-    const p = placements[i];
-    const cx = Math.floor(p.x / cellSize);
-    const cz = Math.floor(p.z / cellSize);
-    const key = cellKey(cx, cz);
-    const list = grid.get(key) ?? [];
-    list.push(i);
-    grid.set(key, list);
-  }
-  return grid;
-}
-
-function queryNearby(grid, x, z, radius, placements) {
-  const r = Math.ceil(radius / CELL_SIZE);
-  const cx0 = Math.floor(x / CELL_SIZE);
-  const cz0 = Math.floor(z / CELL_SIZE);
-  const radiusSq = radius * radius;
-  const out = [];
-  for (let dz = -r; dz <= r; dz += 1) {
-    for (let dx = -r; dx <= r; dx += 1) {
-      const indices = grid.get(cellKey(cx0 + dx, cz0 + dz));
-      if (!indices) continue;
-      for (const index of indices) {
-        const p = placements[index];
-        const ddx = p.x - x;
-        const ddz = p.z - z;
-        if (ddx * ddx + ddz * ddz <= radiusSq) {
-          out.push({ index, distSq: ddx * ddx + ddz * ddz });
-        }
-      }
-    }
-  }
-  out.sort((a, b) => a.distSq - b.distSq);
-  return out;
-}
 
 /**
  * Small recycled trunk-collider pool that follows the vehicle off-road (M7 stretch).
@@ -65,7 +24,7 @@ export function createForestOffRoadPool(placements, {
     };
   }
 
-  const grid = buildPlacementGrid(placements);
+  const grid = buildForestSpatialIndex(placements, { cellSize: CELL_SIZE });
   const slots = new Array(poolSize).fill(-1);
   const _lastPos = { x: 1e9, z: 0 };
   let lastUpdateAt = 0;
@@ -97,7 +56,8 @@ export function createForestOffRoadPool(placements, {
       _lastPos.x = position.x;
       _lastPos.z = position.z;
 
-      const nearby = queryNearby(grid, position.x, position.z, radius, placements);
+      const nearby = queryForestSpatialIndex(grid, position.x, position.z, radius, { withDistance: true });
+      nearby.sort((a, b) => a.distSq - b.distSq);
       const chosen = [];
       for (let i = 0; i < nearby.length && chosen.length < poolSize; i += 1) {
         const { index } = nearby[i];

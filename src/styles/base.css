@@ -1446,6 +1446,37 @@ select {
   pointer-events: auto;
 }
 
+.garage-type-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid rgb(208 161 92 / 28%);
+  border-radius: 7px;
+  background: rgb(8 10 11 / 72%);
+}
+
+.garage-type-tabs button {
+  padding: 7px 12px;
+  border: 0;
+  border-radius: 5px;
+  color: #b8b3aa;
+  background: transparent;
+  cursor: pointer;
+}
+
+.garage-type-tabs button.active {
+  color: #171411;
+  background: #d0a15c;
+}
+
+.garage-paint-chip {
+  display: inline-block;
+  width: 22px;
+  height: 10px;
+  border: 1px solid rgb(255 255 255 / 35%);
+  border-radius: 999px;
+}
+
 .garage-button {
   min-height: 36px;
   padding: 0 15px;
@@ -1615,6 +1646,81 @@ select {
 .garage-checkbox small { color: rgb(244 239 228 / 40%); font-size: 9px; }
 .garage-surface-mode-list { display: grid; gap: 8px; margin-top: 10px; }
 .garage-surface-mode-card { width: 100%; text-align: left; }
+.garage-mesh-parts { margin-top: 14px; }
+.garage-mesh-parts h3 {
+  margin: 0 0 4px;
+  color: rgb(244 239 228 / 62%);
+  font-size: 10px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+.garage-mesh-parts-hint { margin: 0 0 8px; color: rgb(244 239 228 / 38%); font-size: 9px; line-height: 1.35; }
+.garage-mesh-parts-list {
+  display: grid;
+  gap: 6px;
+  max-height: 220px;
+  padding-right: 4px;
+  overflow: auto;
+}
+.garage-mesh-part-row {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) 118px;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 8px;
+  border: 1px solid rgb(244 239 228 / 8%);
+  border-radius: 6px;
+  background: rgb(0 0 0 / 18%);
+}
+.garage-mesh-part-name { display: grid; gap: 2px; min-width: 0; }
+.garage-mesh-part-name strong {
+  overflow: hidden;
+  font-size: 10px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.garage-mesh-part-name small { color: rgb(244 239 228 / 38%); font-size: 8px; }
+.garage-mesh-part-row select {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid rgb(244 239 228 / 14%);
+  border-radius: 4px;
+  color: #f4efe4;
+  font-size: 9px;
+  background: rgb(0 0 0 / 35%);
+}
+
+.garage-target-btn {
+  width: 18px;
+  height: 18px;
+  font-size: 11px;
+  line-height: 1;
+  padding: 0;
+  margin: 0;
+  border: 1px solid rgb(244 239 228 / 16%);
+  border-radius: 3px;
+  background: rgb(0 0 0 / 30%);
+  color: #c8d2b8;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 80ms, border-color 80ms, color 80ms, box-shadow 80ms;
+}
+.garage-target-btn:hover {
+  background: #2a3f2a;
+  border-color: #5a8a5a;
+  color: #aaffaa;
+}
+.garage-target-btn.active,
+.garage-target-btn:active {
+  background: #3a5f3a;
+  border-color: #88cc88;
+  color: #ccffcc;
+  box-shadow: 0 0 0 1px rgba(120, 200, 120, 0.35) inset;
+}
 .garage-save-row { display: grid; gap: 8px; margin-top: 18px; }
 .garage-save-row p { min-height: 28px; margin: 0; color: rgb(244 239 228 / 40%); font-size: 9px; line-height: 1.4; }
 .garage-orbit-hint { position: absolute; bottom: 25px; left: 50%; z-index: 2; color: rgb(244 239 228 / 38%); font-size: 9px; letter-spacing: 1.2px; text-transform: uppercase; transform: translateX(-50%); pointer-events: none; }
@@ -2032,6 +2138,22 @@ select {
 
 .dbg-row:hover {
   background: rgb(247 244 232 / 5%);
+}
+
+button.dbg-row.dbg-action {
+  width: 100%;
+  border: 1px solid rgb(247 244 232 / 18%);
+  background: rgb(247 244 232 / 6%);
+  color: rgb(247 244 232 / 85%);
+  font: inherit;
+  font-size: 10.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.dbg-row.dbg-action:hover {
+  background: rgb(143 211 154 / 14%);
+  border-color: rgb(143 211 154 / 35%);
 }
 
 .dbg-check {

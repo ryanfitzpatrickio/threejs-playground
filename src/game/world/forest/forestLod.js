@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { forestBarkMaterial } from './seedthree/barkMaterial.js';
 import { WIND_DIR } from './seedthree/wind.js';
+import { cloneImpostorFadeMaterial } from './seedthree/impostor.js';
+import { buildForestSpatialIndex, queryForestSpatialIndex } from './forestSpatialIndex.js';
 
 const _pos = new THREE.Vector3();
 const _q = new THREE.Quaternion();
@@ -8,9 +10,34 @@ const _scale = new THREE.Vector3();
 const _mtx = new THREE.Matrix4();
 const _yAxis = new THREE.Vector3(0, 1, 0);
 
-const REBIN_INTERVAL_MS = 400;
-const REBIN_MOVE_SQ = 100; // 10 m
+const REBIN_INTERVAL_MS = 200;
+const REBIN_MOVE_SQ = 225; // 15 m
 const DORMANT_MARGIN = 100; // m beyond farRadius before hiding the whole forest group
+// Node-based instanced tree materials can exhaust WebGPU's vertex-buffer slots.
+// Three then exposes the instance data through a uniform buffer, whose binding
+// limit is commonly 64 KiB. A 512-entry mat4 buffer is 32 KiB and leaves safe
+// headroom for the forest's additional per-instance attributes.
+import {
+  computeFoliageInstancingBudget,
+  sampleFoliageSourceIndex,
+  MAX_FOREST_FOLIAGE_INSTANCES,
+} from './forestFoliageBudget.js';
+import { createHeroForestPool } from './forestHero.js';
+
+const MAX_INSTANCES_PER_DRAW = MAX_FOREST_FOLIAGE_INSTANCES;
+
+function smoothstep01(value) {
+  const t = Math.min(1, Math.max(0, value));
+  return t * t * (3 - 2 * t);
+}
+
+function hasSameSlots(previous, next) {
+  if (!previous || previous.length !== next.length) return false;
+  for (let index = 0; index < next.length; index += 1) {
+    if (previous[index] !== next[index]) return false;
+  }
+  return true;
+}
 
 function touchInstancedBounds(im) {
   if (!im?.isInstancedMesh || im.count <= 0) return;
@@ -46,6 +73,7 @@ function stripInstancedAttributes(geo) {
 }
 
 function cloneLodInstancedMesh(sourceChild, capacity, bark = false) {
+  capacity = Math.min(capacity, MAX_INSTANCES_PER_DRAW);
   const geo = sourceChild.geometry.clone();
   stripInstancedAttributes(geo);
   geo.userData.forestClone = true;
@@ -60,8 +88,10 @@ function cloneLodInstancedMesh(sourceChild, capacity, bark = false) {
 }
 
 function cloneFoliageInstancedMesh(sourceChild, treeCapacity) {
-  const k = sourceChild.count;
-  const maxInstances = treeCapacity * k;
+  const budget = computeFoliageInstancingBudget(sourceChild.count, treeCapacity);
+  if (!budget) return null;
+
+  const { trees: treeCapacityFit, k, srcK, maxInstances } = budget;
   const geo = sourceChild.geometry.clone();
   stripInstancedAttributes(geo);
   geo.userData.forestClone = true;
@@ -73,7 +103,7 @@ function cloneFoliageInstancedMesh(sourceChild, treeCapacity) {
   for (const [name, attr] of Object.entries(sourceChild.geometry.attributes)) {
     if (!attr.isInstancedBufferAttribute || rebuilt.has(name)) continue;
     const arr = new attr.array.constructor(maxInstances * attr.itemSize);
-    for (let slot = 0; slot < treeCapacity; slot += 1) {
+    for (let slot = 0; slot < treeCapacityFit; slot += 1) {
       arr.set(attr.array.subarray(0, k * attr.itemSize), slot * k * attr.itemSize);
     }
     geo.setAttribute(name, new THREE.InstancedBufferAttribute(arr, attr.itemSize));
@@ -82,10 +112,10 @@ function cloneFoliageInstancedMesh(sourceChild, treeCapacity) {
   im.frustumCulled = true;
   im.userData.noCollision = true;
   im.userData.k = k;
-  im.userData.treeCapacity = treeCapacity;
+  im.userData.treeCapacity = treeCapacityFit;
   im.userData.srcMatrices = new Float32Array(k * 16);
   for (let j = 0; j < k; j += 1) {
-    sourceChild.getMatrixAt(j, _mtx);
+    sourceChild.getMatrixAt(sampleFoliageSourceIndex(srcK, k, j), _mtx);
     im.userData.srcMatrices.set(_mtx.elements, j * 16);
   }
   im.count = 0;
@@ -122,6 +152,11 @@ function writeFoliageInstances(im, slots) {
   const apos = im.geometry.attributes.aAnchorPos;
   const { limit, maxTrees } = foliageInstanceLimit(im);
   const activeSlots = slots.length > maxTrees ? slots.slice(0, maxTrees) : slots;
+  if (hasSameSlots(im.userData.assignedSlots, activeSlots)) {
+    im.count = activeSlots.length * k;
+    im.visible = activeSlots.length > 0;
+    return;
+  }
   const slotMtx = new THREE.Matrix4();
   const cardMtx = new THREE.Matrix4();
   const outMtx = new THREE.Matrix4();
@@ -151,11 +186,12 @@ function writeFoliageInstances(im, slots) {
   wvec.needsUpdate = true;
   apos.needsUpdate = true;
   im.count = flat;
+  im.userData.assignedSlots = activeSlots.slice();
   im.instanceMatrix.needsUpdate = true;
   touchInstancedBounds(im);
 }
 
-function addLodBuckets(group, lodGroup, capacity, castShadow, namePrefix, { includeFoliage = true } = {}) {
+function addLodBuckets(group, lodGroup, capacity, castShadow, namePrefix) {
   const buckets = { branches: null, foliage: [] };
   for (const child of lodGroup.children) {
     if (child.isMesh && !child.isInstancedMesh) {
@@ -164,10 +200,15 @@ function addLodBuckets(group, lodGroup, capacity, castShadow, namePrefix, { incl
       buckets.branches.castShadow = castShadow;
       buckets.branches.receiveShadow = castShadow;
       group.add(buckets.branches);
-    } else if (child.isInstancedMesh && includeFoliage) {
+    } else if (child.isInstancedMesh) {
       const im = cloneFoliageInstancedMesh(child, capacity);
+      if (!im) continue;
       im.name = `${namePrefix} Foliage`;
-      // Foliage cards are the dominant GPU cost — never cast or receive shadows.
+      // Cluster foliage NEVER shadows: it sits in WebGPU's >8-vertex-buffer
+      // uniform-fallback regime, and rendering its SSS node material (with the
+      // wind positionNode) through a depth/shadow pass poisoned the command
+      // buffer (GPUValidationError). Hero foliage (vertex-buffer path) is the
+      // only opt-in shadow caster — see forestHero.js / forestFoliageShadows.
       im.castShadow = false;
       im.receiveShadow = false;
       buckets.foliage.push(im);
@@ -177,10 +218,48 @@ function addLodBuckets(group, lodGroup, capacity, castShadow, namePrefix, { incl
   return buckets;
 }
 
+function addBillboardBuckets(state, entry) {
+  const archetype = entry.archetype;
+  if (!archetype.impostorGroup || entry.billboards.length) return false;
+  entry.impostorHalfH = archetype.impostorHalfH ?? 8;
+  const cards = archetype.impostorGroup.children.filter((child) => child.userData?.isBillboardCard);
+  for (const card of cards) {
+    const material = cloneImpostorFadeMaterial(card.material);
+    for (let batchStart = 0; batchStart < entry.capacity; batchStart += MAX_INSTANCES_PER_DRAW) {
+      const batchCapacity = Math.min(MAX_INSTANCES_PER_DRAW, entry.capacity - batchStart);
+      const geo = card.geometry.clone();
+      stripInstancedAttributes(geo);
+      geo.userData.forestClone = true;
+      geo.setAttribute('aImpostorFade', new THREE.InstancedBufferAttribute(
+        new Float32Array(batchCapacity), 1,
+      ));
+      const im = new THREE.InstancedMesh(geo, material, batchCapacity);
+      im.frustumCulled = true;
+      im.userData.noCollision = true;
+      im.userData.rotY = card.rotation.y;
+      im.userData.batchStart = batchStart;
+      im.count = 0;
+      im.castShadow = false;
+      im.receiveShadow = false;
+      entry.billboards.push(im);
+      state.group.add(im);
+    }
+  }
+  return entry.billboards.length > 0;
+}
+
 export function createForestLodState(archetypes, placements, options = {}) {
-  const { nearCount = 250, heroCount = 30, castShadow = false, lodMode = 'blend' } = options;
+  const {
+    nearCount = 250,
+    heroCount = 24,
+    heroRadius = 60,
+    castShadow = false,
+    foliageShadows = false,
+    lodMode = 'blend',
+  } = options;
   const realOnly = lodMode === 'real';
   const useImpostors = lodMode === 'blend';
+  const useHeroes = heroCount > 0;
 
   const slots = placements.map((p) => ({
     ...p,
@@ -198,6 +277,13 @@ export function createForestLodState(archetypes, placements, options = {}) {
   group.name = 'Forest Zone Trees';
   group.userData.noCollision = true;
 
+  // Real full-detail LOD1 hero trees for the closest placements. Renders the
+  // single-leaf SeedThree look the instanced buckets can't (512-cap → clusters).
+  const heroPool = useHeroes
+    ? createHeroForestPool(archetypes, { heroCount, castShadow, foliageShadows })
+    : null;
+  if (heroPool) group.add(heroPool.group);
+
   const archBuckets = [];
   for (const archetype of archetypes) {
     const cap = byArchetype.get(archetype.index)?.length ?? 0;
@@ -208,39 +294,26 @@ export function createForestLodState(archetypes, placements, options = {}) {
     const entry = {
       archetype,
       capacity: cap,
-      lod1: addLodBuckets(group, archetype.lod1Group, Math.min(heroCount, cap), castShadow, `Forest LOD1 ${archetype.index}`, { includeFoliage: false }),
       lod2: addLodBuckets(group, archetype.lod2Group, lod2Cap, castShadow, `Forest LOD2 ${archetype.index}`),
       billboards: [],
       impostorHalfH: archetype.impostorHalfH ?? 8,
     };
 
-    if (useImpostors && archetype.impostorGroup) {
-      const cards = archetype.impostorGroup.children.filter((c) => c.userData?.isBillboardCard);
-      for (const card of cards) {
-        const geo = card.geometry.clone();
-        stripInstancedAttributes(geo);
-        const im = new THREE.InstancedMesh(geo, card.material, cap);
-        im.frustumCulled = true;
-        im.userData.noCollision = true;
-        im.userData.rotY = card.rotation.y;
-        im.count = 0;
-        im.castShadow = false;
-        im.receiveShadow = false;
-        entry.billboards.push(im);
-        group.add(im);
-      }
-    }
+    if (useImpostors) addBillboardBuckets({ group }, entry);
     archBuckets.push(entry);
   }
 
   return {
     group,
     slots,
+    spatialIndex: buildForestSpatialIndex(slots),
     archBuckets,
+    heroPool,
     bounds: forestBoundsFromPlacements(placements),
     lodMode,
     nearCount,
     heroCount,
+    heroRadius,
     nearRadius: options.nearRadius ?? 120,
     farRadius: options.farRadius ?? 450,
     fadeBand: options.fadeBand ?? 0.15,
@@ -252,16 +325,16 @@ export function createForestLodState(archetypes, placements, options = {}) {
   };
 }
 
-function fillNearBuckets(buckets, slots, heroCount) {
-  const sorted = [...slots].sort((a, b) => a._dist - b._dist);
-  const hero = sorted.slice(0, Math.min(heroCount, sorted.length));
-  const heroSet = new Set(hero);
-  const near = sorted.filter((s) => !heroSet.has(s));
-
+function fillNearBuckets(buckets, slots) {
   const writeBark = (im, list) => {
     if (!im) return;
     const max = im.instanceMatrix.count;
     const active = list.length > max ? list.slice(0, max) : list;
+    if (hasSameSlots(im.userData.assignedSlots, active)) {
+      im.count = active.length;
+      im.visible = active.length > 0;
+      return;
+    }
     const bwv = im.geometry.attributes.aWindVec;
     const bap = im.geometry.attributes.aAnchorPos;
     active.forEach((slot, i) => {
@@ -275,40 +348,52 @@ function fillNearBuckets(buckets, slots, heroCount) {
     bwv.needsUpdate = true;
     bap.needsUpdate = true;
     im.count = active.length;
+    im.userData.assignedSlots = active.slice();
     im.instanceMatrix.needsUpdate = true;
     im.visible = active.length > 0;
     touchInstancedBounds(im);
   };
 
-  writeBark(buckets.lod1.branches, hero);
-  writeBark(buckets.lod2.branches, near);
-  const nearBand = hero.length ? [...hero, ...near] : near;
-  for (const im of buckets.lod2.foliage) writeFoliageInstances(im, nearBand);
+  writeBark(buckets.lod2.branches, slots);
+  for (const im of buckets.lod2.foliage) writeFoliageInstances(im, slots);
 
-  buckets.lod1.branches?.visible && touchInstancedBounds(buckets.lod1.branches);
-  buckets.lod2.branches?.visible && touchInstancedBounds(buckets.lod2.branches);
+  buckets.lod2.branches && (buckets.lod2.branches.visible = slots.length > 0);
+  buckets.lod2.foliage.forEach((m) => { m.visible = slots.length > 0; });
 
-  buckets.lod1.branches && (buckets.lod1.branches.visible = hero.length > 0);
-  buckets.lod2.branches && (buckets.lod2.branches.visible = near.length > 0);
-  buckets.lod2.foliage.forEach((m) => { m.visible = nearBand.length > 0; });
-
-  return { hero: hero.length, near: near.length };
+  return slots.length;
 }
 
-function fillFarBillboards(billboards, slots) {
+function fillFarBillboards(billboards, slots, state) {
   if (!billboards.length) return 0;
+  const nearWidth = Math.max(1, state.nearRadius * state.fadeBand);
+  const nearStart = state.nearRadius - nearWidth;
+  const nearEnd = state.nearRadius + nearWidth;
+  const farWidth = Math.max(1, state.farRadius * state.fadeBand);
+  const farStart = state.farRadius - farWidth;
   for (const im of billboards) {
     const max = im.instanceMatrix.count;
-    const active = slots.length > max ? slots.slice(0, max) : slots;
+    const start = im.userData.batchStart ?? 0;
+    const active = slots.slice(start, start + max);
+    const fades = im.geometry.attributes.aImpostorFade;
+    const sameSlots = hasSameSlots(im.userData.assignedSlots, active);
     active.forEach((slot, i) => {
-      _q.setFromAxisAngle(_yAxis, slot.rotY + (im.userData.rotY ?? 0));
-      _scale.set(slot.scale, slot.scale, slot.scale);
-      _pos.copy(slot.pos);
-      _mtx.compose(_pos, _q, _scale);
-      im.setMatrixAt(i, _mtx);
+      if (!sameSlots) {
+        _q.setFromAxisAngle(_yAxis, slot.rotY + (im.userData.rotY ?? 0));
+        _scale.set(slot.scale, slot.scale, slot.scale);
+        _pos.copy(slot.pos);
+        _mtx.compose(_pos, _q, _scale);
+        im.setMatrixAt(i, _mtx);
+      }
+      const nearFade = slot._hasNearLod
+        ? smoothstep01((slot._dist - nearStart) / (nearEnd - nearStart))
+        : 1;
+      const farFade = 1 - smoothstep01((slot._dist - farStart) / farWidth);
+      fades.setX(i, nearFade * farFade);
     });
+    fades.needsUpdate = true;
     im.count = active.length;
-    im.instanceMatrix.needsUpdate = true;
+    im.userData.assignedSlots = active.slice();
+    if (!sameSlots) im.instanceMatrix.needsUpdate = true;
     im.visible = active.length > 0;
     touchInstancedBounds(im);
   }
@@ -343,28 +428,74 @@ export function rebinForestLod(state, cameraPosition, { force = false } = {}) {
   state.lastRebinAt = now;
   state.lastCam.copy(cameraPosition);
 
-  const near = [];
-  const far = [];
+  let near = [];
+  let far = [];
   let culled = 0;
   const realOnly = state.lodMode === 'real';
 
-  for (const slot of state.slots) {
+  const candidates = queryForestSpatialIndex(
+    state.spatialIndex,
+    cameraPosition.x,
+    cameraPosition.z,
+    state.farRadius,
+  );
+  for (const slot of candidates) {
     slot._dist = cameraPosition.distanceTo(slot.pos);
     if (slot._dist > state.farRadius) {
       culled += 1;
-    } else if (realOnly || (slot._dist <= state.nearRadius && near.length < state.nearCount)) {
-      near.push(slot);
-    } else {
-      far.push(slot);
     }
   }
 
-  let heroTotal = 0;
+  culled += state.slots.length - candidates.length;
+
+  if (realOnly) {
+    near = candidates.filter((slot) => slot._dist <= state.farRadius);
+  } else {
+    const nearWidth = Math.max(1, state.nearRadius * state.fadeBand);
+    const nearStart = state.nearRadius - nearWidth;
+    const nearEnd = state.nearRadius + nearWidth;
+    const missingImpostors = new Set(
+      state.archBuckets
+        .filter((bucket) => bucket.billboards.length === 0)
+        .map((bucket) => bucket.archetype.index),
+    );
+    // LOD quality must follow camera distance, not deterministic placement order.
+    // Keep clusters through the overlap band so the incoming billboard reaches
+    // full opacity before the heavier representation disappears.
+    near = candidates
+      .filter((slot) => slot._dist <= nearEnd || missingImpostors.has(slot.archetypeIndex))
+      .sort((a, b) => a._dist - b._dist)
+      .slice(0, state.nearCount);
+    const nearSet = new Set(near);
+    for (const slot of candidates) {
+      if (slot._dist > state.farRadius) continue;
+      slot._hasNearLod = nearSet.has(slot);
+      if (!slot._hasNearLod || slot._dist >= nearStart) far.push(slot);
+    }
+  }
+
+  // Hero set is GLOBAL across archetypes (one shared pool of `heroCount` real
+  // trees): the closest placements within heroRadius, nearest first. Everything
+  // else inside nearRadius falls through to the instanced LOD2 cluster buckets.
+  const heroSet = new Set();
+  const heroList = [];
+  if (state.heroPool) {
+    const sortedNear = [...near].sort((a, b) => a._dist - b._dist);
+    for (const s of sortedNear) {
+      if (heroList.length >= state.heroCount) break;
+      if (s._dist > state.heroRadius) break;
+      heroList.push(s);
+      heroSet.add(s);
+    }
+    state.heroPool.assign(heroList);
+  }
+  const nearMinusHero = heroSet.size ? near.filter((s) => !heroSet.has(s)) : near;
+
   let nearTotal = 0;
   let farTotal = 0;
 
   const byArch = new Map();
-  for (const slot of near) {
+  for (const slot of nearMinusHero) {
     const list = byArch.get(slot.archetypeIndex) ?? [];
     list.push(slot);
     byArch.set(slot.archetypeIndex, list);
@@ -378,25 +509,41 @@ export function rebinForestLod(state, cameraPosition, { force = false } = {}) {
 
   for (const buckets of state.archBuckets) {
     const nearSlots = byArch.get(buckets.archetype.index) ?? [];
-    const counts = fillNearBuckets(buckets, nearSlots, state.heroCount);
-    heroTotal += counts.hero;
-    nearTotal += counts.near;
+    nearTotal += fillNearBuckets(buckets, nearSlots);
     farTotal += fillFarBillboards(
       buckets.billboards,
       farByArch.get(buckets.archetype.index) ?? [],
+      state,
     );
   }
 
   state.rebinMs = performance.now() - t0;
-  state.stats = { near: nearTotal, hero: heroTotal, far: farTotal, culled };
+  state.stats = { near: nearTotal, hero: heroList.length, far: farTotal, culled };
   return state.stats;
+}
+
+export function installForestLodImpostor(state, archetype) {
+  if (!state || state.lodMode !== 'blend' || !archetype?.impostorGroup) return false;
+  const entry = state.archBuckets.find((bucket) => bucket.archetype.index === archetype.index);
+  if (!entry) return false;
+  entry.archetype.impostorGroup = archetype.impostorGroup;
+  entry.archetype.impostorHalfH = archetype.impostorHalfH;
+  if (!addBillboardBuckets(state, entry)) return false;
+  rebinForestLod(state, state.lastCam, { force: true });
+  return true;
 }
 
 export function disposeForestLodState(state) {
   if (!state?.group) return;
+  state.heroPool?.dispose();
+  const disposedMaterials = new Set();
   state.group.traverse((obj) => {
     if (!obj.isInstancedMesh) return;
     if (obj.geometry?.userData?.forestClone) obj.geometry.dispose();
+    if (obj.material?.userData?.forestCloneMaterial && !disposedMaterials.has(obj.material)) {
+      disposedMaterials.add(obj.material);
+      obj.material.dispose();
+    }
     obj.dispose();
   });
 }

@@ -164,7 +164,7 @@ const ARMED_SPINE_STABILIZER_BONES = [
   'mixamorigNeck',
   'mixamorigHead',
 ];
-const MOUNT_CORE_LOCKED_STATES = new Set(['getOnHorse', 'ridingHorse', 'getOffHorse']);
+const MOUNT_CORE_LOCKED_STATES = new Set(['getOnHorse', 'ridingHorse', 'drivingQuad', 'getOffHorse']);
 const FOOT_GROUNDING_RELEASE_SMOOTHING = 12;
 const HANG_IK_SETTINGS = {
   handSpacing: 0.26,
@@ -313,6 +313,7 @@ const MOUNT_IK_PROFILE = {
     ],
   },
   ridingHorse: { hands: 1 },
+  drivingQuad: { hands: 1, feet: 1 },
   getOffHorse: {
     hands: [
       { start: 0, end: 0.48, from: 1, to: 1 },
@@ -714,9 +715,12 @@ export class MaraAnimationController {
     // When layered (armed), the base drives only the lower body so the upper-body
     // overlay can own the torso/arms. Otherwise play the full clip.
     const map = this.layered ? this.lowerActions : this.actions;
-    const nextAction = map.get(state) ?? this.actions.get(state);
+    // The quad has its own gameplay pose state while intentionally reusing the
+    // stable seated horse clip; its hand/foot IK profile makes the final pose ATV-specific.
+    const actionState = state === 'drivingQuad' ? 'ridingHorse' : state;
+    const nextAction = map.get(actionState) ?? this.actions.get(actionState);
     const currentSettings = this.actionSettings.get(this.currentState) ?? {};
-    const settings = this.actionSettings.get(state) ?? {};
+    const settings = this.actionSettings.get(state) ?? this.actionSettings.get(actionState) ?? {};
     const transition = currentSettings.transitions?.[state] ?? {};
     const fade = fadeSeconds ?? transition.fade ?? settings.fadeIn ?? DEFAULT_FADE_SECONDS;
 
@@ -1153,7 +1157,8 @@ export class MaraAnimationController {
   }
 
   applyMountIk(mount) {
-    if (!HANG_IK_ENABLED || !this.modelRoot || !mount?.active || !mount.handTargets) {
+    if (!HANG_IK_ENABLED || !this.modelRoot || !mount?.active
+      || (!mount.handTargets && !mount.footTargets)) {
       return;
     }
 
@@ -1167,19 +1172,22 @@ export class MaraAnimationController {
     const leftHand = resolveIkTrackWeight(profile.leftHand ?? profile.hands, normalizedTime);
     const rightHand = resolveIkTrackWeight(profile.rightHand ?? profile.hands, normalizedTime);
     const hands = Math.max(leftHand, rightHand);
+    const hasFootTargets = Boolean(mount.footTargets?.left && mount.footTargets?.right);
+    const leftFoot = hasFootTargets ? 1 : 0;
+    const rightFoot = hasFootTargets ? 1 : 0;
 
     this.lastHangIkWeights = {
       hands,
-      feet: 0,
+      feet: Math.max(leftFoot, rightFoot),
       leftHand,
       rightHand,
-      leftFoot: 0,
-      rightFoot: 0,
+      leftFoot,
+      rightFoot,
       snapHands: hands >= 0.95,
       time: normalizedTime,
     };
 
-    if (hands <= 0) {
+    if (hands <= 0 && !hasFootTargets) {
       return;
     }
 
@@ -1207,30 +1215,34 @@ export class MaraAnimationController {
       ledgeNormal.normalize();
     }
 
-    this.solveContactChain({
-      key: 'leftHand',
-      weight: leftHand,
-      targetPosition: mount.handTargets.left ?? mount.handTargets.center,
-      side: -1,
-      poleSide: -1,
-      spacing: 0,
-      yOffset: 0,
-      normalOffset: 0,
-      iterations: HANG_IK_SETTINGS.handIterations,
-      maxAngle: hands >= 0.95 ? Math.PI : null,
-    });
-    this.solveContactChain({
-      key: 'rightHand',
-      weight: rightHand,
-      targetPosition: mount.handTargets.right ?? mount.handTargets.center,
-      side: 1,
-      poleSide: -1,
-      spacing: 0,
-      yOffset: 0,
-      normalOffset: 0,
-      iterations: HANG_IK_SETTINGS.handIterations,
-      maxAngle: hands >= 0.95 ? Math.PI : null,
-    });
+    if (mount.handTargets) {
+      this.solveContactChain({
+        key: 'leftHand', weight: leftHand,
+        targetPosition: mount.handTargets.left ?? mount.handTargets.center,
+        side: -1, poleSide: -1, spacing: 0, yOffset: 0, normalOffset: 0,
+        iterations: HANG_IK_SETTINGS.handIterations,
+        maxAngle: hands >= 0.95 ? Math.PI : null,
+      });
+      this.solveContactChain({
+        key: 'rightHand', weight: rightHand,
+        targetPosition: mount.handTargets.right ?? mount.handTargets.center,
+        side: 1, poleSide: -1, spacing: 0, yOffset: 0, normalOffset: 0,
+        iterations: HANG_IK_SETTINGS.handIterations,
+        maxAngle: hands >= 0.95 ? Math.PI : null,
+      });
+    }
+    if (hasFootTargets) {
+      this.solveContactChain({
+        key: 'leftFoot', weight: leftFoot, targetPosition: mount.footTargets.left,
+        side: -1, poleSide: 1, spacing: 0, yOffset: 0, normalOffset: 0,
+        iterations: 4, maxAngle: Math.PI,
+      });
+      this.solveContactChain({
+        key: 'rightFoot', weight: rightFoot, targetPosition: mount.footTargets.right,
+        side: 1, poleSide: 1, spacing: 0, yOffset: 0, normalOffset: 0,
+        iterations: 4, maxAngle: Math.PI,
+      });
+    }
   }
 
   applyMountTorsoStabilizer(mount) {

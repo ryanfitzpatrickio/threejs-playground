@@ -1,12 +1,18 @@
 import * as THREE from 'three';
 import { forestBarkMaterial } from './seedthree/barkMaterial.js';
 import { WIND_DIR } from './seedthree/wind.js';
+import {
+  computeFoliageInstancingBudget,
+  sampleFoliageSourceIndex,
+  MAX_FOREST_FOLIAGE_INSTANCES,
+} from './forestFoliageBudget.js';
 
 const _pos = new THREE.Vector3();
 const _quat = new THREE.Quaternion();
 const _scale = new THREE.Vector3();
 const _mtx = new THREE.Matrix4();
 const _yAxis = new THREE.Vector3(0, 1, 0);
+const MAX_INSTANCES_PER_DRAW = MAX_FOREST_FOLIAGE_INSTANCES;
 
 function stripInstancedAttributes(geo) {
   for (const name of Object.keys(geo.attributes)) {
@@ -34,7 +40,8 @@ export function buildStaticForestBuckets(archetypes, placements) {
   for (const [archIdx, slots] of byArchetype) {
     const archetype = archetypes[archIdx];
     if (!archetype?.lod2Group) continue;
-    const N = slots.length;
+    const N = Math.min(slots.length, MAX_INSTANCES_PER_DRAW);
+    const activeSlots = slots.slice(0, N);
     const lod2 = archetype.lod2Group;
 
     for (const child of lod2.children) {
@@ -53,7 +60,7 @@ export function buildStaticForestBuckets(archetypes, placements) {
 
         const bwv = geo.attributes.aWindVec;
         const bap = geo.attributes.aAnchorPos;
-        slots.forEach((slot, i) => {
+        activeSlots.forEach((slot, i) => {
           _quat.setFromAxisAngle(_yAxis, slot.rotY);
           _scale.set(slot.scale, slot.scale, slot.scale);
           _pos.set(slot.x, slot.y, slot.z);
@@ -74,29 +81,32 @@ export function buildStaticForestBuckets(archetypes, placements) {
         im.instanceMatrix.needsUpdate = true;
         group.add(im);
       } else if (child.isInstancedMesh) {
-        const k = child.count;
-        const total = k * N;
+        const budget = computeFoliageInstancingBudget(child.count, N);
+        if (!budget) continue;
+        const { trees, k, srcK, maxInstances } = budget;
+        const activeSlots = slots.slice(0, trees);
         const geo = child.geometry.clone();
         stripInstancedAttributes(geo);
         geo.userData.forestClone = true;
-        const thick = new Float32Array(total);
-        for (let t = 0; t < total; t += 1) thick[t] = 0.4 + 0.6 * Math.random();
+        const thick = new Float32Array(maxInstances);
+        for (let t = 0; t < maxInstances; t += 1) thick[t] = 0.4 + 0.6 * Math.random();
         geo.setAttribute('aThickness', new THREE.InstancedBufferAttribute(thick, 1));
-        geo.setAttribute('aTreeOrigin', new THREE.InstancedBufferAttribute(new Float32Array(total * 3), 3));
-        geo.setAttribute('aWindVec', new THREE.InstancedBufferAttribute(new Float32Array(total * 3), 3));
-        geo.setAttribute('aAnchorPos', new THREE.InstancedBufferAttribute(new Float32Array(total * 3), 3));
+        geo.setAttribute('aTreeOrigin', new THREE.InstancedBufferAttribute(new Float32Array(maxInstances * 3), 3));
+        geo.setAttribute('aWindVec', new THREE.InstancedBufferAttribute(new Float32Array(maxInstances * 3), 3));
+        geo.setAttribute('aAnchorPos', new THREE.InstancedBufferAttribute(new Float32Array(maxInstances * 3), 3));
 
         const rebuilt = new Set(['aThickness', 'aTreeOrigin', 'aWindVec', 'aAnchorPos']);
         for (const [name, attr] of Object.entries(child.geometry.attributes)) {
           if (!attr.isInstancedBufferAttribute || rebuilt.has(name)) continue;
-          const arr = new attr.array.constructor(total * attr.itemSize);
-          for (let slot = 0; slot < N; slot += 1) {
-            arr.set(attr.array.subarray(0, k * attr.itemSize), slot * k * attr.itemSize);
+          const arr = new attr.array.constructor(maxInstances * attr.itemSize);
+          for (let offset = 0; offset < maxInstances; offset += k) {
+            const copyCount = Math.min(k, maxInstances - offset);
+            arr.set(attr.array.subarray(0, copyCount * attr.itemSize), offset * attr.itemSize);
           }
           geo.setAttribute(name, new THREE.InstancedBufferAttribute(arr, attr.itemSize));
         }
 
-        const im = new THREE.InstancedMesh(geo, child.material, total);
+        const im = new THREE.InstancedMesh(geo, child.material, maxInstances);
         im.name = `Forest Foliage ${archIdx}`;
         im.castShadow = false;
         im.receiveShadow = false;
@@ -106,7 +116,7 @@ export function buildStaticForestBuckets(archetypes, placements) {
 
         const snap = new Float32Array(k * 16);
         for (let j = 0; j < k; j += 1) {
-          child.getMatrixAt(j, _mtx);
+          child.getMatrixAt(sampleFoliageSourceIndex(srcK, k, j), _mtx);
           snap.set(_mtx.elements, j * 16);
         }
         im.userData.srcMatrices = snap;
@@ -118,8 +128,8 @@ export function buildStaticForestBuckets(archetypes, placements) {
         const cardMtx = new THREE.Matrix4();
         const outMtx = new THREE.Matrix4();
         let flat = 0;
-        slots.forEach((slot) => {
-          if (flat >= total) return;
+        activeSlots.forEach((slot) => {
+          if (flat >= maxInstances) return;
           _quat.setFromAxisAngle(_yAxis, slot.rotY);
           _scale.set(slot.scale, slot.scale, slot.scale);
           _pos.set(slot.x, slot.y, slot.z);
@@ -129,7 +139,7 @@ export function buildStaticForestBuckets(archetypes, placements) {
           const wvx = (WIND_DIR.x * cos + WIND_DIR.z * sin) / slot.scale;
           const wvz = (WIND_DIR.z * cos - WIND_DIR.x * sin) / slot.scale;
           for (let j = 0; j < k; j += 1) {
-            if (flat >= total) break;
+            if (flat >= maxInstances) break;
             cardMtx.fromArray(snap, j * 16);
             outMtx.multiplyMatrices(slotMtx, cardMtx);
             im.setMatrixAt(flat, outMtx);

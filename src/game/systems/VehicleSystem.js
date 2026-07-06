@@ -62,6 +62,7 @@ export class VehicleSystem {
   constructor() {
     this.vehicles = [];
     this.activeVehicle = null;
+    this.cinematicDemoActive = false;
     this.physics = null;
     this.scene = null;
     this.level = null;
@@ -186,7 +187,7 @@ export class VehicleSystem {
     let consumedMount = false;
 
     // ---- enter / exit on the mount key ----
-    if (input.mountPressed) {
+    if (input.mountPressed && !this.cinematicDemoActive) {
       if (this.activeVehicle) {
         this._exit({ character, level });
         consumedMount = true;
@@ -245,7 +246,9 @@ export class VehicleSystem {
         this.level.updateForestDrivingColliders(this.activeVehicle.group.position, this.physics);
       }
       this._updateVehicleSurface(this.activeVehicle);
-      const controls = this._controlsFromInput(this.activeVehicle, input);
+      const controls = this.cinematicDemoActive && this.activeVehicle.autopilot?.target
+        ? this.activeVehicle.computeAutopilotControls()
+        : this._controlsFromInput(this.activeVehicle, input);
       this.activeVehicle.update({
         dt: delta,
         controls,
@@ -506,7 +509,7 @@ export class VehicleSystem {
       seatIndex,
       // Reuse the horse's seated riding loop as the driving pose; arm IK pins the
       // hands to the steering wheel. Swap for a dedicated driving clip later.
-      animationState: 'ridingHorse',
+      animationState: vehicle.driverAnimationState ?? 'ridingHorse',
       // Hips-to-group-origin offset so the rider is hip-anchored in the seat
       // (matches the horse saddle). Computed from the current pose at entry.
       anchorOffset: getRiderHipAnchorOffset(character),
@@ -518,6 +521,12 @@ export class VehicleSystem {
         tangent: new THREE.Vector3(),
         normal: new THREE.Vector3(),
       },
+      footTargets: vehicle.config.seats[seatIndex]?.footGrip ? {
+          left: new THREE.Vector3(),
+          right: new THREE.Vector3(),
+          tangent: new THREE.Vector3(),
+          normal: new THREE.Vector3(),
+        } : null,
     };
     vehicle.onEnter(character, seatIndex);
     this._lockRiderToSeat(character);
@@ -535,7 +544,7 @@ export class VehicleSystem {
     vehicle.crashAudio?.resume();
     // AnimationStateSystem drives the seated state from next frame; play it now
     // so there's no one-frame gap to idle.
-    character.animationController?.play?.('ridingHorse', 0.12);
+    character.animationController?.play?.(vehicle.driverAnimationState ?? 'ridingHorse', 0.12);
   }
 
   _exit({ character, level }) {
@@ -585,6 +594,9 @@ export class VehicleSystem {
     // Refresh steering-wheel hand targets for arm IK (no-op for seats w/o a grip).
     if (state.handTargets) {
       vehicle.getSeatHandTargets?.(state.seatIndex, state.handTargets);
+    }
+    if (state.footTargets) {
+      vehicle.getSeatFootTargets?.(state.seatIndex, state.footTargets);
     }
     character.velocity?.set(0, 0, 0);
     character.verticalVelocity = 0;
@@ -650,6 +662,40 @@ export class VehicleSystem {
   }
 }
 
+const _headlightPos = new THREE.Vector3();
+const _headlightTarget = new THREE.Vector3();
+const _headlightForward = new THREE.Vector3();
+
+function resolveHeadlightPlacements(vehicle) {
+  const lenses = (vehicle.headlightLensMeshes ?? []).filter((mesh) => mesh.visible !== false);
+  if (!lenses.length) return null;
+
+  const anchors = lenses.map((mesh) => {
+    mesh.getWorldPosition(_headlightPos);
+    vehicle.group.worldToLocal(_headlightPos);
+    return _headlightPos.clone();
+  });
+  anchors.sort((a, b) => a.x - b.x);
+  if (anchors.length === 1) return [anchors[0], anchors[0]];
+  return [anchors[0], anchors[anchors.length - 1]];
+}
+
+function resolveHeadlightTarget(vehicle, lensMesh, localPosition) {
+  if (lensMesh) {
+    lensMesh.getWorldPosition(_headlightPos);
+    lensMesh.getWorldDirection(_headlightForward);
+    _headlightTarget.copy(_headlightPos).addScaledVector(_headlightForward, HEADLIGHT_TARGET_FORWARD);
+    _headlightTarget.y -= HEADLIGHT_TARGET_DROP * 0.15;
+    vehicle.group.worldToLocal(_headlightTarget);
+    return _headlightTarget.clone();
+  }
+  return new THREE.Vector3(
+    localPosition.x,
+    localPosition.y - HEADLIGHT_TARGET_DROP,
+    localPosition.z - HEADLIGHT_TARGET_FORWARD,
+  );
+}
+
 function installHeadlights(vehicle, enabled) {
   if (!vehicle?.group || vehicle.headlightRig || vehicle.domain !== VEHICLE_DOMAINS.GROUND) return;
 
@@ -659,6 +705,8 @@ function installHeadlights(vehicle, enabled) {
   rig.visible = Boolean(enabled);
   vehicle.headlights = [];
 
+  const authoredPlacements = resolveHeadlightPlacements(vehicle);
+  const authoredLenses = (vehicle.headlightLensMeshes ?? []).filter((mesh) => mesh.visible !== false);
   const lensGeometry = new THREE.CylinderGeometry(0.095, 0.095, 0.035, 20);
   lensGeometry.rotateX(Math.PI / 2);
   const lensMaterial = new THREE.MeshStandardMaterial({
@@ -669,10 +717,17 @@ function installHeadlights(vehicle, enabled) {
     metalness: 0.08,
   });
 
-  for (const side of [-1, 1]) {
-    const x = side * width * 0.43;
-    const y = Math.max(0.02, height * 0.08);
-    const z = -length * 0.52;
+  for (let index = 0; index < 2; index += 1) {
+    const side = index === 0 ? -1 : 1;
+    const fallback = new THREE.Vector3(
+      side * width * 0.43,
+      Math.max(0.02, height * 0.08),
+      -length * 0.52,
+    );
+    const position = authoredPlacements?.[index]?.clone() ?? fallback;
+    const lensMesh = authoredLenses.length
+      ? authoredLenses[Math.min(index, authoredLenses.length - 1)]
+      : null;
     const light = new THREE.SpotLight(
       HEADLIGHT_COLOR,
       HEADLIGHT_INTENSITY,
@@ -682,14 +737,17 @@ function installHeadlights(vehicle, enabled) {
       2,
     );
     light.name = side < 0 ? 'Xenon headlight left' : 'Xenon headlight right';
-    light.position.set(x, y, z);
-    light.target.position.set(x, y - HEADLIGHT_TARGET_DROP, z - HEADLIGHT_TARGET_FORWARD);
+    light.position.copy(position);
+    light.target.position.copy(resolveHeadlightTarget(vehicle, lensMesh, position));
     light.castShadow = false;
 
-    const lens = new THREE.Mesh(lensGeometry, lensMaterial);
-    lens.name = `${light.name} lens`;
-    lens.position.copy(light.position);
-    rig.add(light, light.target, lens);
+    if (!authoredLenses.length) {
+      const lens = new THREE.Mesh(lensGeometry, lensMaterial);
+      lens.name = `${light.name} lens`;
+      lens.position.copy(light.position);
+      rig.add(lens);
+    }
+    rig.add(light, light.target);
     vehicle.headlights.push(light);
   }
 

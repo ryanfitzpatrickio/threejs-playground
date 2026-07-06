@@ -131,6 +131,14 @@ export class SceneSystem {
     this._lastStreetLightPosSet = false;
   }
 
+  setViewDistance(distance) {
+    if (!Number.isFinite(distance) || distance <= 0 || !this._sceneFog) return;
+    // Keep weather fog inside the terrain camera plane. Clear weather remains
+    // unchanged and relies on camera clipping rather than forced distance fog.
+    this._sceneFog.near = Math.max(48, Math.floor(distance * 0.42));
+    this._sceneFog.far = Math.max(this._sceneFog.near + 24, Math.floor(distance * 0.88));
+  }
+
   // No-op: the clipmap shadow node follows the camera itself and manages its own
   // per-level light cameras. Kept so existing call sites stay valid. The sun stays
   // at its fixed offset, giving a constant light direction the node reads.

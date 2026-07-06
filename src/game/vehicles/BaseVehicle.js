@@ -8,15 +8,19 @@ import {
 import { prepareVehicleOverlayGeometry } from '../geometry/prepareVehicleOverlayGeometry.js';
 import {
   classifyVehicleOverlayMesh,
+  isHiddenVehicleOverlayMesh,
+  preloadObfuscationTapeAlbedo,
   resolveVehicleOverlayMaterial,
   resolveChassisSurfaceMode,
+  chassisModeUsesAuthoredTexture,
   isVehicleTailLightMesh,
   updateVehicleTailLightEmissive,
   VEHICLE_OVERLAY_PART,
 } from '../materials/createVehicleOverlayMaterials.js';
 import { createGltfLoader } from '../utils/createGltfLoader.js';
 import { EngineAudio } from './EngineAudio.js';
-import { resolveEngineSounds } from './engineProfiles.js';
+import { ElectricEngineAudio } from './ElectricEngineAudio.js';
+import { resolveEngineSounds, isElectricEngineProfile, resolveExteriorIdleUrl } from './engineProfiles.js';
 import { ExteriorIdleAudio } from './ExteriorIdleAudio.js';
 import { VehicleCrashAudio } from './VehicleCrashAudio.js';
 import { TireEffects } from './TireEffects.js';
@@ -137,6 +141,8 @@ const DEFAULT_FRAME_PARAMETERS = Object.freeze({
   // Vertical lift of the generated frame, seats, rider, and chassis overlay
   // relative to the wheel anchors (m). Wheels and physics stay put.
   offsetFromTires: -0.4,
+  // Longitudinal shift of both axles on the frame (m). Positive = rearward.
+  wheelAxleOffset: 0,
 });
 
 let nextVehicleId = 1;
@@ -275,6 +281,7 @@ export class BaseVehicle {
           offsetFromTires: config.offsetFromTires
             ?? config.ground?.offsetFromTires
             ?? DEFAULT_FRAME_PARAMETERS.offsetFromTires,
+          wheelAxleOffset: DEFAULT_FRAME_PARAMETERS.wheelAxleOffset,
         })
       : DEFAULT_FRAME_PARAMETERS;
     this.frameParameters = { ...this.frameParameterDefaults };
@@ -331,10 +338,16 @@ export class BaseVehicle {
     this.crashAudio = null;
     this.tireEffects = null;
     this.glassMeshes = [];
+    this.headlightLensMeshes = [];
     this._windshieldShattered = false;
     this.engineRpm = 920; // current simulated RPM
     this._engineIdle = 920;
     this._engineRedline = 7800;
+    if (isElectricEngineProfile(this.config.engineProfile)) {
+      this._engineIdle = 0;
+      this.engineRpm = 0;
+      this._engineRedline = 12000;
+    }
 
     // Simple automatic transmission for audio feel (multiple gears = RPM drops on shifts)
     this.currentGear = 1;
@@ -575,10 +588,7 @@ export class BaseVehicle {
 
     this.group = this.providedModel ?? this.buildMesh();
     if (!this.providedModel && this.domain === VEHICLE_DOMAINS.GROUND) {
-      await Promise.all([
-        this._attachChassisOverlay(),
-        this._attachWheelVisuals(),
-      ]);
+      await this.assembleGroundVehicleVisuals({ syncParkedWheels: true });
     }
     this.group.name = this.group.name || `Vehicle (${this.name})`;
     this.group.position.copy(this.spawnPosition);
@@ -586,7 +596,7 @@ export class BaseVehicle {
     scene?.add(this.group);
     if (this.domain === VEHICLE_DOMAINS.GROUND) {
       this.tireEffects = new TireEffects({ scene, vehicle: this });
-      this.exteriorIdleAudio = new ExteriorIdleAudio();
+      this.exteriorIdleAudio = new ExteriorIdleAudio(resolveExteriorIdleUrl(this.config.engineProfile));
       this.crashAudio = new VehicleCrashAudio();
     }
 
@@ -1134,7 +1144,7 @@ export class BaseVehicle {
   _restoreWindshieldGlass() {
     this._windshieldShattered = false;
     for (const mesh of this.glassMeshes) {
-      mesh.visible = true;
+      mesh.visible = mesh.userData.vehicleOverlayInitialVisible !== false;
     }
   }
 
@@ -1391,8 +1401,13 @@ export class BaseVehicle {
     if (this.engineAudio || this.domain !== VEHICLE_DOMAINS.GROUND) return;
     if (typeof window === 'undefined') return;
     try {
-      this.engineAudio = new EngineAudio();
-      await this.engineAudio.init(resolveEngineSounds(this.config.engineProfile));
+      if (isElectricEngineProfile(this.config.engineProfile)) {
+        this.engineAudio = new ElectricEngineAudio();
+        await this.engineAudio.init(resolveEngineSounds(this.config.engineProfile));
+      } else {
+        this.engineAudio = new EngineAudio();
+        await this.engineAudio.init(resolveEngineSounds(this.config.engineProfile));
+      }
     } catch (e) {
       console.warn('[EngineAudio] Failed to initialize:', e);
       this.engineAudio = null;
@@ -2302,6 +2317,18 @@ export class BaseVehicle {
     return out;
   }
 
+  // Optional world-space footrest targets for motorcycle/quad-style seats.
+  getSeatFootTargets(seatIndex, out) {
+    const footGrip = this.config.seats[seatIndex]?.footGrip;
+    if (!footGrip || !this.group) return null;
+    this.group.updateWorldMatrix(true, false);
+    out.left.fromArray(footGrip.left).applyMatrix4(this.group.matrixWorld);
+    out.right.fromArray(footGrip.right).applyMatrix4(this.group.matrixWorld);
+    out.tangent.copy(FORWARD).applyQuaternion(this.group.quaternion).normalize();
+    out.normal.copy(RIGHT).applyQuaternion(this.group.quaternion).normalize();
+    return out;
+  }
+
   // World-space exit position, projected to ground via the level if available.
   getExitWorldPosition(outPosition, level = null) {
     const off = this.config.exitOffset;
@@ -2425,6 +2452,25 @@ export class BaseVehicle {
   onEnter(/* character, seatIndex */) {}
   onExit(/* character, seatIndex */) {}
 
+  /**
+   * Shared garage + gameplay path: resolve wheel anchors, apply frame geometry,
+   * attach the authored shell and tire meshes, then park the wheels at the same
+   * settled suspension length used after spawn.
+   */
+  async assembleGroundVehicleVisuals({ physics = null, syncParkedWheels = true } = {}) {
+    if (this.domain !== VEHICLE_DOMAINS.GROUND || !this.group) return;
+    this._resolveWheelAnchors();
+    this._applyFrameParameters(physics);
+    await Promise.all([
+      this._attachChassisOverlay(),
+      this._attachWheelVisuals(),
+    ]);
+    this._applyFrameParameters(physics);
+    if (syncParkedWheels) {
+      this._syncParkedWheelVisuals();
+    }
+  }
+
   async _attachChassisOverlay() {
     const options = this.chassisOverlayOptions;
     if (!options?.url || !this.group) return null;
@@ -2435,21 +2481,47 @@ export class BaseVehicle {
       const overlay = gltf.scene;
       overlay.name = 'Vehicle chassis overlay';
       overlay.userData.vehicleChassisOverlay = true;
+      const chassisSurfaceMode = resolveChassisSurfaceMode(options);
+      if (chassisSurfaceMode === 'camo') {
+        await preloadObfuscationTapeAlbedo();
+      }
       const hasTripoPartNames = overlayHasTripoPartNames(overlay);
+      const partOverrides = options.partOverrides ?? null;
+      const shouldClassifyParts = Boolean(
+        hasTripoPartNames
+        || options.profileId
+        || (partOverrides && Object.keys(partOverrides).length > 0),
+      );
+      this.headlightLensMeshes = [];
       overlay.traverse((child) => {
         if (!child.isMesh) return;
         child.castShadow = true;
         child.receiveShadow = true;
 
-        const partKind = hasTripoPartNames
+        const partKind = shouldClassifyParts
           ? classifyVehicleOverlayMesh(child, options.profileId, {
             disableGlassDetection: options.disableGlassDetection === true,
+            partOverrides,
           })
           : VEHICLE_OVERLAY_PART.CHASSIS;
+        const initialVisible = child.visible
+          && !isHiddenVehicleOverlayMesh(child, options.profileId, partOverrides)
+          && partKind !== VEHICLE_OVERLAY_PART.WHEEL;
+        child.userData.vehicleOverlayInitialVisible = initialVisible;
+        child.visible = initialVisible;
+        if (!initialVisible) {
+          return;
+        }
+        if (partKind === VEHICLE_OVERLAY_PART.DEBRIS) {
+          child.userData.vehicleOverlayDetachable = true;
+        }
         child.userData.vehicleOverlayPart = partKind;
         child.userData.vehicleDamageGeometryUnique = true;
         if (partKind === VEHICLE_OVERLAY_PART.GLASS) {
           this.glassMeshes.push(child);
+        }
+        if (partKind === VEHICLE_OVERLAY_PART.HEADLIGHT_LENS) {
+          this.headlightLensMeshes.push(child);
         }
 
         if (child.geometry) {
@@ -2457,10 +2529,11 @@ export class BaseVehicle {
         }
 
         const previous = child.material;
-        const chassisSurfaceMode = resolveChassisSurfaceMode(options);
         child.material = resolveVehicleOverlayMaterial(partKind, previous, {
           chassisSurfaceMode,
           useAuthoredTexture: options.useAuthoredTexture === true,
+          profileId: options.profileId,
+          chassisPaint: options.chassisPaint ?? null,
         });
         if (partKind === VEHICLE_OVERLAY_PART.TAIL_LIGHT || isVehicleTailLightMesh(child)) {
           child.userData.vehicleTailLight = true;
@@ -2471,7 +2544,7 @@ export class BaseVehicle {
           this.wetnessMaterials.push(child.material);
         }
         disposeMaterial(previous, {
-          preserveMaps: chassisSurfaceMode === 'texture' || chassisSurfaceMode === 'mix',
+          preserveMaps: chassisModeUsesAuthoredTexture(chassisSurfaceMode),
         });
       });
       if (this.tailLightMaterials.length < 2) {
@@ -2629,6 +2702,7 @@ export class BaseVehicle {
       wheelbase: ['wheelbase', 'wheelBase'],
       rideHeight: ['rideHeight', 'heightFromGround', 'groundClearance'],
       offsetFromTires: ['offsetFromTires', 'tireOffset', 'bodyOffsetFromTires', 'frameLift'],
+      wheelAxleOffset: ['wheelAxleOffset', 'wheelPosition', 'axleOffset'],
     };
     const minDimension = new Set([
       'frameWidth', 'frameLength', 'frameHeight', 'wheelTrack', 'wheelbase', 'rideHeight',
@@ -2653,6 +2727,7 @@ export class BaseVehicle {
       wheelbase: ['wheelbase', 'wheelBase'],
       rideHeight: ['rideHeight', 'heightFromGround', 'groundClearance'],
       offsetFromTires: ['offsetFromTires', 'tireOffset', 'bodyOffsetFromTires', 'frameLift'],
+      wheelAxleOffset: ['wheelAxleOffset', 'wheelPosition', 'axleOffset'],
     };
     const next = {};
     for (const [parameter, names] of Object.entries(aliases)) {
@@ -2694,11 +2769,12 @@ export class BaseVehicle {
     if (this.domain === VEHICLE_DOMAINS.GROUND && this.wheelAnchors.length) {
       const anchorY = -physicsHeight * 0.5;
       const rideHeightDelta = (params.rideHeight ?? defaults.rideHeight) - defaults.rideHeight;
+      const axleOffset = params.wheelAxleOffset ?? 0;
       for (let i = 0; i < this.wheelAnchors.length; i += 1) {
         const anchor = this.wheelAnchors[i];
         anchor.x = (anchor.x < 0 ? -1 : 1) * params.wheelTrack * 0.5;
         anchor.y = anchorY;
-        anchor.z = (anchor.z < 0 ? -1 : 1) * params.wheelbase * 0.5;
+        anchor.z = (anchor.z < 0 ? -1 : 1) * params.wheelbase * 0.5 + axleOffset;
         const node = this.wheelMeshes[i]?.userData.suspNode;
         if (node) {
           node.position.x = anchor.x;
@@ -3344,12 +3420,17 @@ function copyRapierVector(value, target = null) {
 
 function normalizeChassisOverlayOptions(overrides = {}) {
   const chassisSurfaceMode = resolveChassisSurfaceMode(overrides);
+  const partOverrides = overrides.partOverrides && typeof overrides.partOverrides === 'object'
+    && !Array.isArray(overrides.partOverrides)
+    ? { ...overrides.partOverrides }
+    : {};
   return {
     url: overrides.url ?? DEFAULT_CHASSIS_OVERLAY.url,
     profileId: typeof overrides.profileId === 'string' ? overrides.profileId : null,
     disableGlassDetection: overrides.disableGlassDetection === true,
     chassisSurfaceMode,
-    useAuthoredTexture: chassisSurfaceMode !== 'metallic',
+    useAuthoredTexture: chassisModeUsesAuthoredTexture(chassisSurfaceMode),
+    partOverrides,
     position: vectorToArray(overrides.position, DEFAULT_CHASSIS_OVERLAY.position),
     rotationDegrees: vectorToArray(
       overrides.rotationDegrees,
@@ -3834,7 +3915,7 @@ function createRimTexture() {
 function overlayHasTripoPartNames(root) {
   let found = false;
   root.traverse((node) => {
-    if (node.name?.startsWith?.('tripo_part_')) found = true;
+    if (node.name?.startsWith?.('tripo_part_') || node.name?.startsWith?.('model_part')) found = true;
   });
   return found;
 }

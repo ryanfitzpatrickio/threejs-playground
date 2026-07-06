@@ -7,6 +7,7 @@
 export const ENGINE_PROFILE_IDS = Object.freeze({
   bac: 'bac',
   boxer: 'boxer',
+  electric: 'electric',
 });
 
 export const DEFAULT_ENGINE_PROFILE = ENGINE_PROFILE_IDS.bac;
@@ -88,9 +89,52 @@ const BOXER_ENGINE_SOUNDS = {
   },
 };
 
+const ELECTRIC_ENGINE_SOUNDS = {
+  on_low: {
+    source: '/audio/engine/electric/on-low.mp3',
+    bufferRpm: 2400,
+    volume: 0.54,
+  },
+  on_high: {
+    source: '/audio/engine/electric/on-high.mp3',
+    bufferRpm: 5600,
+    volume: 0.54,
+  },
+  inverter_low: {
+    source: '/audio/engine/electric/inverter-low.mp3',
+    bufferRpm: 2800,
+    volume: 0.4,
+  },
+  inverter_high: {
+    source: '/audio/engine/electric/inverter-high.mp3',
+    bufferRpm: 6000,
+    volume: 0.4,
+  },
+  road_hiss: {
+    source: '/audio/engine/electric/road-hiss.mp3',
+    bufferRpm: 0,
+    volume: 0.46,
+    pitch: false,
+  },
+  regen: {
+    source: '/audio/engine/electric/regen.mp3',
+    bufferRpm: 0,
+    volume: 0.5,
+    pitch: false,
+  },
+  throttle_punch: {
+    source: '/audio/engine/electric/throttle-punch.mp3',
+    oneShot: true,
+    volume: 0.78,
+  },
+};
+
+const ELECTRIC_EXTERIOR_IDLE_URL = '/audio/engine/electric/exterior-idle.mp3';
+
 export const ENGINE_PROFILES = Object.freeze({
   [ENGINE_PROFILE_IDS.bac]: BAC_ENGINE_SOUNDS,
   [ENGINE_PROFILE_IDS.boxer]: BOXER_ENGINE_SOUNDS,
+  [ENGINE_PROFILE_IDS.electric]: ELECTRIC_ENGINE_SOUNDS,
 });
 
 /** @deprecated Use resolveEngineSounds() or ENGINE_PROFILES.bac */
@@ -102,5 +146,21 @@ export function resolveEngineProfile(profileId) {
 }
 
 export function resolveEngineSounds(profileId) {
-  return ENGINE_PROFILES[resolveEngineProfile(profileId)];
+  const profile = ENGINE_PROFILES[resolveEngineProfile(profileId)];
+  return profile ?? null;
+}
+
+export function isElectricEngineProfile(profileId) {
+  return resolveEngineProfile(profileId) === ENGINE_PROFILE_IDS.electric;
+}
+
+export function resolveExteriorIdleUrl(profileId) {
+  return isElectricEngineProfile(profileId)
+    ? ELECTRIC_EXTERIOR_IDLE_URL
+    : '/audio/vehicles/car-idle-exterior.mp3';
+}
+
+/** @deprecated Use isElectricEngineProfile() — electric is sample-based now. */
+export function isProceduralEngineProfile(profileId) {
+  return false;
 }

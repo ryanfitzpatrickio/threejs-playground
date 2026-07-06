@@ -303,10 +303,31 @@ export function listExportableEntries(db, manifest = {}) {
     if (includeExportStatic && row.export_static) ids[row.collection].add(row.id);
   }
 
+  const state = readAppState(db);
+  for (const sceneId of [state.defaultWorldSceneId, state.defaultRallySceneId, state.activeSceneId]) {
+    if (sceneId && sceneId !== '__draft__') ids.worldmaps.add(sceneId);
+  }
+  ids.worldmaps.add('pine-ridge-rally');
+
+  return ids;
+}
+
+/** Blueprint ids referenced by exported world-map entity placements. */
+export function collectBlueprintIdsFromWorldmaps(db, worldmapIds) {
+  const ids = new Set();
+  for (const sceneId of worldmapIds) {
+    const entry = readStoreEntry(db, 'worldmaps', sceneId);
+    if (!entry || typeof entry !== 'object') continue;
+    const map = entry.map ?? entry;
+    for (const entity of map.entities ?? []) {
+      if (entity?.blueprintId) ids.add(entity.blueprintId);
+    }
+  }
   return ids;
 }
 
 export {
   ALLOWED_COLLECTIONS,
+  COLLECTION_DIRS,
   ID_PATTERN,
 };

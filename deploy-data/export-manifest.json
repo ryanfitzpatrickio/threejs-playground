@@ -1,0 +1,16 @@
+{
+  "worldmaps": [
+    "scene_mr50xnlt_1",
+    "pine-ridge-rally"
+  ],
+  "blueprints": [
+    "bp_mqz6l7ee_1",
+    "bp_mr2wum6d_1",
+    "bp_racetrackcenter_mr2x9jj1_1"
+  ],
+  "garage": [
+    "build-mr57kzrw-9jnl8"
+  ],
+  "includeState": true,
+  "includeExportStatic": true
+}

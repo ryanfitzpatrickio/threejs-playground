@@ -88,12 +88,26 @@ export function flattenObjectForWebGPU(root) {
 export function sanitizeWebGPUVertexBuffers(root, { warn = console.warn } = {}) {
   const removed = [];
   const repaired = [];
-  if (!root?.traverse) return { removed, repaired };
+  const uvRepaired = [];
+  if (!root?.traverse) return { removed, repaired, uvRepaired };
 
   const candidates = [];
   root.traverse((object) => candidates.push(object));
 
   for (const object of candidates) {
+    const geometry = object.geometry;
+    const position = geometry?.getAttribute?.('position');
+    if ((object.isMesh || object.isSkinnedMesh) && position && !geometry.getAttribute('uv')) {
+      // TSL materials may reference `uv()` even when an imported/generated mesh
+      // omitted the attribute. WebGPU treats that as a pipeline error (the
+      // clipmap/SSAO passes exposed it on rally overlays), unlike WebGL's
+      // permissive fallback. A zero UV is deterministic and keeps the object
+      // renderable; materials that actually need mapped detail should still
+      // author real UVs at source.
+      geometry.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(position.count * 2), 2));
+      uvRepaired.push(describeObject(object));
+    }
+
     const instanceBytes = object.isInstancedMesh
       ? (object.instanceMatrix?.array?.byteLength ?? 0)
       : null;
@@ -127,7 +141,7 @@ export function sanitizeWebGPUVertexBuffers(root, { warn = console.warn } = {}) 
     warn(`[webgpu] Rebuilt ${repaired.length} invalid skinning buffer(s): ${repaired.join(', ')}`);
   }
 
-  return { removed, repaired };
+  return { removed, repaired, uvRepaired };
 }
 
 function describeObject(object) {

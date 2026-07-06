@@ -52,7 +52,7 @@ async function run() {
 
     // M0: single archetype LOD2
     const hero = buildLod2Tree(species, 'pine:probe:0', assets);
-    scene.add(hero.lod2Group);
+    scene.add(hero.lodGroup);
 
     // M2 preview: small static grove from archetype pack
     const pack = await buildForestArchetypes({ species: 'pine', count: 3, speciesSeed: 99 });

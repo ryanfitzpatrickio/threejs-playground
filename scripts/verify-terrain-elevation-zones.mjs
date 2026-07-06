@@ -106,6 +106,26 @@ assert.ok(insideMinLowest >= 25 - 1e-6,
   `every height inside the minHeight zone is >= 25 (lowest=${insideMinLowest.toFixed(3)})`);
 ok('minHeight zone guarantees terrain never dips below the floor (mountain)');
 
+// Remote ground queries happen before streaming during fast travel/spawn. They
+// must use the shaped surface rather than ChunkManager's raw procedural noise.
+const remoteZone = {
+  id: 'remote-z1', type: 'terrain', shape: 'rect',
+  rect: { minX: 900, minZ: 900, maxX: 1100, maxZ: 1100 },
+  props: { minHeight: 25 },
+};
+const remoteLevel = createStreamingTerrainLevel({}, {
+  worldMap: { ...createEmptyWorldMap(), zones: [remoteZone] },
+});
+const remotePosition = new THREE.Vector3(1000, 0, 1000);
+const remoteBeforeStreaming = remoteLevel.getGroundHeightAt(remotePosition, 0);
+assert.ok(remoteBeforeStreaming >= 25 - 1e-6,
+  `unloaded remote terrain uses shaped elevation fallback (height=${remoteBeforeStreaming.toFixed(3)})`);
+remoteLevel.updateStreaming(remotePosition);
+const remoteAfterStreaming = remoteLevel.getGroundHeightAt(remotePosition, 0);
+assert.ok(Math.abs(remoteAfterStreaming - remoteBeforeStreaming) < 1e-5,
+  `remote height stays stable when its chunk loads (before=${remoteBeforeStreaming.toFixed(3)}, after=${remoteAfterStreaming.toFixed(3)})`);
+ok('unloaded remote queries use shaped elevation before streaming');
+
 // ---- REGRESSION: the floor must be REMAPPED into, not clamped to — a hard
 // clamp (h = max(h, floor)) pins every point whose raw noise falls below the
 // floor to the SAME value (most of a zone, since noise averages ~0), producing

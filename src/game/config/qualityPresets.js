@@ -37,6 +37,14 @@ const PRESETS = {
       // visually stable while halving the dominant office-interior pre-pass cost.
       updateInterval: 2,
     },
+    // Office-interior overrides (applied live on building entry via RendererSystem).
+    // The SSAO normal/depth pre-pass is a second full scene traversal; dense
+    // instanced furniture makes it the dominant interior cost (~7 ms in traces).
+    interior: {
+      maxPixelRatio: 1.5,
+      ssao: { enabled: false },
+      parallaxOcclusion: { enabled: false },
+    },
     // Parallax occlusion mapping (per-fragment height-field raymarch) for rally
     // road surfaces. Off on low/high — it is ultra-only fragment work, gated like
     // SSAO. See docs/silhouette-pom-plan.md.
@@ -107,7 +115,9 @@ const PRESETS = {
     shadowFar: 42,
     // Cached clipmap directional shadows (long range for the open world).
     shadowClipmap: {
-      enabled: true,
+      // Disabled until the custom shadow pass can reject UV-dependent
+      // materials safely; the standard camera-following sun shadow is stable.
+      enabled: false,
       mapSize: 1024,
       firstRadius: 12,
       scaleFactor: 3.0,
@@ -123,6 +133,9 @@ const PRESETS = {
     forestNearCount: 200,
     forestNearRadius: 145,
     forestFarRadius: 480,
+    forestHeroCount: 6,
+    forestHeroRadius: 30,
+    forestFoliageShadows: false,
 
     // InfiniteCityLevel streaming
     initialLoadRadius: 1,
@@ -219,6 +232,9 @@ const PRESETS = {
     forestNearCount: 45,
     forestNearRadius: 48,
     forestFarRadius: 220,
+    forestHeroCount: 12,
+    forestHeroRadius: 42,
+    forestFoliageShadows: false,
 
     // InfiniteCityLevel streaming
     loadRadius: 1,
@@ -258,24 +274,28 @@ const PRESETS = {
 // clipmap sampling beyond Metal's practical fragment-stage sampler budget.
 PRESETS.ultra = {
   ...PRESETS.high,
-  maxPixelRatio: 3,
+  // Above 2x, every full-screen target grows quadratically while the visual
+  // improvement is marginal on normal-density displays. More importantly for
+  // WebGPU, those larger passes amplify GPU-process command/transfer pressure.
+  maxPixelRatio: 2,
   antialias: true,
-  fogMarchSteps: 24,
+  fogMarchSteps: 12,
   ssr: {
     ...PRESETS.high.ssr,
-    resolutionScale: 0.75,
-    quality: 0.5,
+    resolutionScale: 0.5,
+    quality: 0.35,
     maxDistance: 48,
     binaryRefine: true,
   },
   ssao: {
     ...PRESETS.high.ssao,
-    samples: 12,
-    // AO every other frame: its normal/depth pre-pass is a full CPU-side scene
+    resolutionScale: 0.33,
+    samples: 8,
+    // AO every fourth frame: its normal/depth pre-pass is a full CPU-side scene
     // re-render (~7 ms/frame at ultra draw counts — the single biggest main
     // thread cost in the 2026-07 trace). AO is low-frequency ambient shading;
-    // one frame of staleness is invisible and this halves the cost.
-    updateInterval: 2,
+    // a few frames of staleness are hard to see and this quarters the cost.
+    updateInterval: 4,
   },
   // Ultra-only: raymarched relief on rally dirt/mud roads. maxLayers is baked
   // into the shader's loop bound at compile time (it cannot be faded at runtime),
@@ -292,6 +312,9 @@ PRESETS.ultra = {
   },
   environment: {
     ...PRESETS.high.environment,
+    // Bloom is multiple full-screen passes. Keep Ultra's scene/detail quality,
+    // but remove this command-heavy post branch from the gameplay hot path.
+    bloom: false,
     environmentMapSize: 256,
     aerialEnd: 1800,
     cloudCoverage: 0.5,
@@ -317,6 +340,10 @@ PRESETS.ultra = {
   shadowFar: 72,
   shadowClipmap: {
     ...PRESETS.high.shadowClipmap,
+    // The custom multi-level pass currently emits invalid UV-dependent shadow
+    // pipelines for mixed rally/forest geometry and visible clipmap seams.
+    // Fall back to the stable camera-following directional shadow map.
+    enabled: false,
     mapSize: 2048,
     firstRadius: 14,
     scaleFactor: 3.2,
@@ -347,11 +374,14 @@ PRESETS.ultra = {
   },
   wildsForestCount: 650000,
   forestRealTrees: true,
-  forestLodMode: 'real',
-  forestTreeBudget: 12000,
-  forestNearCount: 12000,
-  forestNearRadius: 520,
-  forestFarRadius: 520,
+  forestLodMode: 'blend',
+  forestTreeBudget: 24000,
+  forestNearCount: 64,
+  forestNearRadius: 140,
+  forestFarRadius: 560,
+  forestHeroCount: 24,
+  forestHeroRadius: 70,
+  forestFoliageShadows: false,
   rainMaxDrops: 20000,
   terrainLoadRadius: 10,
   terrainUnloadRadius: 11,
@@ -451,6 +481,26 @@ export function setToneMappingMode(mode) {
 /** Return the full preset object for the given level. */
 export function getQualityPreset(level) {
   return PRESETS[level] ?? PRESETS.high;
+}
+
+/**
+ * Merge scene-context overrides (office interior) onto a base quality preset.
+ * @param {object} qualityPreset
+ * @param {'exterior' | 'interior'} sceneContext
+ */
+export function mergeQualityPresetForScene(qualityPreset = {}, sceneContext = 'exterior') {
+  if (sceneContext !== 'interior') return qualityPreset;
+  const interior = qualityPreset.interior ?? {};
+  return {
+    ...qualityPreset,
+    maxPixelRatio: interior.maxPixelRatio ?? qualityPreset.maxPixelRatio,
+    ssao: interior.ssao
+      ? { ...qualityPreset.ssao, ...interior.ssao }
+      : qualityPreset.ssao,
+    parallaxOcclusion: interior.parallaxOcclusion
+      ? { ...qualityPreset.parallaxOcclusion, ...interior.parallaxOcclusion }
+      : qualityPreset.parallaxOcclusion,
+  };
 }
 
 // Chunk sizes used for draw distance computation (must match the streaming levels).

@@ -127,6 +127,50 @@ export function buildTerrainGridIndices(
   return new Uint32Array(indices);
 }
 
+// Visual LOD keeps the authoritative vertex buffer layout stable and changes
+// only which vertices the index buffer references. This is important for
+// WebGPU: exchanging Mesh/Geometry/BufferAttribute identities makes Three's TSL
+// renderer build a fresh NodeBuilderState for every streamed chunk.
+export function buildTerrainVisualIndices(chunkData, visualResolution = chunkData.resolution) {
+  const sourceResolution = chunkData.resolution;
+  const sourceCells = sourceResolution - 1;
+  const gridResolution = Math.max(2, Math.min(sourceResolution, visualResolution));
+  const gridCells = gridResolution - 1;
+  const holeMask = chunkData.visualHoleMask;
+  const indices = [];
+
+  const sourceCoord = (value) => Math.round((value / gridCells) * sourceCells);
+  const overlapsHole = (i, j) => {
+    if (!(holeMask instanceof Uint8Array) || holeMask.length !== sourceCells * sourceCells) return false;
+    const minI = Math.floor((i * sourceCells) / gridCells);
+    const maxI = Math.min(sourceCells - 1, Math.ceil(((i + 1) * sourceCells) / gridCells) - 1);
+    const minJ = Math.floor((j * sourceCells) / gridCells);
+    const maxJ = Math.min(sourceCells - 1, Math.ceil(((j + 1) * sourceCells) / gridCells) - 1);
+    for (let sj = minJ; sj <= maxJ; sj += 1) {
+      for (let si = minI; si <= maxI; si += 1) {
+        if (holeMask[sj * sourceCells + si]) return true;
+      }
+    }
+    return false;
+  };
+
+  for (let j = 0; j < gridCells; j += 1) {
+    const z0 = sourceCoord(j);
+    const z1 = sourceCoord(j + 1);
+    for (let i = 0; i < gridCells; i += 1) {
+      if (overlapsHole(i, j)) continue;
+      const x0 = sourceCoord(i);
+      const x1 = sourceCoord(i + 1);
+      const a = z0 * sourceResolution + x0;
+      const b = z0 * sourceResolution + x1;
+      const c = z1 * sourceResolution + x0;
+      const d = z1 * sourceResolution + x1;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+  return new Uint32Array(indices);
+}
+
 export function buildTerrainTrimeshData(chunkData) {
   const { size, resolution, heights } = chunkData;
   const step = size / (resolution - 1);
@@ -189,35 +233,41 @@ export function syncSeam(fromChunk, toChunk, edgeOnFrom) {
  */
 export function createTerrainChunkMesh(chunkData, options = {}) {
   const { material = null, castShadow = true, receiveShadow = true, visualResolution = null } = options;
-  const { size, resolution, heights } = chunkData;
+  const { size, resolution } = chunkData;
+  let currentChunkData = chunkData;
   // Physics and editing retain the authoritative heightfield resolution. Outer
   // streaming rings can render a cheaper grid sampled from that same data.
   const meshResolution = Math.max(2, Math.min(resolution, visualResolution ?? resolution));
-  const step = size / (meshResolution - 1);
-  const sourceAt = (i, j) => {
-    const si = Math.round((i / (meshResolution - 1)) * (resolution - 1));
-    const sj = Math.round((j / (meshResolution - 1)) * (resolution - 1));
-    return heights[sj * resolution + si] ?? 0;
-  };
+  const step = size / (resolution - 1);
+  const sourceAt = (i, j) => currentChunkData.heights[j * resolution + i] ?? 0;
 
   // Build geometry (we keep a non-indexed or indexed plane; simple indexed grid)
-  const geometry = new THREE.PlaneGeometry(size, size, meshResolution - 1, meshResolution - 1);
+  const geometry = new THREE.PlaneGeometry(size, size, resolution - 1, resolution - 1);
   geometry.rotateX(-Math.PI / 2); // +Y up in world, plane starts in xz
 
-  if (hasTerrainHoleMask(chunkData.visualHoleMask)) {
-    geometry.setIndex(new THREE.BufferAttribute(
-      buildTerrainGridIndices(chunkData, meshResolution, chunkData.visualHoleMask),
-      1,
-    ));
-  }
+  // Allocate the maximum index capacity once. LOD/hole changes rewrite this
+  // same BufferAttribute and adjust drawRange, preserving renderer cache keys.
+  const indexCapacity = (resolution - 1) * (resolution - 1) * 6;
+  const stableIndices = new Uint32Array(indexCapacity);
+  const indexAttribute = new THREE.BufferAttribute(stableIndices, 1);
+  geometry.setIndex(indexAttribute);
+
+  const updateVisualIndices = (nextVisualResolution) => {
+    const active = buildTerrainVisualIndices(currentChunkData, nextVisualResolution);
+    stableIndices.fill(0);
+    stableIndices.set(active);
+    indexAttribute.needsUpdate = true;
+    geometry.setDrawRange(0, active.length);
+  };
+  updateVisualIndices(meshResolution);
 
   const posAttr = geometry.attributes.position;
   const uvAttr = geometry.attributes.uv;
 
   // Apply heights + compute sensible UVs (0..1 across chunk is fine for now)
-  for (let j = 0; j < meshResolution; j += 1) {
-    for (let i = 0; i < meshResolution; i += 1) {
-      const gIdx = j * meshResolution + i; // PlaneGeometry order: x varies fastest.
+  for (let j = 0; j < resolution; j += 1) {
+    for (let i = 0; i < resolution; i += 1) {
+      const gIdx = j * resolution + i; // PlaneGeometry order: x varies fastest.
       // PlaneGeometry vertex order (for segments = res-1): (i + j * res)
       // Our heights are stored j * res + i  (j = z direction in our math)
       const h = sourceAt(i, j);
@@ -230,7 +280,7 @@ export function createTerrainChunkMesh(chunkData, options = {}) {
       posAttr.setXYZ(gIdx, px, h, pz);
 
       // UVs 0..1 across the chunk
-      uvAttr.setXY(gIdx, i / (meshResolution - 1), j / (meshResolution - 1));
+      uvAttr.setXY(gIdx, i / (resolution - 1), j / (resolution - 1));
     }
   }
 
@@ -265,6 +315,7 @@ export function createTerrainChunkMesh(chunkData, options = {}) {
   };
 
   function updateHeights(newHeights) {
+    const heights = currentChunkData.heights;
     if (!(newHeights instanceof Float32Array) || newHeights.length !== heights.length) {
       throw new Error('updateHeights expects a Float32Array of identical length');
     }
@@ -274,9 +325,9 @@ export function createTerrainChunkMesh(chunkData, options = {}) {
 
     // Push into geometry
     const p = geometry.attributes.position;
-    for (let j = 0; j < meshResolution; j += 1) {
-      for (let i = 0; i < meshResolution; i += 1) {
-        const gIdx = j * meshResolution + i;
+    for (let j = 0; j < resolution; j += 1) {
+      for (let i = 0; i < resolution; i += 1) {
+        const gIdx = j * resolution + i;
         const h = sourceAt(i, j);
         const px = i * step - size * 0.5;
         const pz = j * step - size * 0.5;
@@ -290,14 +341,49 @@ export function createTerrainChunkMesh(chunkData, options = {}) {
     geometry.boundingBox = null;
   }
 
-  return {
+  const handle = {
     mesh,
     updateHeights,
+    updateVisualResolution(nextVisualResolution, nextOptions = {}) {
+      const normalized = Math.max(2, Math.min(resolution, nextVisualResolution ?? resolution));
+      mesh.userData.chunkRef.visualResolution = normalized;
+      mesh.castShadow = nextOptions.castShadow ?? mesh.castShadow;
+      mesh.receiveShadow = nextOptions.receiveShadow ?? mesh.receiveShadow;
+      updateVisualIndices(normalized);
+      // Normals are only generated for vertices referenced by the current
+      // index. A coarse chunk promoted to a finer LOD otherwise exposes the
+      // previously-unused vertices with zero normals, rendering black patches.
+      // computeVertexNormals updates the existing attribute in place.
+      geometry.computeVertexNormals();
+    },
+    updateChunkData(nextChunkData, nextOptions = {}) {
+      if (nextChunkData.size !== size || nextChunkData.resolution !== resolution) {
+        throw new Error('updateChunkData requires identical terrain size and resolution');
+      }
+      currentChunkData = nextChunkData;
+      handle.chunkData = nextChunkData;
+      const nextVisualResolution = Math.max(
+        2,
+        Math.min(resolution, nextOptions.visualResolution ?? resolution),
+      );
+      mesh.userData.chunkRef = {
+        cx: nextChunkData.cx,
+        cz: nextChunkData.cz,
+        size: nextChunkData.size,
+        resolution: nextChunkData.resolution,
+        visualResolution: nextVisualResolution,
+      };
+      mesh.position.set(nextChunkData.cx * size, 0, nextChunkData.cz * size);
+      handle.updateVisualResolution(nextVisualResolution, nextOptions);
+      updateHeights(nextChunkData.heights);
+      mesh.updateMatrixWorld(true);
+    },
     geometry,
     material: meshMaterial,
     // Convenience for debug / external
     chunkData, // reference to the live data object
   };
+  return handle;
 }
 
 /**

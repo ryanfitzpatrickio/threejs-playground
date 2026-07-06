@@ -1,5 +1,6 @@
 import { For, Show, createSignal, createMemo, onCleanup, onMount } from 'solid-js';
 import { ZONE_TYPES, ZONE_TYPE_ORDER, POI_KINDS, POI_KIND_ORDER, ENTITY_GROUND_MODES, ENTITY_GROUND_MODE_ORDER, TERRAIN_BIOMES, TERRAIN_BIOME_ORDER, CITY_STYLES, CITY_STYLE_ORDER, FOREST_SPECIES, FOREST_SPECIES_ORDER } from '../../world/worldMap/worldMapSchema.js';
+import { parseForestSpeciesMix } from '../../game/world/forest/forestSpecies.js';
 import { listScenes, WORLDMAP_DRAFT_ID } from '../../world/worldMap/worldMapScenes.js';
 import { listBlueprints } from '../../map/blueprintLibrary.js';
 import { getFileStoreRevision, subscribeFileStore, ensureFileStore } from '../../store/fileStore.js';
@@ -23,6 +24,14 @@ const TOOLS = [
 ];
 
 const ZONE_TOOLS = new Set(['terrain', 'city', 'loopout', 'wilds', 'forest']);
+
+function forestSpeciesSelectValue(raw) {
+  const key = String(raw ?? 'pine').trim();
+  if (FOREST_SPECIES[key]) return key;
+  const mix = parseForestSpeciesMix(key);
+  const first = mix[0]?.key ?? 'pine';
+  return FOREST_SPECIES[first] ? first : 'pine';
+}
 
 const h2 = {
   'font-size': '11px',
@@ -760,17 +769,16 @@ ${JSON.stringify({ zones: (s.zones||[]).length, roads: (s.roads||[]).length, ent
           />
         </Show>
         <Show when={snap().selected.kind === 'zone' && snap().selected.type === 'forest'}>
-          <label style={{ 'font-size': '11px', color: '#8d9384' }}>Species / mix</label>
-          <input
+          <label style={{ 'font-size': '11px', color: '#8d9384' }}>Species</label>
+          <select
             style={field}
-            list="forest-species-options"
-            placeholder="pine or pine:0.7,douglas-fir:0.3"
-            value={snap().selected.forestSpecies ?? 'pine'}
-            onInput={(e) => editor()?.setSelectedForestSpecies(e.currentTarget.value)}
-          />
-          <datalist id="forest-species-options">
-            <For each={FOREST_SPECIES_ORDER}>{(s) => <option value={s}>{FOREST_SPECIES[s].label}</option>}</For>
-          </datalist>
+            value={forestSpeciesSelectValue(snap().selected.forestSpecies)}
+            onChange={(e) => editor()?.setSelectedForestSpecies(e.target.value)}
+          >
+            <For each={FOREST_SPECIES_ORDER}>
+              {(s) => <option value={s}>{FOREST_SPECIES[s].label}</option>}
+            </For>
+          </select>
           <label style={{ 'font-size': '11px', color: '#8d9384' }}>Density (trees/hectare)</label>
           <input
             style={field}
@@ -788,7 +796,7 @@ ${JSON.stringify({ zones: (s.zones||[]).length, roads: (s.roads||[]).length, ent
             onChange={(e) => editor()?.setSelectedForestSeed(Number(e.target.value))}
           />
           <div style={{ 'font-size': '11px', color: '#8d9384', 'line-height': 1.4 }}>
-            Vegetation overlay only — does not reshape terrain. Procedural pine trees scatter inside the zone polygon.
+            Vegetation overlay only — does not reshape terrain. Procedural trees scatter inside the zone polygon.
           </div>
         </Show>
         <Show when={snap().selected.kind === 'entity'}>

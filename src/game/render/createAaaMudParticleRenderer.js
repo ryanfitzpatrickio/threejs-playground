@@ -111,7 +111,8 @@ fn evaluateAaaMud(
 `, [ MUD_NOISE_WGSL ]);
 
 const DECAL_WGSL = wgslFn(/* wgsl */ `
-fn evaluateMudDecal(uvCoord: vec2f, age: f32, seed: f32, darkCol: vec3f, lightCol: vec3f) -> vec4f {
+fn evaluateMudDecal(uvCoord: vec2f, birth: f32, now: f32, lifetime: f32, seed: f32, darkCol: vec3f, lightCol: vec3f) -> vec4f {
+  let age = (now - birth) / lifetime;
   if (age < 0.0 || age > 1.0) {
     return vec4f(0.0);
   }
@@ -205,6 +206,8 @@ export function createAaaMudParticleRenderer({
   const dryCol = uniform(new THREE.Vector3(...RALLY_MUD_BODY_LINEAR));
   const decalDark = uniform(new THREE.Vector3(...RALLY_MUD_DECAL_DARK_LINEAR));
   const decalLight = uniform(new THREE.Vector3(...RALLY_MUD_DECAL_LIGHT_LINEAR));
+  const decalNow = uniform(0);
+  const decalLifetime = uniform(decalLife);
 
   const geometry = new THREE.PlaneGeometry(1, 1);
   const lifeAttr = new THREE.InstancedBufferAttribute(new Float32Array(poolSize), 1);
@@ -250,14 +253,17 @@ export function createAaaMudParticleRenderer({
 
   // ---- decals ----
   const decalGeometry = new THREE.PlaneGeometry(1, 1);
-  const decalAgeAttr = new THREE.InstancedBufferAttribute(new Float32Array(decalCount), 1);
+  // Decal transforms and birth times are immutable between spawns. Age them in
+  // the shader so a static pool does not re-cross the WebGPU IPC boundary every
+  // frame. A slot is uploaded only when the ring buffer reuses it.
+  const decalBirthAttr = new THREE.InstancedBufferAttribute(new Float32Array(decalCount).fill(-decalLife), 1);
   const decalSeedAttr = new THREE.InstancedBufferAttribute(new Float32Array(decalCount), 1);
-  decalAgeAttr.setUsage(THREE.DynamicDrawUsage);
+  decalBirthAttr.setUsage(THREE.DynamicDrawUsage);
   decalSeedAttr.setUsage(THREE.DynamicDrawUsage);
-  decalGeometry.setAttribute('aDecalAge', decalAgeAttr);
+  decalGeometry.setAttribute('aDecalBirth', decalBirthAttr);
   decalGeometry.setAttribute('aDecalSeed', decalSeedAttr);
 
-  const dLife = attribute('aDecalAge', 'float');
+  const dBirth = attribute('aDecalBirth', 'float');
   const dSeed = attribute('aDecalSeed', 'float');
 
   const decalMaterial = new MeshBasicNodeMaterial();
@@ -271,7 +277,9 @@ export function createAaaMudParticleRenderer({
 
   const decalShaded = DECAL_WGSL({
     uvCoord: uv(),
-    age: dLife,
+    birth: dBirth,
+    now: decalNow,
+    lifetime: decalLifetime,
     seed: dSeed,
     darkCol: decalDark,
     lightCol: decalLight,
@@ -304,7 +312,6 @@ export function createAaaMudParticleRenderer({
   }));
 
   let decalCursor = 0;
-  let elapsedTime = 0;
   const _lightDir = new THREE.Vector3();
   const _sunDir = DEFAULT_SUN_DIRECTION.clone();
   let _camera = null;
@@ -334,6 +341,20 @@ export function createAaaMudParticleRenderer({
     d.x = x; d.y = y; d.z = z;
     d.scale = scale;
     d.rot = Math.random() * 6.283185;
+    _decalPos.set(x, y, z);
+    _decalScale.set(scale, scale, 1);
+    _decalEuler.set(-Math.PI * 0.5, d.rot, 0, 'YXZ');
+    _decalQuat.setFromEuler(_decalEuler);
+    _m.compose(_decalPos, _decalQuat, _decalScale);
+    decalMesh.setMatrixAt(j, _m);
+    decalBirthAttr.setX(j, now);
+    decalSeedAttr.setX(j, d.rot);
+    decalMesh.instanceMatrix.addUpdateRange(j * 16, 16);
+    decalBirthAttr.addUpdateRange(j, 1);
+    decalSeedAttr.addUpdateRange(j, 1);
+    decalMesh.instanceMatrix.needsUpdate = true;
+    decalBirthAttr.needsUpdate = true;
+    decalSeedAttr.needsUpdate = true;
   };
 
   const flushParticles = () => {
@@ -356,39 +377,14 @@ export function createAaaMudParticleRenderer({
     seedAttr.needsUpdate = true;
   };
 
-  const flushDecals = () => {
-    for (let i = 0; i < decalCount; i += 1) {
-      const d = decals[i];
-      const age = (elapsedTime - d.birth) / decalLife;
-      if (d.birth < 0 || age < 0 || age > 1) {
-        decalMesh.setMatrixAt(i, collapsed);
-        continue;
-      }
-      const grow = smoothstep(0, 0.15, age);
-      const sc = d.scale * THREE.MathUtils.lerp(0.6, 1, grow);
-      _decalPos.set(d.x, d.y, d.z);
-      _decalScale.set(sc, sc, 1);
-      _decalEuler.set(-Math.PI * 0.5, d.rot, 0, 'YXZ');
-      _decalQuat.setFromEuler(_decalEuler);
-      _m.compose(_decalPos, _decalQuat, _decalScale);
-      decalMesh.setMatrixAt(i, _m);
-      decalAgeAttr.setX(i, age);
-      decalSeedAttr.setX(i, d.rot);
-    }
-    decalMesh.instanceMatrix.needsUpdate = true;
-    decalAgeAttr.needsUpdate = true;
-    decalSeedAttr.needsUpdate = true;
-  };
-
   const update = ({ camera = null, elapsedTime: t = 0, sunDirection = _sunDir } = {}) => {
-    elapsedTime = t;
+    decalNow.value = t;
     _camera = camera;
     if (camera) {
       _lightDir.copy(sunDirection).transformDirection(camera.matrixWorldInverse);
       lightDirView.value.copy(_lightDir);
     }
     flushParticles();
-    flushDecals();
   };
 
   const dispose = () => {

@@ -5,18 +5,14 @@
 //   normal       per-pixel GEOMETRIC normals in WORLD space — leaf-clump
 //                lumpiness and trunk curvature, used as detail
 //   roughness    from each source material's roughness map
-//   translucency from each source material's diffuse-transmission map, so the
-//                billboard keeps the sun-through-leaves glow of the near LODs
+//   translucency from each source material's diffuse-transmission map — baked
+//                for pipeline symmetry; only its ambient tint is applied to the
+//                live card because directional SSS blooms on flat impostors
 //
-// Shading shape uses the AAA vegetation trick on TWO layers that compose:
-//  1. Base: a canopy-sphere normal field evaluated from WORLD POSITION in the
-//     shader (and mirrored into the mesh vertex normals for export). Both cards
-//     sample the same world-space field, so shading is continuous across the
-//     cross intersection — per-card local bending would (and did) leave a hard
-//     seam where the planes meet.
-//  2. Detail: the baked world-space normal map blended in at low strength for
-//     per-pixel foliage sparkle. Normal maps render relative to mesh normals,
-//     so both layers cooperate rather than fight.
+// Shading shape uses a per-pixel canopy-dome normalNode evaluated from WORLD
+// position plus low-strength baked world-normal detail. It is rotation-symmetric,
+// so crossed cards agree at their intersection, and bypasses the DoubleSide
+// back-face normal flip that otherwise turns one card black.
 //
 // WebGPU path: renderer.setRenderTarget + renderAsync + readRenderTargetPixelsAsync.
 // Albedo gets linear→sRGB (render targets skip the output transform); data
@@ -28,7 +24,7 @@ import {
   CanvasTexture, MeshBasicMaterial, MeshBasicNodeMaterial, MeshSSSNodeMaterial,
   PlaneGeometry, Mesh, Group, DoubleSide, SRGBColorSpace, NoColorSpace,
 } from 'three';
-import { texture, uniform, float, vec3, vec4, mix, attribute, positionWorld, normalWorld, cameraViewMatrix, modelWorldMatrix } from 'three/tsl';
+import { texture, uniform, float, vec3, vec4, attribute, positionWorld, normalWorld, cameraViewMatrix, modelWorldMatrix } from 'three/tsl';
 import { windStrength } from './wind.js';
 import { disablePbrEnvironment } from '../../../materials/disablePbrEnvironment.js';
 
@@ -163,12 +159,12 @@ function captureMaterial(srcMesh, channel) {
   return m;
 }
 
-// Bent vertex normals for export: the same canopy-sphere field the shader uses,
-// baked into the mesh. Radial in the card plane with the sphere centre dropped
-// (up-bias) — crucially z=0 and rotation-symmetric, so the front and side cards
-// agree wherever they coincide in world space (no seam at the intersection).
-function bentNormalCardGeometry(w, h) {
-  const geo = new PlaneGeometry(w, h, 6, 6);
+// Bent vertex normals are only the glTF fallback. Live shading uses the per-pixel
+// dome in makeCardMaterial so DoubleSide cannot flip the volume normal.
+export function bentNormalCardGeometry(w, h) {
+  // The live dome is per-pixel, so subdivision has no visual benefit. This cuts
+  // each crossed billboard from 144 triangles to four.
+  const geo = new PlaneGeometry(w, h, 1, 1);
   const pos = geo.attributes.position;
   const nrm = geo.attributes.normal;
   const v = new Vector3();
@@ -187,37 +183,29 @@ const TRANSMIT = [0.42, 0.62, 0.24]; // same transmitted green as the live folia
 
 function makeCardMaterial(t, cardH) {
   const mat = new MeshSSSNodeMaterial({
-    map: t.albedo, normalMap: t.normal, roughnessMap: t.rough,
+    map: t.albedo, roughnessMap: t.rough,
     alphaTest: 0.35, side: DoubleSide, roughness: 1.0, metalness: 0.0,
   });
-  // Live normal = canopy-sphere base (from WORLD position relative to the card's
-  // origin = canopy centre, so both cards evaluate the identical field — this is
-  // what kills the seam at the cross intersection) + baked world-space geometric
-  // normals as low-strength per-pixel detail. No face flip: a volume's far side
-  // should stay its dark side. Exports fall back to the mesh vertex normals +
-  // the baked map, same two layers.
-  const origin = modelWorldMatrix.mul(vec4(0, 0, 0, 1)).xyz;
-  // Canopy-sphere normal, leaned 30% toward world-UP so a card's shadowed
-  // hemisphere catches sky light instead of rendering fully BLACK at distance
-  // (the Joshua impostors' dense dark rosette was reading as black shadow). Still
-  // keeps enough radial curvature to read as a lit volume, not a flat card.
-  const radial = positionWorld.sub(origin).add(vec3(0, cardH * 0.55, 0)).normalize();
-  const base = mix(radial, vec3(0, 1, 0), 0.30).normalize();
-  // Additive perturbation (not a lerp): detail tilts the base without diluting
-  // it, the way a tangent normal map perturbs mesh normals — this is what makes
-  // trunk/branch roundness actually pop through.
-  const detail = texture(t.normal).xyz.mul(2).sub(1);
-  const nWorld = base.add(detail.mul(0.55)).normalize();
-  mat.normalNode = cameraViewMatrix.mul(vec4(nWorld, 0)).xyz.normalize();
-  // Backlit transmission from the baked translucency — the distant tree keeps
-  // glowing when the sun is behind it, matching the near LODs.
-  mat.thicknessColorNode = texture(t.trans).r.mul(uniform(new Color().setRGB(...TRANSMIT)));
-  mat.thicknessDistortionNode = uniform(0.3);
-  mat.thicknessAmbientNode = uniform(0.16); // scatter floor — see leaf-cards.js
+  // Keep the flat ambient foliage tint, but disable directional transmission:
+  // its backlit power term blooms on an alpha card and breaks LOD color parity.
+  mat.thicknessColorNode = texture(t.trans).r.mul(0.7).mul(uniform(new Color().setRGB(...TRANSMIT)));
+  mat.thicknessDistortionNode = uniform(0.0);
+  mat.thicknessAmbientNode = uniform(0.16);
   mat.thicknessAttenuationNode = uniform(1.0);
   mat.thicknessPowerNode = uniform(6.0);
-  mat.thicknessScaleNode = uniform(3.0);
-  mat.userData.gltfDiffuseTransmission = { factor: 1.0, color: TRANSMIT, map: t.trans };
+  mat.thicknessScaleNode = uniform(0.0);
+
+  // Match the live branch cards' additive up-bias. The sphere centre is below
+  // the card so pixels at the trunk end never receive downward normals.
+  const origin = modelWorldMatrix.mul(vec4(0, 0, 0, 1)).xyz;
+  const dome = positionWorld.sub(origin).add(vec3(0, cardH * 0.55, 0)).normalize()
+    .add(vec3(0, 0.45, 0)).normalize();
+  const detail = texture(t.normal).xyz.mul(2).sub(1);
+  const nWorld = dome.add(detail.mul(0.55)).normalize();
+  mat.normalNode = cameraViewMatrix.mul(vec4(nWorld, 0)).xyz.normalize();
+  // The node graph owns normal/trans textures that are no longer conventional
+  // material maps. Retain them explicitly so disposeBillboard can release them.
+  mat.userData.impostorTextures = t;
   disablePbrEnvironment(mat);
   return mat;
 }
@@ -226,6 +214,8 @@ function makeCardMaterial(t, cardH) {
 export function cloneImpostorFadeMaterial(sourceMat) {
   const mat = sourceMat.clone();
   mat.opacityNode = attribute('aImpostorFade', 'float');
+  mat.transparent = true;
+  mat.userData.forestCloneMaterial = true;
   return mat;
 }
 
@@ -394,12 +384,20 @@ export function assembleBillboardFromRawBake(res, opts = {}) {
 }
 
 export function disposeBillboard(group) {
+  const disposedTextures = new Set();
   group.traverse((o) => {
     if (o.userData.isBillboardCard) {
-      o.material.map?.dispose();
-      o.material.normalMap?.dispose();
-      o.material.roughnessMap?.dispose();
-      o.material.userData.gltfDiffuseTransmission?.map?.dispose();
+      const textures = o.material.userData.impostorTextures ?? {
+        albedo: o.material.map,
+        normal: o.material.normalMap,
+        rough: o.material.roughnessMap,
+        trans: o.material.userData.gltfDiffuseTransmission?.map,
+      };
+      for (const tex of Object.values(textures)) {
+        if (!tex || disposedTextures.has(tex)) continue;
+        disposedTextures.add(tex);
+        tex.dispose();
+      }
       o.material.dispose();
       o.geometry.dispose();
     }

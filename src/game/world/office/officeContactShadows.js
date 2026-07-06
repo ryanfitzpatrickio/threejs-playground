@@ -1,6 +1,7 @@
 // officeContactShadows.js — soft blob shadows under furniture (M0).
 
 import * as THREE from 'three';
+import { CITY_FURNITURE_LAYER } from '../../render/renderLayers.js';
 
 const BLOB_Y_OFFSET = 0.035;
 
@@ -67,6 +68,7 @@ export function addBlobShadowInstanced(floorGroup, blobEntries, floorY, name = '
   mesh.name = name;
   mesh.renderOrder = 1;
   mesh.frustumCulled = false;
+  mesh.layers.set(CITY_FURNITURE_LAYER);
 
   const m = new THREE.Matrix4();
   const p = new THREE.Vector3();

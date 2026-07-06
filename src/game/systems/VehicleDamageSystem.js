@@ -88,7 +88,7 @@ export class VehicleDamageSystem {
         mesh.material = mesh.userData.vehicleDamageRepairMaterial;
         delete mesh.userData.vehicleDamageRepairMaterial;
       }
-      mesh.visible = true;
+      mesh.visible = mesh.userData.vehicleOverlayInitialVisible !== false;
     });
     restore(vehicle.frameVisual);
     restore(vehicle.chassisOverlay);
@@ -163,6 +163,12 @@ export class VehicleDamageSystem {
         this._detachBumper(vehicle, impact.zone, impact);
       }
     }
+    if (
+      vehicle.chassisOverlay
+      && (impact.tier === 'severe' || impact.deltaV > (cfg.debrisDetachDeltaV ?? 6))
+    ) {
+      this._detachOverlayPieces(vehicle, impact);
+    }
     return damage;
   }
 
@@ -185,8 +191,10 @@ export class VehicleDamageSystem {
     const deform = (root, { frame = false } = {}) => root?.traverse((mesh) => {
       if (!mesh.isMesh || !mesh.geometry?.getAttribute('position')) return;
       if (!frame) {
-        const kind = classifyVehicleOverlayMesh(mesh);
-        if (kind !== VEHICLE_OVERLAY_PART.CHASSIS && kind !== VEHICLE_OVERLAY_PART.DETAIL) return;
+        const kind = classifyVehicleOverlayMesh(mesh, vehicle.chassisOverlayOptions?.profileId);
+        if (kind !== VEHICLE_OVERLAY_PART.CHASSIS
+          && kind !== VEHICLE_OVERLAY_PART.DETAIL
+          && kind !== VEHICLE_OVERLAY_PART.DEBRIS) return;
       }
       applyCrumple(mesh, {
         point: _point,
@@ -200,6 +208,83 @@ export class VehicleDamageSystem {
     });
     deform(vehicle.frameVisual, { frame: true });
     deform(vehicle.chassisOverlay);
+  }
+
+  _detachOverlayPieces(vehicle, impact) {
+    const overlay = vehicle.chassisOverlay;
+    if (!overlay || !this.physics?.world || !this.scene) return false;
+    vehicle.group.updateMatrixWorld(true);
+    _inverse.copy(vehicle.group.matrixWorld).invert();
+    const [, , length] = vehicle.config.body.size;
+    let detachedAny = false;
+
+    overlay.traverse((mesh) => {
+      if (!mesh.isMesh || !mesh.visible || !mesh.userData.vehicleOverlayDetachable) return;
+      _box.setFromObject(mesh).applyMatrix4(_inverse);
+      _box.getCenter(_center);
+      const inZone = impact.zone === 'front'
+        ? _center.z < -length * 0.06
+        : impact.zone === 'rear'
+          ? _center.z > length * 0.06
+          : Math.abs(_center.x) > vehicle.config.body.size[0] * 0.18;
+      if (!inZone) return;
+      if (this._spawnDetachedMeshPiece(vehicle, mesh, impact, `${mesh.parent?.name ?? 'debris'}`)) {
+        mesh.visible = false;
+        detachedAny = true;
+      }
+    });
+    return detachedAny;
+  }
+
+  _spawnDetachedMeshPiece(vehicle, mesh, impact, label) {
+    const chassisBody = this.physics.getFreshBody(vehicle.bodyHandle);
+    if (!chassisBody) return false;
+    const pieceGroup = new THREE.Group();
+    pieceGroup.name = `${vehicle.name} ${label}`;
+    const piece = new THREE.Mesh(mesh.geometry, mesh.material);
+    piece.castShadow = mesh.castShadow;
+    piece.receiveShadow = mesh.receiveShadow;
+    _inverse.copy(vehicle.group.matrixWorld).invert();
+    _relative.multiplyMatrices(_inverse, mesh.matrixWorld).decompose(piece.position, piece.quaternion, piece.scale);
+    pieceGroup.add(piece);
+
+    const RAPIER = this.physics.RAPIER;
+    const translation = chassisBody.translation();
+    const rotation = chassisBody.rotation();
+    const body = this.physics.world.createRigidBody(
+      RAPIER.RigidBodyDesc.dynamic()
+        .setTranslation(translation.x, translation.y, translation.z)
+        .setRotation(rotation)
+        .setLinearDamping(0.2)
+        .setAngularDamping(0.3),
+    );
+    const impulse = impact.deltaV * 0.35;
+    body.applyImpulse({
+      x: impact.localDirection.x * impulse,
+      y: 0.35 + Math.random() * 0.25,
+      z: impact.localDirection.z * impulse,
+    }, true);
+    body.setAngvel({
+      x: (Math.random() - 0.5) * 4,
+      y: (Math.random() - 0.5) * 4,
+      z: (Math.random() - 0.5) * 4,
+    }, true);
+    const vertices = collectGroupVertices(pieceGroup, 420);
+    const colliderDesc = vertices.length >= 12 ? RAPIER.ColliderDesc.convexHull(vertices) : null;
+    if (colliderDesc) this.physics.world.createCollider(colliderDesc.setDensity(0.28).setFriction(0.7), body);
+    pieceGroup.position.set(translation.x, translation.y, translation.z);
+    pieceGroup.quaternion.set(rotation.x, rotation.y, rotation.z, rotation.w);
+    this.scene.add(pieceGroup);
+    this.detachedBumpers.push({
+      vehicle,
+      zone: 'debris',
+      group: pieceGroup,
+      bodyHandle: body.handle,
+      joint: null,
+      age: 0,
+      released: true,
+    });
+    return true;
   }
 
   _detachBumper(vehicle, zone, impact) {

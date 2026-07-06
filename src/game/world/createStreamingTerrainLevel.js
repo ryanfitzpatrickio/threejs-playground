@@ -13,6 +13,8 @@
  *     addedChunks: [{ group, chunkKey }],          // group used for shader pre-warm
  *     removedChunkKeys: [chunkKey],                 // also drops Rapier heightfields by owner
  *     addedTerrainChunks: [{ cx, cz, size, resolution, heights, holeMask, chunkKey }],
+ *     builtTerrainChunks: number,                    // visual chunks built this update
+ *     terrainVisualChanges: number,                  // LOD/add churn; defer expensive post passes
  *   }
  */
 
@@ -32,7 +34,6 @@ import {
 import { buildRiverProfile, applyRiverCorridorHeight } from '../../world/worldMap/riverProfile.js';
 import { createTerrainBiomeMaterial } from '../materials/createTerrainBiomeMaterial.js';
 import { createZoneForest } from './createZoneForest.js';
-import { createForestZone } from './forest/createForestZone.js';
 import { setForestLitterMask, clearForestLitterMask } from './forest/forestLitter.js';
 import { createRoadworks, ROAD_SURFACE_LIFT } from './createRoadworks.js';
 import { createTracksideLayers } from './createTracksideLayers.js';
@@ -450,6 +451,11 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
     return h;
   };
 
+  // Keep analytic height queries stable before and after a chunk becomes live.
+  // The manager's default fallback is only raw procedural noise and omits every
+  // runtime shaping layer applied above.
+  manager.setFallbackHeightSampler(sampleShapedHeight);
+
   // Replace per-chunk computed normals (one-sided at edges → bright seam lines)
   // with normals from central differences of the continuous height field, so
   // adjacent chunks agree exactly on shared-edge normals.
@@ -497,7 +503,13 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
     const step = size / (res - 1);
     const minX = data.cx * size - size * 0.5;
     const minZ = data.cz * size - size * 0.5;
-    const arr = new Float32Array(res * res);
+    let attribute = geometry.getAttribute('bpTexMask');
+    if (!attribute || attribute.count !== res * res) {
+      attribute = new THREE.BufferAttribute(new Float32Array(res * res), 1);
+      geometry.setAttribute('bpTexMask', attribute);
+    }
+    const arr = attribute.array;
+    arr.fill(0);
     if (blueprintTexMask) {
       for (let j = 0; j < res; j += 1) {
         for (let i = 0; i < res; i += 1) {
@@ -505,7 +517,7 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
         }
       }
     }
-    geometry.setAttribute('bpTexMask', new THREE.BufferAttribute(arr, 1));
+    attribute.needsUpdate = true;
   };
 
   const visualResolutionFor = (cx, cz, centerX, centerZ) => {
@@ -525,6 +537,17 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
       applySeamlessNormals(handle.geometry, data);
     }
     if (bpTerrainTexture) applyBlueprintTexMask(handle.geometry, data);
+    // NOTE: terrain chunks are intentionally NOT routed through the streaming
+    // compile-queue (queueStreamingCompile / renderer.compileAsync). The biome
+    // material's async pipeline descriptor is incomplete on three r185 — its
+    // depthStencil.format is undefined — so createRenderPipelineAsync rejects
+    // (worst on the blueprint-overlay variant selected by maps with merge-mode
+    // terrain textures). On a real GPU that leaves the chunk with no compiled
+    // pipeline, so it renders as nothing → "invisible ground". SwiftShader
+    // (headless) silently falls back to the sync path, hiding the regression.
+    // Terrain shares one pipeline that compiles fine through the real render
+    // path on first draw, so it needs no async pre-warm.
+    handle.mesh.visible = true;
     return handle;
   };
 
@@ -541,7 +564,16 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
     group.add(handle.mesh);
     geometryIndex.addRoot(handle.mesh);
 
-    const entry = { handle, data, group: handle.mesh, chunkKey: key, cx, cz, visualResolution, physicsActive: false };
+    const entry = {
+      handle,
+      data,
+      group: handle.mesh,
+      chunkKey: key,
+      cx,
+      cz,
+      visualResolution,
+      physicsActive: false,
+    };
     liveChunks.set(key, entry);
     return entry;
   }
@@ -549,7 +581,7 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
   function removeChunk(entry) {
     geometryIndex.removeRoot(entry.group);
     entry.group.removeFromParent();
-    // Dispose geometry only — the material is shared across all chunks.
+    // Material is shared, but streamed geometry belongs to this chunk.
     entry.group.geometry?.dispose();
     manager.unloadChunk(entry.cx, entry.cz);
     liveChunks.delete(entry.chunkKey);
@@ -693,9 +725,11 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
   const initialEntries = [];
   const initialCenterX = coordForWorld(worldMap?.spawn?.x ?? 0);
   const initialCenterZ = coordForWorld(worldMap?.spawn?.z ?? 0);
-  // Only the near/physics ring is synchronous. Outer visual LOD rings stream in
-  // under the normal per-frame build budget instead of extending level-load time.
-  const initialRadius = Math.min(loadRadius, physicsRadius);
+  let streamingCenterX = initialCenterX;
+  let streamingCenterZ = initialCenterZ;
+  // Build the full stopped/prefetch footprint before shader prewarm so nearby
+  // ground is complete when gameplay starts.
+  const initialRadius = Math.max(loadRadius, physicsRadius, loadRadius + idlePrefetchRadius);
   for (let cx = initialCenterX - initialRadius; cx <= initialCenterX + initialRadius; cx += 1) {
     for (let cz = initialCenterZ - initialRadius; cz <= initialCenterZ + initialRadius; cz += 1) {
       const entry = addChunk(cx, cz, initialCenterX, initialCenterZ);
@@ -732,7 +766,10 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
       roadCorridor,
       riverCorridor,
     });
-    if (forest.group) group.add(forest.group);
+    if (forest.group) {
+      group.add(forest.group);
+      if (spawnPoint) forest.setCameraPosition(spawnPoint);
+    }
   }
 
   // Blueprint entities — Phase B: place object meshes on the resolved surface
@@ -754,25 +791,45 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
   // Forest zones: SeedThree procedural trees with LOD rebinning + impostors (M3+).
   const forestMapZones = (worldMap?.zones ?? []).filter((z) => z.type === 'forest');
   let forestZone = null;
+
+  const mountForestZone = (built) => {
+    forestZone = built;
+    if (built.group) group.add(built.group);
+    if (built.colliders?.length) colliders.push(...built.colliders);
+    if (built.litterMask) setForestLitterMask(built.litterMask);
+    if (spawnPoint) built.setCameraPosition?.(spawnPoint);
+    return built;
+  };
+
+  const forestZoneOptions = {
+    zones: forestMapZones,
+    sampleHeight: sampleShapedHeight,
+    roadCorridor,
+    riverCorridor,
+    findNearestRoadPoint: (x, z, options) =>
+      roadProfile ? findNearestRoadPoint(roadProfile, x, z, options) : null,
+    qualityPreset,
+    renderer,
+    initialCameraPosition: spawnPoint,
+  };
+
   const forestZoneReady = forestMapZones.length > 0
-    ? createForestZone({
-      zones: forestMapZones,
-      sampleHeight: sampleShapedHeight,
-      roadCorridor,
-      riverCorridor,
-      findNearestRoadPoint: (x, z, options) =>
-        roadProfile ? findNearestRoadPoint(roadProfile, x, z, options) : null,
-      qualityPreset,
-      renderer,
-    }).then((built) => {
-      forestZone = built;
-      if (built.group) group.add(built.group);
-      if (built.colliders?.length) colliders.push(...built.colliders);
-      if (built.litterMask) {
-        setForestLitterMask(built.litterMask);
-      }
-      return built;
-    })
+    ? import('./forest/createForestZone.js')
+      .then(async ({ createForestZone }) => {
+        try {
+          return mountForestZone(await createForestZone(forestZoneOptions));
+        } catch (err) {
+          console.warn('[level] procedural forest failed — using blob fallback', err);
+          return mountForestZone(await createForestZone({
+            ...forestZoneOptions,
+            qualityPreset: {
+              ...qualityPreset,
+              forestLodMode: 'blob',
+              forestRealTrees: false,
+            },
+          }));
+        }
+      })
     : Promise.resolve(null);
 
   for (const entry of initialEntries) {
@@ -783,6 +840,13 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
   return {
     name: worldMap ? `World Map: ${worldMap.name ?? 'Untitled'}` : 'Streaming Terrain',
     group,
+    // The generic camera distance includes 284 m city chunks and can exceed
+    // this 32 m terrain streamer's guaranteed coverage by more than a kilometre.
+    // Terrain-only levels use this reach so unloaded ground is never exposed.
+    viewDistance: Math.max(
+      96,
+      loadRadius * TERRAIN_PARAMS.chunkSize - TERRAIN_PARAMS.chunkSize * 0.5,
+    ),
     // Bridge deck colliders (static; built once) + blueprint platform/object
     // colliders. PhysicsSystem builds these and getGroundHeightAt stands the
     // player on them.
@@ -829,9 +893,13 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
         x: coordForWorld(position?.x ?? 0),
         z: coordForWorld(position?.z ?? 0),
       };
+      streamingCenterX = current.x;
+      streamingCenterZ = current.z;
       const addedChunks = [];
       const addedTerrainChunks = [];
       const removedChunkKeys = [];
+      let builtTerrainChunks = 0;
+      let terrainVisualChanges = 0;
       const now = performance.now();
       let streamSpeed = Infinity;
       if (position && lastStreamingPosition && now > lastStreamingAt) {
@@ -856,6 +924,7 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
         const wanted = visualResolutionFor(entry.cx, entry.cz, current.x, current.z);
         if (wanted === entry.visualResolution) continue;
         replaceChunkLOD(entry, wanted);
+        terrainVisualChanges += 1;
         break;
       }
 
@@ -907,15 +976,22 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
       for (let i = 0; i < buildCount; i += 1) {
         const entry = addChunk(missing[i].cx, missing[i].cz, current.x, current.z);
         if (!entry) continue;
-        // NOTE: deliberately NOT pushed to addedChunks — terrain chunks share
-        // one already-compiled pipeline, so they don't go through the
-        // hide-until-compiled path (that hide was the streaming flicker).
+        // Terrain is never pushed to addedChunks — see createVisualHandle for
+        // why it must skip the async compile-queue (depthStencil descriptor).
+        terrainVisualChanges += 1;
+        builtTerrainChunks += 1;
         const distance = Math.max(Math.abs(entry.cx - current.x), Math.abs(entry.cz - current.z));
         entry.physicsActive = distance <= physicsRadius;
         if (entry.physicsActive) addedTerrainChunks.push(terrainChunkPayload(entry));
       }
 
-      return { addedChunks, removedChunkKeys, addedTerrainChunks };
+      return {
+        addedChunks,
+        removedChunkKeys,
+        addedTerrainChunks,
+        builtTerrainChunks,
+        terrainVisualChanges,
+      };
     },
 
     // Multi-sample around the foot radius (matches createChunkedTerrain) so the
@@ -1041,20 +1117,24 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
     getWaterHeightAt: (position) =>
       riverworks ? riverworks.getWaterHeightAt(position) : { waterY: 0, weight: 0 },
 
-    snapshot: () => ({
-      liveChunks: liveChunks.size,
-      trees: forest?.count ?? 0,
-      forestTrees: forestZone?.count ?? 0,
-      forestArchetypes: forestZone?.snapshot?.()?.forestArchetypes ?? 0,
-      forestNear: forestZone?.snapshot?.()?.forestNear ?? 0,
-      forestImpostors: forestZone?.snapshot?.()?.forestImpostors ?? 0,
-      forestRebinMs: forestZone?.snapshot?.()?.forestRebinMs ?? 0,
-      forestNearRadius: forestZone?.snapshot?.()?.forestNearRadius ?? 0,
-      forestFarRadius: forestZone?.snapshot?.()?.forestFarRadius ?? 0,
-      forestOffRoadPool: forestZone?.snapshot?.()?.forestOffRoadPool ?? 0,
-      forestAmbience: forestZone?.snapshot?.()?.forestAmbience ?? false,
-      ...manager.getStats(),
-    }),
+    snapshot: () => {
+      const forestSnapshot = forestZone?.snapshot?.() ?? {};
+      let missingTerrainChunks = 0;
+      for (let cx = streamingCenterX - loadRadius; cx <= streamingCenterX + loadRadius; cx += 1) {
+        for (let cz = streamingCenterZ - loadRadius; cz <= streamingCenterZ + loadRadius; cz += 1) {
+          if (!liveChunks.has(chunkKey(cx, cz))) missingTerrainChunks += 1;
+        }
+      }
+      return {
+        liveChunks: liveChunks.size,
+        missingTerrainChunks,
+        terrainCenter: { x: streamingCenterX, z: streamingCenterZ },
+        trees: forest?.count ?? 0,
+        forestTrees: forestZone?.count ?? 0,
+        ...forestSnapshot,
+        ...manager.getStats(),
+      };
+    },
 
     _manager: manager,
 

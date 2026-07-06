@@ -88,7 +88,10 @@ export class CachedClipmapShadowNode extends ShadowBaseNode {
     this.guardBand = MathUtils.clamp(options.guardBand ?? 0.15, 0.02, 0.5);
     this.blendRatio = MathUtils.clamp(options.blendRatio ?? 0.15, 0.01, 0.9);
     this.dynamicLevels = MathUtils.clamp(options.dynamicLevels ?? 2, 0, this.levels);
-    this.updateBudget = Math.max(options.updateBudget ?? 2, 1);
+    // Fractions intentionally spread cached-level refreshes across frames.
+    // Clamping to 1 silently defeated Ultra's 0.5 budget and forced one full
+    // cached level (hundreds of draws) to render every frame while driving.
+    this.updateBudget = Math.max(options.updateBudget ?? 2, 0);
     this.maxCacheAge = Math.max(options.maxCacheAge ?? 64, 0);
     // Coarser (outer) levels get progressively lower shadow-map resolution — the
     // standard cascaded-shadow technique (distant shadows don't need fine detail)

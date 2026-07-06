@@ -6,6 +6,7 @@ import { RectAreaLightNode } from 'three/webgpu';
 import { RectAreaLightTexturesLib } from 'three/examples/jsm/lights/RectAreaLightTexturesLib.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { disposeObject3D } from '../../utils/disposeObject3D.js';
+import { CITY_FURNITURE_LAYER } from '../../render/renderLayers.js';
 import { getGroundHeightAt, getBlockingColliderAt } from '../createBaseLevel.js';
 import {
   generateOfficeLayout,
@@ -397,7 +398,11 @@ function buildOfficeFloor({
       }
     }
 
-    const addInstanced = (geom, mat, matrices, name, { castShadow = false, colors = null } = {}) => {
+    const addInstanced = (geom, mat, matrices, name, {
+      castShadow = false,
+      colors = null,
+      omitFromSsaoPrepass = false,
+    } = {}) => {
       if (matrices.length === 0) return null;
       const inst = new THREE.InstancedMesh(geom, mat, matrices.length);
       for (let i = 0; i < matrices.length; i += 1) {
@@ -408,6 +413,7 @@ function buildOfficeFloor({
       if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
       inst.receiveShadow = true;
       inst.castShadow = castShadow;
+      if (omitFromSsaoPrepass) inst.layers.set(CITY_FURNITURE_LAYER);
       inst.name = name;
       floorGroup.add(inst);
       return inst;
@@ -467,12 +473,13 @@ function buildOfficeFloor({
       }
     }
 
-    addInstanced(deskGeom, deskMat, furniture.deskPlainMatrices, `Office Desks F${floorIndex}`, { castShadow: true });
-    addInstanced(deskVarGeom, deskMat, furniture.deskVariantMatrices, `Office Desks Variant F${floorIndex}`, { castShadow: true });
-    addInstanced(getMonitorGeometry(), monitorMat, furniture.monitorMatrices, `Office Monitors F${floorIndex}`, { castShadow: true });
-    addInstanced(tableGeom, tableMat, furniture.tableMatrices, `Office Tables F${floorIndex}`, { castShadow: true });
+    addInstanced(deskGeom, deskMat, furniture.deskPlainMatrices, `Office Desks F${floorIndex}`, { castShadow: true, omitFromSsaoPrepass: true });
+    addInstanced(deskVarGeom, deskMat, furniture.deskVariantMatrices, `Office Desks Variant F${floorIndex}`, { castShadow: true, omitFromSsaoPrepass: true });
+    addInstanced(getMonitorGeometry(), monitorMat, furniture.monitorMatrices, `Office Monitors F${floorIndex}`, { castShadow: true, omitFromSsaoPrepass: true });
+    addInstanced(tableGeom, tableMat, furniture.tableMatrices, `Office Tables F${floorIndex}`, { castShadow: true, omitFromSsaoPrepass: true });
     addInstanced(getPlantGeometry(), PLANT_FOLIAGE_MATERIAL, furniture.plantMatrices, `Office Plants F${floorIndex}`, {
       castShadow: true,
+      omitFromSsaoPrepass: true,
       colors: furniture.plantMatrices.map((_, i) => {
         const tc = furniture.tintCells.filter((t) => t.kind === 'plant')[i];
         return tc ? getOfficeFabricTint(floorSeedVal, tc.gx, tc.gz, accentHex) : new THREE.Color(0x3f7a3a);
@@ -480,6 +487,7 @@ function buildOfficeFloor({
     });
     addInstanced(getTaskChairGeometry(), TASK_CHAIR_MATERIAL, furniture.taskChairMatrices, `Office Task Chairs F${floorIndex}`, {
       castShadow: true,
+      omitFromSsaoPrepass: true,
       colors: furniture.taskChairMatrices.map((_, i) => {
         const tc = furniture.tintCells.filter((t) => t.kind === 'taskChair')[i];
         return tc ? getOfficeFabricTint(floorSeedVal, tc.gx, tc.gz, accentHex) : new THREE.Color(0x4a4a52);
@@ -487,6 +495,7 @@ function buildOfficeFloor({
     });
     addInstanced(getMeetingChairGeometry(), MEETING_CHAIR_MATERIAL, furniture.meetingChairMatrices, `Office Meeting Chairs F${floorIndex}`, {
       castShadow: true,
+      omitFromSsaoPrepass: true,
       colors: furniture.meetingChairMatrices.map((_, i) => {
         const tc = furniture.tintCells.filter((t) => t.kind === 'meetingChair')[i];
         return tc ? getOfficeFabricTint(floorSeedVal, tc.gx + (tc.index ?? 0), tc.gz, accentHex) : new THREE.Color(0x5a5a62);
@@ -494,6 +503,7 @@ function buildOfficeFloor({
     });
     addInstanced(getSofaGeometry(2), SOFA_MATERIAL, furniture.sofa2Matrices, `Office Sofas F${floorIndex}`, {
       castShadow: true,
+      omitFromSsaoPrepass: true,
       colors: furniture.sofa2Matrices.map((_, i) => {
         const tc = furniture.tintCells.filter((t) => t.kind === 'sofa2')[i];
         return tc ? getOfficeFabricTint(floorSeedVal, tc.gx, tc.gz, accentHex) : new THREE.Color(0x4a5568);
@@ -501,12 +511,13 @@ function buildOfficeFloor({
     });
     addInstanced(getSofaGeometry(3), SOFA_MATERIAL, furniture.sofa3Matrices, `Office Sofas 3 F${floorIndex}`, {
       castShadow: true,
+      omitFromSsaoPrepass: true,
       colors: furniture.sofa3Matrices.map((_, i) => {
         const tc = furniture.tintCells.filter((t) => t.kind === 'sofa3')[i];
         return tc ? getOfficeFabricTint(floorSeedVal, tc.gx, tc.gz, accentHex) : new THREE.Color(0x4a5568);
       }),
     });
-    addInstanced(coffeeGeom, coffeeMat, furniture.coffeeTableMatrices, `Office Coffee Tables F${floorIndex}`, { castShadow: true });
+    addInstanced(coffeeGeom, coffeeMat, furniture.coffeeTableMatrices, `Office Coffee Tables F${floorIndex}`, { castShadow: true, omitFromSsaoPrepass: true });
 
     addBlobShadowInstanced(floorGroup, furniture.blobEntries, floorY, `Office Blob Shadows F${floorIndex}`);
 
@@ -529,9 +540,9 @@ function buildOfficeFloor({
     });
     const propGeoms = getOfficePropGeometries();
     const propMats = getOfficePropMaterials({ buildOnly: false, pomWall });
-    addInstanced(propGeoms.vent, propMats.vent, props.ventMatrices, `Office Ceiling Vents F${floorIndex}`);
-    addInstanced(propGeoms.sprinkler, propMats.sprinkler, props.sprinklerMatrices, `Office Sprinklers F${floorIndex}`);
-    addInstanced(propGeoms.detector, propMats.detector, props.detectorMatrices, `Office Detectors F${floorIndex}`);
+    addInstanced(propGeoms.vent, propMats.vent, props.ventMatrices, `Office Ceiling Vents F${floorIndex}`, { omitFromSsaoPrepass: true });
+    addInstanced(propGeoms.sprinkler, propMats.sprinkler, props.sprinklerMatrices, `Office Sprinklers F${floorIndex}`, { omitFromSsaoPrepass: true });
+    addInstanced(propGeoms.detector, propMats.detector, props.detectorMatrices, `Office Detectors F${floorIndex}`, { omitFromSsaoPrepass: true });
     addInstanced(propGeoms.tvBody, propMats.tvBody, props.tvBodyMatrices, `Office TVs F${floorIndex}`, { castShadow: true });
     addInstanced(propGeoms.whiteboard, propMats.whiteboard, props.whiteboardMatrices, `Office Whiteboards F${floorIndex}`);
     addInstanced(propGeoms.artFrame, propMats.artFrame, props.artFrameMatrices, `Office Art Frames F${floorIndex}`, { castShadow: true });

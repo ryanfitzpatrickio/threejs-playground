@@ -45,6 +45,13 @@ const syntheticShell = new THREE.Mesh(
 );
 syntheticShell.name = 'tripo_part_0';
 syntheticOverlay.add(syntheticShell);
+const configuredHiddenMesh = new THREE.Mesh(
+  new THREE.BoxGeometry(0.2, 0.2, 0.2),
+  new THREE.MeshStandardMaterial(),
+);
+configuredHiddenMesh.visible = false;
+configuredHiddenMesh.userData.vehicleOverlayInitialVisible = false;
+syntheticOverlay.add(configuredHiddenMesh);
 vehicle.chassisSocket.add(syntheticOverlay);
 vehicle.chassisOverlay = syntheticOverlay;
 const body = physics.getFreshBody(vehicle.bodyHandle);
@@ -82,6 +89,7 @@ assert.equal(damageSystem.repair(vehicle), true);
 assert.equal(vehicle.damage.engineHealth, 1, 'repair should restore engine health');
 assert.equal(vehicle.damage.bumpers.front, 'intact', 'repair should restore bumper state');
 assert.equal(damageSystem.detachedBumpers.length, 0, 'repair should remove detached bumper physics');
+assert.equal(configuredHiddenMesh.visible, false, 'repair should preserve configured hidden overlay meshes');
 
 // A landing-dominated discontinuity must not enqueue body damage.
 vehicle.pendingDamageImpacts.length = 0;

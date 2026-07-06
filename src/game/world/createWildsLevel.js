@@ -22,6 +22,10 @@ import { getRecommendedCameraFar } from '../config/qualityPresets.js';
 const TERRAIN_SIZE = 700;
 const TERRAIN_SEGMENTS = 256;
 const TERRAIN_HEIGHT_SCALE = 95;
+// ForestGenerator's node material exceeds the available vertex-buffer layout,
+// causing Three to bind its per-instance arrays as uniform buffers. Keep the
+// single draw below WebGPU's common 64 KiB uniform-binding limit.
+const MAX_FOREST_INSTANCES_PER_DRAW = 512;
 
 const cullCenter = new THREE.Vector3();
 
@@ -41,7 +45,7 @@ export function createWildsLevel(qualityPreset = {}) {
   const camFar = qualityPreset.cameraFar ?? getRecommendedCameraFar(qualityPreset);
   const forest = new ForestGenerator({
     seed: qualityPreset.wildsSeed ?? 7,
-    count: qualityPreset.wildsForestCount ?? 500000,
+    count: Math.min(qualityPreset.wildsForestCount ?? 500000, MAX_FOREST_INSTANCES_PER_DRAW),
     castShadow: false, // 500k shadow casters is too costly; terrain still casts
     // Keep the draw band inside the camera far / fog so culled trees aren't wasted.
     from: 90,

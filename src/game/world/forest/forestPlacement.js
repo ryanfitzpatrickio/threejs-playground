@@ -53,10 +53,12 @@ export function treesPerSqM(zone) {
 }
 
 export function computeForestPlacementTarget(zones, cap) {
-  let totalArea = 0;
-  for (const zone of zones) totalArea += zoneAreaSqM(zone);
-  const densitySqM = zones.length ? treesPerSqM(zones[0]) : DEFAULT_FOREST_DENSITY_PER_HA / 10000;
-  return Math.min(cap, Math.max(0, Math.ceil(totalArea * densitySqM)));
+  // Sum each zone's OWN density × area. The old form applied zones[0]'s density
+  // to every plot's area, so a 1000 trees/ha plot next to a 150/ha plot silently
+  // inherited the lower rate — the per-plot density control didn't compose.
+  let target = 0;
+  for (const zone of zones) target += zoneAreaSqM(zone) * treesPerSqM(zone);
+  return Math.min(cap, Math.max(0, Math.ceil(target)));
 }
 
 /**
@@ -69,6 +71,7 @@ export function scatterForestPlacements({
   roadCorridor = null,
   riverCorridor = null,
   archetypeCount = 5,
+  pickArchetypeIndex = null,
   cap = 250,
   corridorExcluded = () => false,
 }) {
@@ -104,7 +107,9 @@ export function scatterForestPlacements({
 
       const rotY = rng() * Math.PI * 2;
       const s = 0.6 + rng() * rng() * 0.7;
-      const archetypeIndex = Math.floor(rng() * archetypeCount);
+      const archetypeIndex = typeof pickArchetypeIndex === 'function'
+        ? pickArchetypeIndex(zone, rng)
+        : Math.floor(rng() * archetypeCount);
 
       placements.push({
         x,

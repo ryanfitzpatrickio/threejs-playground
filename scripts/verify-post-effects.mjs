@@ -55,7 +55,7 @@ for (const mode of ['ssao', 'ssr', 'off']) {
 }
 assert.equal(resolveEffectivePostEffectMode('ssao', ultra), 'ssao');
 assert.equal(high.ssao.samples, 8, 'high preset uses 8 SSAO samples');
-assert.equal(ultra.ssao.samples, 12, 'ultra preset uses 12 SSAO samples');
+assert.equal(ultra.ssao.samples, 8, 'ultra caps SSAO at 8 samples');
 assert.equal(high.ssao.radius, 1.5);
 assert.equal(high.ssao.intensity, 4);
 assert.equal(high.ssao.resolutionScale, 0.4, 'SSAO runs below full resolution (inherited by medium + ultra)');
@@ -78,6 +78,8 @@ for (const [presetName, preset] of [['high', high], ['ultra', ultra], ['low', lo
       if (presetName === 'low') {
         assert.equal(plan.effectiveMode, 'off', `${label}: low quality runs off`);
         assert.equal(plan.bloom, null, `${label}: low quality has no bloom`);
+      } else if (presetName === 'ultra') {
+        assert.equal(plan.bloom, null, `${label}: ultra drops bloom from the gameplay hot path`);
       } else {
         assert.equal(plan.bloom?.implementation, 'dualKawase', `${label}: dual kawase bloom active`);
         assert.equal(plan.bloom?.resolutionScale, 0.25, `${label}: bloom at quarter resolution`);
@@ -93,7 +95,24 @@ assert.deepEqual(highSsaoPlan.ssao, {
 });
 assert.equal(highSsaoPlan.ssao.updateInterval, 2, 'high renders AO every other frame');
 const ultraSsaoPlan = buildPostPipelinePlan({ requestedMode: 'ssao', qualityPreset: ultra, backend: 'webgpu' });
-assert.equal(ultraSsaoPlan.ssao.updateInterval, 2, 'ultra renders AO every other frame');
+assert.deepEqual(ultraSsaoPlan.ssao, {
+  resolutionScale: 0.33, samples: 8, radius: 1.5, intensity: 4, blur: false, updateInterval: 4,
+});
+assert.equal(ultraSsaoPlan.bloom, null, 'ultra omits the bloom pass');
+
+const interiorUltraPlan = buildPostPipelinePlan({
+  requestedMode: 'ssao',
+  qualityPreset: ultra,
+  backend: 'webgpu',
+  sceneContext: 'interior',
+});
+assert.equal(interiorUltraPlan.effectiveMode, 'off', 'office interior disables SSAO pre-pass');
+assert.equal(interiorUltraPlan.normalPrePass, false);
+assert.equal(interiorUltraPlan.sceneContext, 'interior');
+
+const { mergeQualityPresetForScene } = await import('../src/game/config/qualityPresets.js');
+assert.equal(mergeQualityPresetForScene(ultra, 'interior').maxPixelRatio, 1.5);
+
 assert.equal(highSsaoPlan.bloom.strength, high.environment.bloomStrength, 'bloom keeps preset strength');
 assert.equal(highSsaoPlan.bloom.radius, high.environment.bloomRadius, 'bloom keeps preset radius');
 assert.equal(highSsaoPlan.bloom.threshold, high.environment.bloomThreshold, 'bloom keeps preset threshold');
@@ -101,7 +120,7 @@ assert.equal(highSsaoPlan.bloom.threshold, high.environment.bloomThreshold, 'blo
 // --- vendored nodes link + construct against three r185 ---
 // A missing named export in `three/tsl` or `three/webgpu` fails at import time.
 
-const { PerspectiveCamera } = await import('three/webgpu');
+const { DirectionalLight, PerspectiveCamera } = await import('three/webgpu');
 const { vec3, vec4, texture } = await import('three/tsl');
 const { ssao, default: SSAONode } = await import('../src/three-addons/tsl/display/SSAONode.js');
 const { dualKawaseBloom, default: DualKawaseBloomNode } = await import('../src/three-addons/tsl/display/DualKawaseBloomNode.js');
@@ -131,5 +150,10 @@ bloomNode.setSize(400, 300);
 assert.equal(bloomNode._renderTargetBright.width, 100, 'bloom bright pass honors 0.25 resolution scale');
 assert.equal(bloomNode._renderTargetBright.height, 75);
 bloomNode.dispose();
+
+const { CachedClipmapShadowNode } = await import('../src/game/render/CachedClipmapShadowNode.js');
+const clipmap = new CachedClipmapShadowNode(new DirectionalLight(), { updateBudget: 0.5 });
+assert.equal(clipmap.updateBudget, 0.5, 'fractional clipmap budgets are not clamped to one update per frame');
+clipmap.dispose();
 
 console.log('verify-post-effects: all assertions passed');

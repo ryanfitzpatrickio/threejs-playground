@@ -39,7 +39,7 @@ function bakeHeightTexture(size, fn) {
       data[i + 3] = 255;
     }
   }
-  const tex = new THREE.DataTexture(data, size, size);
+  const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat, THREE.UnsignedByteType);
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
   tex.minFilter = THREE.LinearMipmapLinearFilter;

@@ -97,7 +97,10 @@ export function createComposedWorldLevel(qualityPreset = {}, { worldMap = null, 
       const t = terrain.updateStreaming(position, options) ?? {};
       const c = city.updateStreaming(position, options) ?? {};
       return {
-        // City chunks are heavy → keep them on the hide-until-compiled path.
+        // City chunks remain hidden until compile completes. Terrain must stay
+        // fail-open and visible: it shares one material and normally reuses
+        // pooled render objects, while hiding fallback chunks creates holes if
+        // WebGPU rejects an unrelated asynchronous pipeline.
         addedChunks: c.addedChunks ?? [],
         // City and terrain both use coordinate keys such as "0:0" internally.
         // Give city bodies a separate Rapier owner namespace so unloading a terrain
@@ -111,6 +114,7 @@ export function createComposedWorldLevel(qualityPreset = {}, { worldMap = null, 
           ...(c.removedChunkKeys ?? []).map(cityPhysicsOwnerKey),
           ...(t.removedChunkKeys ?? []),
         ],
+        terrainVisualChanges: t.terrainVisualChanges ?? 0,
       };
     },
 

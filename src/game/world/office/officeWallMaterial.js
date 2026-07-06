@@ -57,7 +57,9 @@ const cachedFeature = new Map();
 export function getOfficeWallMaterial() {
   if (cached !== undefined) return cached;
   const preset = getQualityPreset(getQualityLevel());
-  cached = preset.parallaxOcclusion?.enabled ? createOfficeWallMaterial(preset) : null;
+  const pomEnabled = preset.parallaxOcclusion?.enabled === true
+    && preset.interior?.parallaxOcclusion?.enabled !== false;
+  cached = pomEnabled ? createOfficeWallMaterial(preset) : null;
   return cached;
 }
 
@@ -65,7 +67,9 @@ export function getOfficeFeatureWallMaterial(accentHex = null) {
   const key = accentHex ?? 'default';
   if (cachedFeature.has(key)) return cachedFeature.get(key);
   const preset = getQualityPreset(getQualityLevel());
-  const mat = preset.parallaxOcclusion?.enabled
+  const pomEnabled = preset.parallaxOcclusion?.enabled === true
+    && preset.interior?.parallaxOcclusion?.enabled !== false;
+  const mat = pomEnabled
     ? createOfficeFeatureWallMaterial(preset, accentHex)
     : null;
   cachedFeature.set(key, mat);

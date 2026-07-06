@@ -5,6 +5,7 @@ import { defineConfig } from 'vite';
 import solidPlugin from 'vite-plugin-solid';
 import { WebSocketServer } from 'ws';
 import { dreamfallStorePlugin } from './vite/dreamfall-store-plugin.mjs';
+import { forestLeavesPlugin } from './vite/forest-leaves-plugin.mjs';
 
 const threeModule = fileURLToPath(new URL('./node_modules/three/build/three.webgpu.js', import.meta.url));
 const threeTslModule = fileURLToPath(new URL('./node_modules/three/build/three.tsl.js', import.meta.url));
@@ -544,6 +545,7 @@ export default defineConfig(({ command, isPreview }) => {
       solidPlugin(),
       devToolsPlugin(isDevServer),
       dreamfallStorePlugin(),
+      forestLeavesPlugin(),
       ...(isDevServer ? [codexBridgePlugin(), grokBridgePlugin()] : []),
     ],
     resolve: {

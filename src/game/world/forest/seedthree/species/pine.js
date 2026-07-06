@@ -9,7 +9,7 @@ import { broadleafControls } from './broadleaf-controls.js';
 export const pine = {
   name: 'Ponderosa Pine',
   latin: 'Pinus ponderosa',
-  bark: 'pine_albedo.png',            // reddish plated conifer bark (Codex $imagegen → derived PBR)
+  bark: 'pine_albedo.png',
   leaf: 'pine_needle_albedo.png',     // flat needle-spray alpha card (Codex, chroma-keyed)
   biome: 'temperate',
   tileWorldSize: 1.2,                 // bark tile (m)

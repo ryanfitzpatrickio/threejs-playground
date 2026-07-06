@@ -1,4 +1,4 @@
-import { normalizePostEffectMode, resolveEffectivePostEffectMode } from '../config/qualityPresets.js';
+import { normalizePostEffectMode, resolveEffectivePostEffectMode, mergeQualityPresetForScene } from '../config/qualityPresets.js';
 
 /**
  * Resolve which post-processing branches the render pipeline builds. Pure and
@@ -12,19 +12,26 @@ import { normalizePostEffectMode, resolveEffectivePostEffectMode } from '../conf
  * @param {string} options.backend - The resolved renderer backend (`webgpu` or a fallback).
  * @returns {object} The plan the pipeline and renderer snapshots read from.
  */
-export function buildPostPipelinePlan({ requestedMode, qualityPreset = {}, backend = 'webgpu' }) {
+export function buildPostPipelinePlan({
+  requestedMode,
+  qualityPreset = {},
+  backend = 'webgpu',
+  sceneContext = 'exterior',
+}) {
+  const preset = mergeQualityPresetForScene(qualityPreset, sceneContext);
   // The post-effect branches (like the existing SSR gate) only run on the real
   // WebGPU backend; the WebGL2 fallback renders the plain pipeline.
   const effectiveMode = backend === 'webgpu'
-    ? resolveEffectivePostEffectMode(requestedMode, qualityPreset)
+    ? resolveEffectivePostEffectMode(requestedMode, preset)
     : 'off';
 
-  const ssaoPreset = qualityPreset.ssao ?? {};
-  const environmentPreset = qualityPreset.environment ?? {};
+  const ssaoPreset = preset.ssao ?? {};
+  const environmentPreset = preset.environment ?? {};
 
   return {
     requestedMode: normalizePostEffectMode(requestedMode),
     effectiveMode,
+    sceneContext,
     normalPrePass: effectiveMode === 'ssao',
     ssrMrt: effectiveMode === 'ssr',
     ssao: effectiveMode === 'ssao'

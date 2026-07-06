@@ -239,6 +239,13 @@ export function DebugPanel(props) {
         />
 
         <div class="debug-section">Rally</div>
+        <button
+          type="button"
+          class="dbg-row dbg-action"
+          onClick={() => dbg()?.toggleRallyCinematicDemo?.()}
+        >
+          {(snap().rallyCinematic?.active ? 'Stop' : 'Start') + ' rally cinematic demo'}
+        </button>
         <Toggle
           label="Animated spectator crowd (GLB)"
           checked={spectatorCrowd}

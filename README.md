@@ -21,6 +21,7 @@ This repository is intentionally exploratory rather than a finished game or reus
 
 ```sh
 npm install
+npm run pull:forest-textures   # forest zone bark + needle PBR from SeedThree (required after clone)
 npm run dev
 npm run build
 npm run visual-smoke
@@ -76,7 +77,7 @@ The terrain modules under `src/world/terrain/` are intentionally pure and import
 The project is a static Vite + Solid app. Production build outputs to `dist/`.
 
 ### Preparation (already applied)
-- Switched `three` to the published `^0.184.0` package.
+- Switched `three` to the published `^0.185.0` package.
 - Vendored the custom CityGenerator / Skyscraper / Sidewalk procedural addons (from the dev three checkout) into `src/three-addons/`.
 - `npm run build` produces a working static bundle.
 
@@ -131,9 +132,25 @@ MIT — see [LICENSE](LICENSE).
 
 ## References & Credits
 
-Several core effects are ports or direct adaptations of techniques from open Three.js experiments (ported to TSL + WebGPU where needed). All referenced under their original permissive licenses.
+Several core effects are ports or direct adaptations of techniques from open Three.js experiments (ported to TSL + WebGPU where needed). Third-party libraries, vendored addons, and asset sources are listed below under their original permissive licenses or terms of use.
+
+### Core Libraries (npm)
+
+| Project | Role in Dreamfall |
+|--------|-------------------|
+| [Three.js](https://github.com/mrdoob/three.js) | WebGPU renderer, TSL, glTF loading, animation, math |
+| [Solid.js](https://github.com/solidjs/solid) | UI shell, HUD, settings, editor controls |
+| [Vite](https://github.com/vitejs/vite) | Dev server and production bundling |
+| [@dimforge/rapier3d-compat](https://github.com/dimforge/rapier) | Vehicle, character, terrain, and prop physics |
+| [three-mesh-bvh](https://github.com/gkjohnson/three-mesh-bvh) | Accelerated raycasts and level geometry indexing |
+| [three-simplecloth](https://www.npmjs.com/package/three-simplecloth) | Player jacket cloth simulation on WebGPU |
+| [@gltf-transform](https://github.com/donmccurdy/glTF-Transform) + [Draco](https://github.com/google/draco) | Asset verification, compression, and pipeline tooling |
+| [Playwright](https://github.com/microsoft/playwright) | Visual smoke and headless verification scripts |
+
+Additional Three.js helpers are vendored under `src/three-addons/` when the pinned release predates a needed node or generator (LightProbeGrid, SSAO, Dual Kawase bloom, LoftGeometry, etc.).
 
 ### Rain, Wetness, Lightning, and Puddles
+
 - Rain streaks, animated ripple normals for standing water, water beading/droplets, lightning strikes + scheduling, and flash compositing: [achrefelouafi/RainSystemThreeJS](https://github.com/achrefelouafi/RainSystemThreeJS)
   - `src/game/render/createRainEffect.js` (streaks)
   - `src/game/render/createLightningBolt.js`
@@ -141,22 +158,56 @@ Several core effects are ports or direct adaptations of techniques from open Thr
   - `src/game/materials/wetSurfaceNodes.js`, `createTerrainBiomeMaterial.js`, vehicle wet overlays, and CityGenerator road material
 
 ### Parallax & Surface Detail
+
 - Parallax Occlusion Mapping (POM) with silhouette clipping and curved horizons: [SkyeShark/threejs-silhouette-pom](https://github.com/SkyeShark/threejs-silhouette-pom) (vendored at `src/three-addons/tsl/utils/ParallaxOcclusion.js`)
+- Hex-tiling noise reduction for rally mud/terrain textures: Mikkelsen's hex-tile demo ([mmikk/hextile-demo](https://github.com/mmikk/hextile-demo)) — TSL port in `src/game/materials/hexTilingNodes.js`
 
 ### Procedural City
-- City block / skyscraper / sidewalk generators: vendored from the three.js dev branch / [PR #33906](https://github.com/mrdoob/three.js/pull/33906) into `src/three-addons/generators/`
 
-### Base Library & Helpers
-- Three.js (WebGPU build + TSL): https://github.com/mrdoob/three.js (core + multiple helpers vendored under `src/three-addons/` such as `LightProbeGrid*`, `LoftGeometry`, etc.)
+- City block / skyscraper / sidewalk / street-furniture generators: vendored from the three.js dev branch / [PR #33906](https://github.com/mrdoob/three.js/pull/33906) into `src/three-addons/generators/`
+
+### Volumetric Sky, Clouds, and Atmosphere
+
+- LUT atmosphere, volumetric cloud march, temporal reprojection, cloud shadows, and god rays: ported from an analyzed production WebGPU sky reference (reverse-engineering notes in [`volumetric-sky-cloud-analysis.md`](volumetric-sky-cloud-analysis.md))
+  - `src/game/render/cloud/` (`CloudSkyProvider`, `CloudMarchNode`, `AtmosphereLUTNode`, etc.)
+  - `src/game/systems/SkySystem.js`
+
+### Forest & Vegetation
+
+- **Procedural trees ([SeedThree](https://github.com/SkyeShark/SeedThree)):** generator modules vendored from [SkyeShark/SeedThree](https://github.com/SkyeShark/SeedThree) (MIT) into `src/game/world/forest/seedthree/` — Weber–Penn skeleton, branch meshing, leaf cards, impostors, wind, and the original pine / Douglas fir / loblolly species presets. Dreamfall wraps these in `src/game/world/forest/` for zone placement, LOD rebinning, instancing, and colliders.
+  - Live reference app: [skyeshark.github.io/SeedThree](https://skyeshark.github.io/SeedThree/)
+  - Forest zone runtime: `createForestZone.js`, `forestTreeBuilder.js`, `forestLod.js`, `forestSpecies.js`
+- **Forest PBR textures:** bark under `public/assets/textures/forest/{species}/` (base pine, Douglas fir, loblolly tracked in git). Needle PBR for all catalog species lives in gitignored `data/forest-leaves/` — run `npm run pull:forest-textures` after clone. Leaves are served at `/assets/forest-leaves/` via the Vite plugin and copied into `dist/` on build. Sources are pulled from [SeedThree](https://github.com/SkyeShark/SeedThree) with per-species tweaks in `forestSpeciesTextures.js`.
+- Parametric tree skeleton follows the **Weber–Penn** paper ([PDF](https://courses.cs.duke.edu/fall02/cps124/resources/p119-weber.pdf)) — `seedthree/weber-penn.js`
+- Leaf-card placement also follows Blender Sapling / [dgreenheck/ez-tree](https://github.com/dgreenheck/ez-tree) conventions (also cited by SeedThree)
+- Backlit foliage translucency: Barré–Brisebois subsurface-scattering approach (Unreal Two-Sided Foliage family) in `seedthree/leaf-cards.js` and `seedthree/impostor.js`
+
+### Crowds & Spectators
+
+- Rally sideline flipbook crowd (baked pose instancing, unlit texture path): adapted from an earlier in-house **3js-rocks** crowd prototype; runtime in `src/game/world/spectatorCrowd.js`, asset build in `scripts/build-crowd-glb.py`
+- Ambient city sidewalk crowd (soldier bake + instancing): `src/game/systems/CrowdSystem.js`
+- Spectator base mesh + Mixamo-style gesture clips under `assets-source/models/crowd/` and `assets-source/animations/crowd-gestures/`
+
+### Office Interiors
+
+- Socket-based Wave Function Collapse solver: vendored from SkyeShark's **level-maker** workspace into `src/game/world/office/wfc/` (same author as the POM repo above); algorithm family from [mxgmn/WaveFunctionCollapse](https://github.com/mxgmn/WaveFunctionCollapse)
+
+### Characters, Animation, and Models
+
+- Default player rig route: [Mesh2Motion](https://github.com/Mesh2Motion/mesh2motion-app) skeleton + clips (`playernew-mesh2motion.glb`); assets CC0 per Mesh2Motion
+- Alternate player/enemy route: [Adobe Mixamo](https://www.mixamo.com/) skeleton and animation packs under `public/assets/animation-packs/`
+- Several character and vehicle meshes (climber, soldier, crowd base, overlays): [Tripo](https://www.tripo3d.ai/) exports retargeted onto Mixamo-compatible armatures
+- Legacy climber FBX under `public/assets/models/climber.fbx`
 
 ### Audio
-- **Engine audio (RPM + load layered simulation)**: Directly modeled on https://github.com/markeasting/engine-audio (MIT © 2025 Mark Oosting). Uses on-load / off-load loop layers at multiple RPM ranges, crossfading by RPM and throttle, pitch detuning, limiter, and transmission whine. The "BAC Mono" profile matches the reference's `bac_mono` configuration (samples under `public/audio/engine/`). See `EngineAudio.js` and `engineProfiles.js`. Boxer profile is a local extension with one-shot accents.
+
+- **Engine audio (RPM + load layered simulation)**: modeled on [markeasting/engine-audio](https://github.com/markeasting/engine-audio) (MIT © 2025 Mark Oosting). Uses on-load / off-load loop layers at multiple RPM ranges, crossfading by RPM and throttle, pitch detuning, limiter, and transmission whine. The "BAC Mono" profile matches the reference's `bac_mono` configuration (samples under `public/assets/audio/engine/`). See `EngineAudio.js` and `engineProfiles.js`. Boxer profile is a local extension with one-shot accents.
 - Rain ambience, thunder, tire gravel/mud layers, stone pings, and screech synthesis: original procedural generation via the Web Audio API (filtered white noise, bandpass/lowpass layers, envelope sweeps). See `WeatherSystem.js` (RainAmbienceAudio, ThunderAudio) and `TireEffects.js` (TireScreechAudioSystem + procedural layers).
-- Other sampled clips (tire turn/brake, crashes, cabin rain on glass, exterior idle): custom assets under `public/audio/`.
+- Other sampled clips (tire turn/brake, crashes, cabin rain on glass, exterior idle): custom assets under `public/assets/audio/`.
 
 ### Other / Planned
-- See `docs/` for additional studied references (e.g. `ocean-water-system-plan.md` for OceanThreejs, `wilds-nature-system-plan.md` and `cloud-fog-volume-port-plan.md` for GrassSystemThreeJS techniques).
-- Ragdoll research references: `ragdoll_research.md`.
+
+- Additional reverse-engineering and research notes at repo root: [`volumetric-sky-cloud-analysis.md`](volumetric-sky-cloud-analysis.md), [`ragdoll_research.md`](ragdoll_research.md), [`multiplayer_pain_points.md`](multiplayer_pain_points.md).
 
 ## Development Notes
 

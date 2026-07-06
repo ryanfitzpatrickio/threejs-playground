@@ -1,0 +1,522 @@
+{
+  "id": "scene_mr50xnlt_1",
+  "name": "test track 2",
+  "savedAt": 1783089543609,
+  "map": {
+    "version": 1,
+    "name": "test track 2",
+    "chunkSize": 32,
+    "bounds": {
+      "minX": -512,
+      "minZ": -512,
+      "maxX": 512,
+      "maxZ": 512
+    },
+    "spawn": {
+      "x": -304,
+      "z": -252,
+      "yaw": 90
+    },
+    "zones": [
+      {
+        "id": "z_tt2_infield_hills",
+        "type": "terrain",
+        "shape": "rect",
+        "rect": {
+          "minX": -160,
+          "minZ": -144,
+          "maxX": 160,
+          "maxZ": 160
+        },
+        "props": {
+          "biome": "hills"
+        }
+      },
+      {
+        "id": "z_tt2_north_alpine",
+        "type": "wilds",
+        "shape": "rect",
+        "rect": {
+          "minX": -512,
+          "minZ": 160,
+          "maxX": 512,
+          "maxZ": 512
+        },
+        "props": {}
+      },
+      {
+        "id": "z_tt2_south_commercial",
+        "type": "city",
+        "shape": "rect",
+        "rect": {
+          "minX": -512,
+          "minZ": -512,
+          "maxX": 512,
+          "maxZ": -304
+        },
+        "props": {
+          "seed": 4821,
+          "cityStyle": "commercial"
+        }
+      },
+      {
+        "id": "z_tt2_west_downtown",
+        "type": "city",
+        "shape": "rect",
+        "rect": {
+          "minX": -512,
+          "minZ": -304,
+          "maxX": -368,
+          "maxZ": 160
+        },
+        "props": {
+          "seed": 9137,
+          "cityStyle": "downtown"
+        }
+      },
+      {
+        "id": "z_tt2_east_suburbs",
+        "type": "city",
+        "shape": "rect",
+        "rect": {
+          "minX": 368,
+          "minZ": -304,
+          "maxX": 512,
+          "maxZ": 160
+        },
+        "props": {
+          "seed": 2264,
+          "cityStyle": "suburbs"
+        }
+      },
+      {
+        "id": "z_tt2_inner_wilds",
+        "type": "wilds",
+        "shape": "rect",
+        "rect": {
+          "minX": -368,
+          "minZ": -304,
+          "maxX": -160,
+          "maxZ": -160
+        },
+        "props": {}
+      },
+      {
+        "id": "z_tt2_inner_plains",
+        "type": "terrain",
+        "shape": "rect",
+        "rect": {
+          "minX": 160,
+          "minZ": -304,
+          "maxX": 368,
+          "maxZ": -160
+        },
+        "props": {
+          "biome": "plains"
+        }
+      },
+      {
+        "id": "z_tt2_loopout_n",
+        "type": "loopout",
+        "shape": "rect",
+        "rect": {
+          "minX": -64,
+          "minZ": 480,
+          "maxX": 64,
+          "maxZ": 512
+        },
+        "props": {}
+      },
+      {
+        "id": "z_tt2_loopout_s",
+        "type": "loopout",
+        "shape": "rect",
+        "rect": {
+          "minX": -64,
+          "minZ": -512,
+          "maxX": 64,
+          "maxZ": -480
+        },
+        "props": {}
+      }
+    ],
+    "roads": [
+      {
+        "id": "r_tt2_sector1_straight",
+        "points": [
+          {
+            "x": -368,
+            "z": -252
+          },
+          {
+            "x": -304,
+            "z": -252
+          },
+          {
+            "x": -224,
+            "z": -252
+          },
+          {
+            "x": -128,
+            "z": -252
+          },
+          {
+            "x": -32,
+            "z": -252
+          },
+          {
+            "x": 64,
+            "z": -252
+          },
+          {
+            "x": 160,
+            "z": -252
+          },
+          {
+            "x": 256,
+            "z": -252
+          }
+        ],
+        "width": 16,
+        "type": "road",
+        "trackStyle": "urbanCircuit",
+        "elevation": 0
+      },
+      {
+        "id": "r_tt2_sector2_turn1",
+        "points": [
+          {
+            "x": 256,
+            "z": -252
+          },
+          {
+            "x": 336,
+            "z": -228
+          },
+          {
+            "x": 384,
+            "z": -176
+          },
+          {
+            "x": 416,
+            "z": -96
+          },
+          {
+            "x": 416,
+            "z": 0
+          }
+        ],
+        "width": 16,
+        "type": "road",
+        "trackStyle": "urbanCircuit",
+        "elevation": 0
+      },
+      {
+        "id": "r_tt2_sector3_north",
+        "points": [
+          {
+            "x": 416,
+            "z": 0
+          },
+          {
+            "x": 384,
+            "z": 80
+          },
+          {
+            "x": 320,
+            "z": 144
+          },
+          {
+            "x": 224,
+            "z": 192
+          }
+        ],
+        "width": 14,
+        "type": "road",
+        "trackStyle": null,
+        "elevation": 0
+      },
+      {
+        "id": "r_tt2_sector4_esses",
+        "points": [
+          {
+            "x": 224,
+            "z": 192
+          },
+          {
+            "x": 112,
+            "z": 208
+          },
+          {
+            "x": 0,
+            "z": 208
+          },
+          {
+            "x": -112,
+            "z": 192
+          }
+        ],
+        "width": 12,
+        "type": "road",
+        "trackStyle": null,
+        "elevation": 0
+      },
+      {
+        "id": "r_tt2_sector5_hairpin",
+        "points": [
+          {
+            "x": -112,
+            "z": 192
+          },
+          {
+            "x": -208,
+            "z": 144
+          },
+          {
+            "x": -288,
+            "z": 64
+          },
+          {
+            "x": -320,
+            "z": -32
+          },
+          {
+            "x": -336,
+            "z": -128
+          },
+          {
+            "x": -352,
+            "z": -208
+          },
+          {
+            "x": -368,
+            "z": -252
+          }
+        ],
+        "width": 16,
+        "type": "road",
+        "trackStyle": "urbanCircuit",
+        "elevation": 0
+      },
+      {
+        "id": "r_tt2_infield_scenic",
+        "points": [
+          {
+            "x": -96,
+            "z": 96
+          },
+          {
+            "x": 0,
+            "z": 128
+          },
+          {
+            "x": 96,
+            "z": 96
+          },
+          {
+            "x": 96,
+            "z": 0
+          },
+          {
+            "x": 0,
+            "z": -32
+          },
+          {
+            "x": -96,
+            "z": 0
+          },
+          {
+            "x": -96,
+            "z": 96
+          }
+        ],
+        "width": 8,
+        "type": "road",
+        "trackStyle": null,
+        "elevation": 0
+      },
+      {
+        "id": "r_tt2_pit_lane",
+        "points": [
+          {
+            "x": -304,
+            "z": -252
+          },
+          {
+            "x": -304,
+            "z": -320
+          },
+          {
+            "x": -224,
+            "z": -352
+          },
+          {
+            "x": -160,
+            "z": -352
+          },
+          {
+            "x": -160,
+            "z": -320
+          },
+          {
+            "x": -224,
+            "z": -288
+          },
+          {
+            "x": -304,
+            "z": -252
+          }
+        ],
+        "width": 10,
+        "type": "road",
+        "trackStyle": null,
+        "elevation": 0
+      },
+      {
+        "id": "r_tt2_paddock",
+        "points": [
+          {
+            "x": -160,
+            "z": -352
+          },
+          {
+            "x": -96,
+            "z": -352
+          },
+          {
+            "x": -32,
+            "z": -320
+          },
+          {
+            "x": -32,
+            "z": -288
+          }
+        ],
+        "width": 8,
+        "type": "road",
+        "trackStyle": null,
+        "elevation": 0
+      },
+      {
+        "id": "r_tt2_service_south",
+        "points": [
+          {
+            "x": -448,
+            "z": -368
+          },
+          {
+            "x": -288,
+            "z": -368
+          },
+          {
+            "x": -128,
+            "z": -368
+          },
+          {
+            "x": 128,
+            "z": -368
+          },
+          {
+            "x": 320,
+            "z": -368
+          },
+          {
+            "x": 448,
+            "z": -368
+          }
+        ],
+        "width": 8,
+        "type": "road",
+        "trackStyle": null,
+        "elevation": 0
+      }
+    ],
+    "rivers": [
+      {
+        "id": "rv_tt2_south_bay",
+        "points": [
+          {
+            "x": -512,
+            "z": -432
+          },
+          {
+            "x": 512,
+            "z": -432
+          }
+        ],
+        "width": 28,
+        "depth": 10,
+        "type": "river",
+        "oceanLeft": false,
+        "oceanRight": true
+      }
+    ],
+    "pois": [
+      {
+        "id": "p_tt2_start",
+        "name": "Start / Finish",
+        "kind": "spawn",
+        "x": -304,
+        "z": -252
+      },
+      {
+        "id": "p_tt2_t1",
+        "name": "Turn 1",
+        "kind": "landmark",
+        "x": 384,
+        "z": -176
+      },
+      {
+        "id": "p_tt2_north_open",
+        "name": "North Sweeper",
+        "kind": "landmark",
+        "x": 320,
+        "z": 144
+      },
+      {
+        "id": "p_tt2_hairpin",
+        "name": "North Hairpin",
+        "kind": "landmark",
+        "x": -320,
+        "z": -32
+      },
+      {
+        "id": "p_tt2_esses",
+        "name": "South Esses",
+        "kind": "landmark",
+        "x": 112,
+        "z": 208
+      },
+      {
+        "id": "p_tt2_pit",
+        "name": "Pit Entry",
+        "kind": "landmark",
+        "x": -304,
+        "z": -320
+      }
+    ],
+    "entities": [
+      {
+        "id": "e_tt2_center",
+        "name": "race track center piece",
+        "blueprintId": "bp_racetrackcenter_mr2x9jj1_1",
+        "x": 0,
+        "z": 32,
+        "yaw": 0,
+        "scale": 1,
+        "groundMode": "merge"
+      },
+      {
+        "id": "e_tt2_platform",
+        "name": "Test Platform",
+        "blueprintId": "bp_mr2wum6d_1",
+        "x": -96,
+        "z": -336,
+        "yaw": 45,
+        "scale": 1,
+        "groundMode": "platform"
+      }
+    ],
+    "createdAt": 1782488163794
+  }
+}

@@ -17,6 +17,10 @@ import { zoneBounds, zoneContains, polygonArea } from '../../world/worldMap/zone
 
 const TREES_PER_SQM = 0.22;       // density target
 const MAX_TREES = 220000;         // hard cap so a huge zone can't explode the build
+// The custom node material uses enough attributes that Three may place instance
+// data in a uniform buffer. Keep its mat4 array safely below WebGPU's common
+// 64 KiB maximum uniform binding size.
+const MAX_INSTANCES_PER_DRAW = 512;
 const CULL_FROM = 90;             // distance the canopy starts thinning
 const CULL_TO = 280;              // distance past which no tree is drawn
 const ALT_MIN = 0.08;             // forest band, as a fraction of the zone's height range
@@ -55,7 +59,7 @@ export function createZoneForest({
       ? polygonArea(zone.points)
       : Math.max(0, (zone.rect.maxX - zone.rect.minX) * (zone.rect.maxZ - zone.rect.minZ));
   }
-  const target = Math.min(cap, Math.max(1, Math.ceil(totalArea * TREES_PER_SQM)));
+  const target = Math.min(cap, MAX_INSTANCES_PER_DRAW, Math.max(1, Math.ceil(totalArea * TREES_PER_SQM)));
 
   const geometry = blobGeometry();
   const camPos = uniform(new THREE.Vector3());
@@ -81,13 +85,20 @@ export function createZoneForest({
   const dummy = new THREE.Object3D();
   let placed = 0;
 
-  for (const zone of zones) {
+  for (let zoneIndex = 0; zoneIndex < zones.length; zoneIndex += 1) {
+    const zone = zones[zoneIndex];
     if (placed >= target) break;
     const b = zoneBounds(zone);
     const area = zone.shape === 'polygon'
       ? polygonArea(zone.points)
       : Math.max(1, (b.maxX - b.minX) * (b.maxZ - b.minZ));
-    const zoneTarget = Math.min(target - placed, Math.max(1, Math.ceil(area * TREES_PER_SQM)));
+    // Share a capped forest budget across every authored zone. Letting the first
+    // large zone consume `target` made later plots completely empty (Forest Park
+    // has many equal test plots, with spawn near the final ones).
+    const remaining = target - placed;
+    const zoneTarget = zoneIndex === zones.length - 1
+      ? remaining
+      : Math.min(remaining, Math.max(1, Math.round(target * (area / totalArea))));
     const rng = mulberry32(hashZone(zone) || 1);
     let zonePlaced = 0;
     let attempts = 0;

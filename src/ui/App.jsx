@@ -255,7 +255,10 @@ export function App() {
         debugPanelOpen={showDebugPanel()}
         devModeButtons={<devTools.ModeButtons />}
         onLevelModeChange={setLevelMode}
-        onOpenGarage={() => switchTo('garage')}
+        onOpenGarage={() => {
+          setShowSettings(false);
+          switchTo('garage');
+        }}
         onQualityChange={handleQualityChange}
         onToneMappingChange={handleToneMappingChange}
         onPostEffectChange={handlePostEffectChange}

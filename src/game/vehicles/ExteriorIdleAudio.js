@@ -1,10 +1,11 @@
 import * as THREE from 'three';
 
-const IDLE_URL = '/audio/vehicles/car-idle-exterior.mp3';
+const DEFAULT_IDLE_URL = '/audio/vehicles/car-idle-exterior.mp3';
 
-/** Looping exterior muscle-car idle — volume driven by proximity (0..1). */
+/** Looping exterior idle — volume driven by proximity (0..1). */
 export class ExteriorIdleAudio {
-  constructor() {
+  constructor(idleUrl = DEFAULT_IDLE_URL) {
+    this.idleUrl = idleUrl || DEFAULT_IDLE_URL;
     this.ctx = null;
     this.buffer = null;
     this.source = null;
@@ -25,8 +26,8 @@ export class ExteriorIdleAudio {
     const AudioContext = window.AudioContext || window.webkitAudioContext;
     if (!AudioContext) return;
     this.ctx = new AudioContext();
-    const response = await fetch(IDLE_URL);
-    if (!response.ok) throw new Error(`Failed to load exterior idle: ${IDLE_URL}`);
+    const response = await fetch(this.idleUrl);
+    if (!response.ok) throw new Error(`Failed to load exterior idle: ${this.idleUrl}`);
     this.buffer = await this.ctx.decodeAudioData(await response.arrayBuffer());
   }
 

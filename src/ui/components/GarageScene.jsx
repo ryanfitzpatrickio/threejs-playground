@@ -1,17 +1,21 @@
-import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js';
 import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
 import { getQualityLevel, getQualityPreset } from '../../game/config/qualityPresets.js';
 import { RendererSystem } from '../../game/systems/RendererSystem.js';
 import { SkySystem } from '../../game/systems/SkySystem.js';
 import { BaseVehicle } from '../../game/vehicles/BaseVehicle.js';
+import { QuadBikeVehicle, QUAD_BIKE_ASSET_URL, QUAD_BIKE_PAINTS } from '../../game/vehicles/QuadBikeVehicle.js';
 import { LightProbeGrid } from '../../three-addons/lighting/LightProbeGrid.js';
 import {
   GARAGE_CHASSIS_OPTIONS,
   GARAGE_CHASSIS_SURFACE_MODES,
   GARAGE_ENGINE_OPTIONS,
   GARAGE_FRAME_PRESETS,
-  GARAGE_TIRE_OPTIONS,
+  getGarageTireOptionsForVehicleType,
+  GARAGE_QUAD_DEFAULT_FRAME,
+  GARAGE_QUAD_DEFAULT_WHEELS,
+  GARAGE_VEHICLE_TYPES,
   createGarageBuild,
   deleteGarageBuild,
   getGarageFramePreset,
@@ -20,6 +24,14 @@ import {
   setActiveGarageBuild,
   vehicleOptionsFromGarageBuild,
 } from '../../game/vehicles/garageBuilds.js';
+import {
+  getChassisPartOverridesForBuild,
+  loadChassisMeshPartCatalog,
+} from '../../game/vehicles/chassisMeshParts.js';
+import {
+  GARAGE_MESH_PART_ROLES,
+  resolveMeshPartKey,
+} from '../../game/materials/createVehicleOverlayMaterials.js';
 
 const FRAME_FIELDS = [
   { key: 'frameWidth', label: 'Frame width', min: 1.6, max: 2.6, step: 0.02, unit: 'm' },
@@ -27,6 +39,7 @@ const FRAME_FIELDS = [
   { key: 'frameHeight', label: 'Frame height', min: 0.65, max: 1.25, step: 0.02, unit: 'm' },
   { key: 'wheelTrack', label: 'Wheel track', min: 1.5, max: 2.35, step: 0.02, unit: 'm' },
   { key: 'wheelbase', label: 'Wheelbase', min: 2.3, max: 4.2, step: 0.03, unit: 'm' },
+  { key: 'wheelAxleOffset', label: 'Wheel position', min: -0.55, max: 0.55, step: 0.02, unit: 'm' },
   { key: 'rideHeight', label: 'Ride height', min: 0.65, max: 1.25, step: 0.02, unit: 'm' },
   { key: 'offsetFromTires', label: 'Frame offset', min: -0.65, max: 0.1, step: 0.02, unit: 'm' },
 ];
@@ -38,6 +51,16 @@ const PERFORMANCE_FIELDS = [
   { key: 'suspensionStiffness', label: 'Spring', min: 16, max: 36, step: 1, unit: '' },
   { key: 'suspensionDamping', label: 'Damping', min: 7, max: 16, step: 0.5, unit: '' },
   { key: 'traction', label: 'Traction (mud/dirt)', min: 0.4, max: 1, step: 0.02, unit: '' },
+];
+
+const QUAD_FRAME_FIELDS = [
+  { key: 'rideHeight', label: 'Ride height', min: 0.45, max: 1.05, step: 0.02, unit: 'm' },
+  { key: 'offsetFromTires', label: 'Frame offset', min: -0.65, max: 0.35, step: 0.02, unit: 'm' },
+];
+
+const QUAD_WHEEL_FIELDS = [
+  { key: 'radius', label: 'Tire radius', min: 0.25, max: 0.52, step: 0.01, unit: 'm' },
+  { key: 'width', label: 'Tire width', min: 0.18, max: 0.45, step: 0.01, unit: 'm' },
 ];
 
 const WHEEL_FIELDS = [
@@ -53,38 +76,167 @@ const CHASSIS_TRANSFORM_FIELDS = [
   { group: 'rotationDegrees', index: 0, label: 'Body pitch', min: -180, max: 180, step: 1, unit: '°' },
   { group: 'rotationDegrees', index: 1, label: 'Body yaw', min: -360, max: 360, step: 1, unit: '°' },
   { group: 'rotationDegrees', index: 2, label: 'Body roll', min: -180, max: 180, step: 1, unit: '°' },
-  { group: 'scale', index: 0, label: 'Body scale X', min: 0.5, max: 12, step: 0.1, unit: '' },
-  { group: 'scale', index: 1, label: 'Body scale Y', min: 0.5, max: 12, step: 0.1, unit: '' },
-  { group: 'scale', index: 2, label: 'Body scale Z', min: 0.5, max: 12, step: 0.1, unit: '' },
+  { group: 'scale', index: 0, label: 'Body scale X', min: 0.5, max: 50, step: 0.5, unit: '' },
+  { group: 'scale', index: 1, label: 'Body scale Y', min: 0.5, max: 50, step: 0.5, unit: '' },
+  { group: 'scale', index: 2, label: 'Body scale Z', min: 0.5, max: 50, step: 0.5, unit: '' },
 ];
 
 export function GarageScene(props) {
   let canvas;
   let preview;
+  let previewApi = null;
   let mounted = true;
   const [draft, setDraft] = createSignal(createGarageBuild('street'));
   const [savedBuilds, setSavedBuilds] = createSignal(loadGarageBuilds());
   const [status, setStatus] = createSignal('Choose a frame, tune it, then save the build.');
+  const [meshPartCatalog, setMeshPartCatalog] = createSignal([]);
+  const [meshPartsLoading, setMeshPartsLoading] = createSignal(false);
+  const [meshPartsScrollTop, setMeshPartsScrollTop] = createSignal(0);
+  let meshPartsListEl = null;
+  let meshCatalogKey = '';
+
+  const meshParts = createMemo(() => {
+    const catalog = meshPartCatalog();
+    if (!catalog.length) return [];
+    const build = draft();
+    const overrides = getChassisPartOverridesForBuild(build, meshPartProfileId(build));
+    return catalog.map((part) => {
+      const role = overrides[part.key] ?? 'auto';
+      return {
+        ...part,
+        role,
+        effectiveRole: role !== 'auto' ? role : part.autoRole,
+      };
+    });
+  });
+
+  createEffect(() => {
+    meshParts();
+    const top = meshPartsScrollTop();
+    queueMicrotask(() => {
+      if (meshPartsListEl) meshPartsListEl.scrollTop = top;
+    });
+  });
+
+  const bindMeshPartsList = (element) => {
+    meshPartsListEl = element;
+    if (element) element.scrollTop = meshPartsScrollTop();
+  };
+
+  const onMeshPartsListScroll = (event) => {
+    setMeshPartsScrollTop(event.currentTarget.scrollTop);
+  };
+  const [highlightedKey, setHighlightedKey] = createSignal(null);
+  const [vehicleTab, setVehicleTab] = createSignal(
+    draft().vehicleType === 'car' ? 'cars' : 'rideables',
+  );
+
+  const meshPartProfileId = (build = draft()) => (
+    build.vehicleType === 'quad' ? 'quad-bike' : build.chassisId
+  );
+
+  createEffect(() => {
+    const build = draft();
+    if (build.vehicleType !== 'car' && build.vehicleType !== 'quad') {
+      meshCatalogKey = '';
+      setMeshPartCatalog([]);
+      setMeshPartsLoading(false);
+      return;
+    }
+    const profileId = meshPartProfileId(build);
+    const url = build.vehicleType === 'quad'
+      ? QUAD_BIKE_ASSET_URL
+      : (GARAGE_CHASSIS_OPTIONS.find((entry) => entry.id === build.chassisId)
+        ?? GARAGE_CHASSIS_OPTIONS[0]).url;
+    const nextCatalogKey = [
+      build.vehicleType,
+      profileId,
+      url ?? '',
+      build.disableGlassDetection ? '1' : '0',
+    ].join('|');
+    if (!url) {
+      meshCatalogKey = '';
+      setMeshPartCatalog([]);
+      setMeshPartsLoading(false);
+      return;
+    }
+    if (nextCatalogKey === meshCatalogKey && meshPartCatalog().length > 0) {
+      return;
+    }
+    meshCatalogKey = nextCatalogKey;
+    let cancelled = false;
+    setMeshPartsLoading(true);
+    loadChassisMeshPartCatalog({
+      url,
+      profileId,
+      partOverrides: {},
+      disableGlassDetection: build.disableGlassDetection === true,
+    }).then((parts) => {
+      if (!cancelled) {
+        setMeshPartCatalog(parts.map(({ key, names, autoRole }) => ({ key, names, autoRole })));
+        setMeshPartsLoading(false);
+        setHighlightedKey(null);
+        (previewApi || preview)?.clearHighlight?.();
+      }
+    }).catch(() => {
+      if (!cancelled) {
+        setMeshPartCatalog([]);
+        setMeshPartsLoading(false);
+        setHighlightedKey(null);
+        (previewApi || preview)?.clearHighlight?.();
+      }
+    });
+    onCleanup(() => { cancelled = true; });
+  });
 
   onMount(async () => {
     const instance = await createGaragePreview(canvas, draft());
     if (!mounted) instance.dispose();
-    else preview = instance;
+    else {
+      preview = instance;
+      previewApi = instance;
+    }
   });
   onCleanup(() => {
     mounted = false;
+    previewApi = null;
     preview?.dispose();
   });
 
   const selectPreset = (preset) => {
+    const frame = { ...preset.frame, wheelAxleOffset: preset.frame.wheelAxleOffset ?? 0 };
     setDraft((current) => ({
       ...current,
       presetId: preset.id,
       name: `${preset.name} Build`,
-      frame: { ...preset.frame },
+      frame,
     }));
-    preview?.setFrame(preset.frame);
+    preview?.setFrame(frame, true);
     setStatus(`${preset.name} frame loaded.`);
+  };
+
+  const selectVehicleType = (type) => {
+    const next = {
+      ...draft(),
+      vehicleType: type.id,
+      name: type.id === 'quad' ? 'Trail Quad' : type.id === 'horse' ? 'Horse Mount' : draft().name,
+      ...(type.id === 'quad'
+        ? {
+          wheels: { ...GARAGE_QUAD_DEFAULT_WHEELS },
+          frame: { ...GARAGE_QUAD_DEFAULT_FRAME },
+        }
+        : {}),
+    };
+    setDraft(next);
+    preview?.setBuild(next);
+    setStatus(`${type.name} selected.`);
+  };
+
+  const selectQuadPaint = (paint) => {
+    const next = { ...draft(), paintId: paint.id };
+    setDraft(next);
+    preview?.setBuild(next);
+    setStatus(`${paint.name} paint selected.`);
   };
 
   const updateFrame = (key, value) => {
@@ -97,6 +249,7 @@ export function GarageScene(props) {
     const next = { ...draft(), hideBackSeats: checked };
     setDraft(next);
     preview?.setBuild(next);
+    setHighlightedKey(null);
     setStatus(checked ? 'Two-seat layout enabled.' : 'Rear seats restored.');
   };
 
@@ -104,6 +257,7 @@ export function GarageScene(props) {
     const next = { ...draft(), hideEngine: checked };
     setDraft(next);
     preview?.setBuild(next);
+    setHighlightedKey(null);
     setStatus(checked ? 'Exposed engine hidden.' : 'Exposed engine restored.');
   };
 
@@ -111,6 +265,7 @@ export function GarageScene(props) {
     const next = { ...draft(), disableGlassDetection: checked };
     setDraft(next);
     preview?.setBuild(next);
+    setHighlightedKey(null);
     setStatus(checked ? 'Glass detection disabled for this build.' : 'Glass detection enabled.');
   };
 
@@ -118,8 +273,27 @@ export function GarageScene(props) {
     const next = { ...draft(), chassisSurfaceMode: mode };
     setDraft(next);
     preview?.setBuild(next);
+    setHighlightedKey(null);
     const label = GARAGE_CHASSIS_SURFACE_MODES.find((entry) => entry.id === mode)?.name ?? mode;
     setStatus(`${label} surface selected.`);
+  };
+
+  const updateMeshPartRole = (meshKey, role) => {
+    if (meshPartsListEl) {
+      setMeshPartsScrollTop(meshPartsListEl.scrollTop);
+    }
+    const chassisId = meshPartProfileId();
+    const current = { ...getChassisPartOverridesForBuild(draft(), chassisId) };
+    if (role === 'auto') delete current[meshKey];
+    else current[meshKey] = role;
+    const chassisPartOverrides = { ...(draft().chassisPartOverrides ?? {}) };
+    if (Object.keys(current).length > 0) chassisPartOverrides[chassisId] = current;
+    else delete chassisPartOverrides[chassisId];
+    const next = { ...draft(), chassisPartOverrides };
+    setDraft(next);
+    preview?.setBuild(next);
+    const label = GARAGE_MESH_PART_ROLES.find((entry) => entry.id === role)?.name ?? role;
+    setStatus(`${meshKey} → ${label}.`);
   };
 
   const updatePerformance = (key, value) => {
@@ -143,12 +317,14 @@ export function GarageScene(props) {
     const next = { ...draft(), wheels: { ...draft().wheels, [key]: number } };
     setDraft(next);
     preview?.setBuild(next);
+    setHighlightedKey(null);
   };
 
   const selectTire = (tire) => {
     const next = { ...draft(), wheels: { ...draft().wheels, tireId: tire.id } };
     setDraft(next);
     preview?.setBuild(next);
+    setHighlightedKey(null);
     setStatus(`${tire.name} tires selected.`);
   };
 
@@ -178,6 +354,7 @@ export function GarageScene(props) {
     };
     setDraft(next);
     preview?.setBuild(next);
+    setHighlightedKey(null);
     setStatus(`${chassis.name} selected.`);
   };
 
@@ -193,14 +370,17 @@ export function GarageScene(props) {
     const next = createGarageBuild(draft().presetId);
     setDraft(next);
     preview?.setBuild(next);
+    setHighlightedKey(null);
     setStatus('Started a new build.');
   };
 
   const loadBuild = (build) => {
     const copy = structuredClone(build);
     setDraft(copy);
+    setVehicleTab(copy.vehicleType === 'car' ? 'cars' : 'rideables');
     setActiveGarageBuild(copy.id);
     preview?.setBuild(copy);
+    setHighlightedKey(null);
     setStatus(`${copy.name} loaded.`);
   };
 
@@ -226,12 +406,39 @@ export function GarageScene(props) {
           <h1>Garage</h1>
         </div>
         <div class="garage-header-actions">
+          <nav class="garage-type-tabs" aria-label="Vehicle type">
+            <button class={vehicleTab() === 'cars' ? 'active' : ''} onClick={() => setVehicleTab('cars')}>Cars</button>
+            <button class={vehicleTab() === 'rideables' ? 'active' : ''} onClick={() => setVehicleTab('rideables')}>Rideables</button>
+          </nav>
           <button class="garage-button ghost" onClick={newBuild}>New build</button>
           <button class="garage-button primary" onClick={useBuild}>Save &amp; drive</button>
         </div>
       </header>
 
       <aside class="garage-panel garage-panel--left">
+        <Show when={vehicleTab() === 'rideables'}>
+          <div class="garage-section-title"><span>00</span> Pick a rideable</div>
+          <div class="garage-frame-list">
+            <For each={GARAGE_VEHICLE_TYPES.filter((type) => type.tab === 'rideables')}>
+              {(type) => (
+                <button
+                  class={`garage-frame-card ${draft().vehicleType === type.id ? 'active' : ''}`}
+                  onClick={() => selectVehicleType(type)}
+                >
+                  <strong>{type.name}</strong>
+                  <small>{type.description}</small>
+                </button>
+              )}
+            </For>
+          </div>
+        </Show>
+        <Show when={vehicleTab() === 'cars'}>
+          <button
+            class={`garage-frame-card ${draft().vehicleType === 'car' ? 'active' : ''}`}
+            onClick={() => selectVehicleType(GARAGE_VEHICLE_TYPES[0])}
+          ><strong>Car builds</strong><small>Configure chassis, frame, wheels, and performance.</small></button>
+        </Show>
+        <Show when={vehicleTab() === 'cars'}>
         <div class="garage-section-title"><span>01</span> Pick a frame</div>
         <div class="garage-frame-list">
           <For each={GARAGE_FRAME_PRESETS}>
@@ -262,6 +469,7 @@ export function GarageScene(props) {
             )}
           </For>
         </div>
+        </Show>
 
         <div class="garage-section-title garage-section-title--saved"><span>04</span> Saved builds</div>
         <div class="garage-saved-list">
@@ -292,12 +500,153 @@ export function GarageScene(props) {
           />
         </label>
 
+        <Show when={draft().vehicleType === 'quad'}>
+          <div class="garage-control-group">
+            <h2>Quad body color</h2>
+            <div class="garage-frame-list">
+              <For each={QUAD_BIKE_PAINTS}>
+                {(paint) => (
+                  <button
+                    class={`garage-frame-card ${draft().paintId === paint.id ? 'active' : ''}`}
+                    onClick={() => selectQuadPaint(paint)}
+                  >
+                    <strong>{paint.name}</strong>
+                    <span class="garage-paint-chip" style={{ background: paint.color }} />
+                  </button>
+                )}
+              </For>
+            </div>
+          </div>
+        </Show>
+
+        <Show when={draft().vehicleType === 'quad'}>
+          <div class="garage-control-group">
+            <h2>Chassis stance</h2>
+            <For each={QUAD_FRAME_FIELDS}>
+              {(field) => (
+                <label class="garage-slider">
+                  <span>{field.label}</span>
+                  <input
+                    type="range" min={field.min} max={field.max} step={field.step}
+                    value={draft().frame[field.key]}
+                    onInput={(event) => updateFrame(field.key, event.currentTarget.value)}
+                  />
+                  <output>{Number(draft().frame[field.key]).toFixed(2)} {field.unit}</output>
+                </label>
+              )}
+            </For>
+          </div>
+        </Show>
+
+        <Show when={draft().vehicleType === 'car' || draft().vehicleType === 'quad'}>
+        <div class="garage-control-group">
+          <h2>Wheels &amp; tires</h2>
+          <div class="garage-frame-list">
+            <For each={getGarageTireOptionsForVehicleType(draft().vehicleType)}>
+              {(tire) => (
+                <button
+                  class={`garage-frame-card ${draft().wheels.tireId === tire.id ? 'active' : ''}`}
+                  onClick={() => selectTire(tire)}
+                >
+                  <strong>{tire.name}</strong>
+                  <small>{tire.description}</small>
+                </button>
+              )}
+            </For>
+          </div>
+          <For each={draft().vehicleType === 'quad' ? QUAD_WHEEL_FIELDS : WHEEL_FIELDS}>
+            {(field) => (
+              <label class="garage-slider">
+                <span>{field.label}</span>
+                <input
+                  type="range" min={field.min} max={field.max} step={field.step}
+                  value={draft().wheels[field.key]}
+                  onInput={(event) => updateWheel(field.key, event.currentTarget.value)}
+                />
+                <output>{Number(draft().wheels[field.key]).toFixed(2)} {field.unit}</output>
+              </label>
+            )}
+          </For>
+        </div>
+        </Show>
+
+        <Show when={draft().vehicleType === 'quad'}>
+          <div class="garage-control-group">
+            <h2>Body meshes</h2>
+            <p class="garage-mesh-parts-hint">
+              Chassis panels use the paint color above. Override roles per mesh — saved with this build.
+            </p>
+            <Show when={meshPartsLoading()}>
+              <p class="garage-empty">Loading mesh list…</p>
+            </Show>
+            <Show when={!meshPartsLoading() && meshParts().length === 0}>
+              <p class="garage-empty">No mesh parts found for this ATV shell.</p>
+            </Show>
+            <Show when={!meshPartsLoading() && meshParts().length > 0}>
+              <div
+                class="garage-mesh-parts-list"
+                ref={bindMeshPartsList}
+                onScroll={onMeshPartsListScroll}
+              >
+                <For each={meshParts()}>
+                  {(part) => (
+                    <div class="garage-mesh-part-row">
+                      <button
+                        type="button"
+                        class={`garage-target-btn ${highlightedKey() === part.key ? 'active' : ''}`}
+                        title="Target / highlight this mesh part in the viewer"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          const k = part.key;
+                          const p = previewApi || preview;
+                          if (highlightedKey() === k) {
+                            p?.clearHighlight?.();
+                            setHighlightedKey(null);
+                          } else {
+                            p?.highlightPart?.(k);
+                            setHighlightedKey(k);
+                          }
+                        }}
+                      >⌖</button>
+                      <span class="garage-mesh-part-name">
+                        <strong>{part.key}</strong>
+                        <Show when={part.role !== 'auto' && part.autoRole !== part.effectiveRole}>
+                          <small>was {part.autoRole}</small>
+                        </Show>
+                        <Show when={part.role === 'auto' && part.autoRole !== 'auto'}>
+                          <small>auto: {part.autoRole}</small>
+                        </Show>
+                      </span>
+                      <select
+                        value={part.role}
+                        onChange={(event) => {
+                          updateMeshPartRole(part.key, event.currentTarget.value);
+                        }}
+                      >
+                        <For each={GARAGE_MESH_PART_ROLES}>
+                          {(role) => <option value={role.id}>{role.name}</option>}
+                        </For>
+                      </select>
+                    </div>
+                  )}
+                </For>
+              </div>
+            </Show>
+          </div>
+        </Show>
+
+        <Show when={draft().vehicleType === 'car'}>
         <div class="garage-control-group">
           <h2>Frame geometry</h2>
           <For each={FRAME_FIELDS}>
             {(field) => (
               <label class="garage-slider">
-                <span>{field.label}</span>
+                <span>
+                  {field.label}
+                  <Show when={field.key === 'wheelAxleOffset'}>
+                    <small> (+ rear)</small>
+                  </Show>
+                </span>
                 <input
                   type="range" min={field.min} max={field.max} step={field.step}
                   value={draft().frame[field.key]}
@@ -331,36 +680,6 @@ export function GarageScene(props) {
           </label>
         </div>
 
-        <div class="garage-control-group">
-          <h2>Wheels &amp; tires</h2>
-          <div class="garage-frame-list">
-            <For each={GARAGE_TIRE_OPTIONS}>
-              {(tire) => (
-                <button
-                  class={`garage-frame-card ${draft().wheels.tireId === tire.id ? 'active' : ''}`}
-                  onClick={() => selectTire(tire)}
-                >
-                  <strong>{tire.name}</strong>
-                  <small>{tire.description}</small>
-                </button>
-              )}
-            </For>
-          </div>
-          <For each={WHEEL_FIELDS}>
-            {(field) => (
-              <label class="garage-slider">
-                <span>{field.label}</span>
-                <input
-                  type="range" min={field.min} max={field.max} step={field.step}
-                  value={draft().wheels[field.key]}
-                  onInput={(event) => updateWheel(field.key, event.currentTarget.value)}
-                />
-                <output>{Number(draft().wheels[field.key]).toFixed(2)} {field.unit}</output>
-              </label>
-            )}
-          </For>
-        </div>
-
         <Show when={draft().chassisId !== 'bare'}>
           <div class="garage-control-group">
             <h2>Chassis shell</h2>
@@ -391,6 +710,69 @@ export function GarageScene(props) {
                 )}
               </For>
             </div>
+
+            <div class="garage-mesh-parts">
+              <h3>Mesh parts</h3>
+              <p class="garage-mesh-parts-hint">
+                Override auto-detected roles. Saved per chassis with this build.
+              </p>
+              <Show when={meshPartsLoading()}>
+                <p class="garage-empty">Loading mesh list…</p>
+              </Show>
+              <Show when={!meshPartsLoading() && meshParts().length === 0}>
+                <p class="garage-empty">No mesh parts found for this chassis.</p>
+              </Show>
+              <Show when={!meshPartsLoading() && meshParts().length > 0}>
+                <div
+                  class="garage-mesh-parts-list"
+                  ref={bindMeshPartsList}
+                  onScroll={onMeshPartsListScroll}
+                >
+                  <For each={meshParts()}>
+                    {(part) => (
+                      <div class="garage-mesh-part-row">
+                        <button
+                          type="button"
+                          class={`garage-target-btn ${highlightedKey() === part.key ? 'active' : ''}`}
+                          title={`Target / highlight this mesh part in the viewer`}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            const k = part.key;
+                            const p = previewApi || preview;
+                            if (highlightedKey() === k) {
+                              p?.clearHighlight?.();
+                              setHighlightedKey(null);
+                            } else {
+                              p?.highlightPart?.(k);
+                              setHighlightedKey(k);
+                            }
+                          }}
+                        >⌖</button>
+                        <span class="garage-mesh-part-name">
+                          <strong>{part.key}</strong>
+                          <Show when={part.role !== 'auto' && part.autoRole !== part.effectiveRole}>
+                            <small>was {part.autoRole}</small>
+                          </Show>
+                          <Show when={part.role === 'auto' && part.autoRole !== 'auto'}>
+                            <small>auto: {part.autoRole}</small>
+                          </Show>
+                        </span>
+                        <select
+                          value={part.role}
+                          onChange={(event) => {
+                            updateMeshPartRole(part.key, event.currentTarget.value);
+                          }}
+                        >
+                          <For each={GARAGE_MESH_PART_ROLES}>
+                            {(role) => <option value={role.id}>{role.name}</option>}
+                          </For>
+                        </select>
+                      </div>
+                    )}
+                  </For>
+                </div>
+              </Show>
+            </div>
           </div>
         </Show>
 
@@ -416,9 +798,12 @@ export function GarageScene(props) {
             </For>
           </div>
         </Show>
+        </Show>
 
+        <Show when={draft().vehicleType !== 'horse'}>
         <div class="garage-control-group">
           <h2>Performance</h2>
+          <Show when={draft().vehicleType === 'car'}>
           <div class="garage-frame-list">
             <For each={GARAGE_ENGINE_OPTIONS}>
               {(engine) => (
@@ -432,6 +817,7 @@ export function GarageScene(props) {
               )}
             </For>
           </div>
+          </Show>
           <For each={PERFORMANCE_FIELDS}>
             {(field) => (
               <label class="garage-slider">
@@ -446,6 +832,13 @@ export function GarageScene(props) {
             )}
           </For>
         </div>
+        </Show>
+        <Show when={draft().vehicleType === 'horse'}>
+          <div class="garage-control-group">
+            <h2>Horse mount</h2>
+            <p class="garage-empty">Uses the existing horse, saddle socket, riding animation, and rein IK.</p>
+          </div>
+        </Show>
 
         <div class="garage-save-row">
           <button class="garage-button ghost" onClick={save}>Save configuration</button>
@@ -453,7 +846,7 @@ export function GarageScene(props) {
         </div>
       </aside>
 
-      <div class="garage-orbit-hint">Drag the car to rotate</div>
+      <div class="garage-orbit-hint">Drag to rotate · Cmd+drag to orbit · scroll to zoom</div>
     </section>
   );
 }
@@ -482,10 +875,45 @@ async function createGaragePreview(canvas, initialBuild) {
   scene.background = new THREE.Color(0x151a1d);
   scene.fog = new THREE.Fog(0x151a1d, 18, 32);
   const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 60);
-  // View from the opposite/front-left side. The curtain is well behind the car
-  // at negative Z, so neither the fabric nor its support can cross the sightline.
-  camera.position.set(-7.8, 3.7, 8.8);
-  camera.lookAt(0, 0.65, 0);
+  const cameraTarget = new THREE.Vector3(0, 0.65, 0);
+  const cameraBaseOffset = new THREE.Vector3(-7.8, 3.7, 8.8).sub(cameraTarget);
+  const cameraBaseSpherical = new THREE.Spherical().setFromVector3(cameraBaseOffset);
+  const cameraOrbit = {
+    theta: cameraBaseSpherical.theta,
+    phi: cameraBaseSpherical.phi,
+  };
+  const cameraRadius = cameraBaseSpherical.radius;
+  let cameraZoom = 1;
+  const applyCameraZoom = () => {
+    const offset = new THREE.Vector3().setFromSpherical({
+      radius: cameraRadius * cameraZoom,
+      phi: cameraOrbit.phi,
+      theta: cameraOrbit.theta,
+    });
+    camera.position.copy(cameraTarget).add(offset);
+    camera.lookAt(cameraTarget);
+    canvas.dataset.previewZoom = cameraZoom.toFixed(3);
+  };
+  const mutateCameraOrbit = (deltaX, deltaY) => {
+    cameraOrbit.theta -= deltaX * 0.008;
+    cameraOrbit.phi = THREE.MathUtils.clamp(
+      cameraOrbit.phi + deltaY * 0.008,
+      0.18,
+      Math.PI - 0.18,
+    );
+  };
+  applyCameraZoom();
+
+  const onWheel = (event) => {
+    event.preventDefault();
+    cameraZoom = THREE.MathUtils.clamp(
+      cameraZoom * Math.exp(-event.deltaY * 0.0012),
+      0.28,
+      1.45,
+    );
+    applyCameraZoom();
+  };
+  canvas.addEventListener('wheel', onWheel, { passive: false });
 
   scene.add(new THREE.AmbientLight(0xffffff, 0.28));
   scene.add(new THREE.HemisphereLight(
@@ -577,8 +1005,52 @@ async function createGaragePreview(canvas, initialBuild) {
   let rebuildVersion = 0;
   let probes = null;
   let disposed = false;
-  const turntable = createVehicleTurntable(canvas, () => model);
+  let currentHighlight = null;
+  const viewport = createGarageViewportControls(canvas, {
+    getModel: () => model,
+    applyCamera: applyCameraZoom,
+    mutateOrbit: mutateCameraOrbit,
+  });
+
+  function createMeshOutline(mesh) {
+    if (!mesh?.geometry) return null;
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0x39ffaa,
+      side: THREE.BackSide,
+      depthWrite: false,
+      fog: false,
+    });
+    const outline = new THREE.Mesh(mesh.geometry, mat);
+    outline.name = `highlight-outline`;
+    outline.userData._isHighlightOutline = true;
+    outline.position.copy(mesh.position);
+    outline.quaternion.copy(mesh.quaternion);
+    outline.scale.copy(mesh.scale || { x: 1, y: 1, z: 1 }).multiplyScalar(1.032);
+    outline.updateMatrix();
+    outline.matrixAutoUpdate = false;
+    return outline;
+  }
+
+  function clearCurrentHighlight() {
+    if (!currentHighlight) return;
+    const { matches = [], outlines = [] } = currentHighlight;
+    for (const ol of outlines) {
+      ol.parent?.remove(ol);
+      ol.material?.dispose?.();
+      // geometry is shared with source mesh; do not dispose here
+    }
+    for (const m of matches) {
+      if (typeof m.userData._prevVisible !== 'undefined') {
+        m.visible = !!m.userData._prevVisible;
+        delete m.userData._prevVisible;
+      }
+      delete m.userData._highlightMat;
+    }
+    currentHighlight = null;
+  }
+
   const rebuildVehicle = async (build) => {
+    clearCurrentHighlight();
     const version = ++rebuildVersion;
     if (model) {
       scene.remove(model);
@@ -586,26 +1058,23 @@ async function createGaragePreview(canvas, initialBuild) {
     }
     const chassis = GARAGE_CHASSIS_OPTIONS.find((entry) => entry.id === build.chassisId)
       ?? GARAGE_CHASSIS_OPTIONS[0];
-    const nextVehicle = new BaseVehicle({
-      ...vehicleOptionsFromGarageBuild(build),
+    const vehicleOptions = vehicleOptionsFromGarageBuild(build);
+    const PreviewVehicle = vehicleOptions.vehicleKind === 'quad' ? QuadBikeVehicle : BaseVehicle;
+    const nextVehicle = new PreviewVehicle({
+      ...vehicleOptions,
       name: 'Garage Preview',
     });
     const nextModel = nextVehicle.buildMesh();
     nextVehicle.group = nextModel;
-    // Match BaseVehicle.spawn(): generated wheel meshes exist after buildMesh,
-    // then anchors are resolved and the authored frame dimensions are re-applied.
-    nextVehicle._resolveWheelAnchors();
-    nextVehicle._applyFrameParameters();
+    await nextVehicle.assembleGroundVehicleVisuals({ syncParkedWheels: true });
     nextModel.position.y = 1.03;
-    turntable.apply(nextModel);
+    viewport.applyTurntable(nextModel);
     scene.add(nextModel);
     vehicle = nextVehicle;
     model = nextModel;
     syncVehicleMetrics();
     canvas.dataset.chassis = chassis.id;
     canvas.dataset.previewObjects = String(nextModel.children.length);
-    if (chassis.url) await nextVehicle._attachChassisOverlay();
-    await nextVehicle._attachWheelVisuals();
     if (version !== rebuildVersion) {
       scene.remove(nextModel);
       disposePreviewObject(nextModel);
@@ -669,6 +1138,7 @@ async function createGaragePreview(canvas, initialBuild) {
     setFrame(frame, replace = false) {
       if (replace) vehicle.frameParameters = { ...vehicle.frameParameterDefaults, ...frame };
       vehicle.setFrameParameters(frame);
+      vehicle._syncParkedWheelVisuals();
       syncVehicleMetrics();
     },
     setBuild(build) {
@@ -682,8 +1152,42 @@ async function createGaragePreview(canvas, initialBuild) {
       }
       vehicle.setChassisOverlayTransform(transform);
     },
+    highlightPart(key) {
+      clearCurrentHighlight();
+      if (!key) return;
+      const root = vehicle?.chassisOverlay || model;
+      if (!root) return;
+      const matches = [];
+      const findMatches = (obj) => {
+        if (!obj) return;
+        obj.traverse((child) => {
+          if (child.isMesh && resolveMeshPartKey(child) === key) {
+            matches.push(child);
+          }
+        });
+      };
+      findMatches(root);
+      if (matches.length === 0 && model && root !== model) findMatches(model);
+      if (!matches.length) return;
+
+      const outlines = [];
+      for (const m of matches) {
+        m.userData._prevVisible = m.visible;
+        m.visible = true;
+        const outline = createMeshOutline(m);
+        if (outline && m.parent) {
+          m.parent.add(outline);
+          outlines.push(outline);
+        }
+      }
+      currentHighlight = { key, matches, outlines };
+    },
+    clearHighlight() {
+      clearCurrentHighlight();
+    },
     dispose() {
       disposed = true;
+      clearCurrentHighlight();
       delete canvas.dataset.previewReady;
       delete canvas.dataset.previewObjects;
       delete canvas.dataset.chassis;
@@ -693,9 +1197,11 @@ async function createGaragePreview(canvas, initialBuild) {
       delete canvas.dataset.previewWheelbase;
       delete canvas.dataset.previewRideDelta;
       delete canvas.dataset.gi;
+      delete canvas.dataset.previewZoom;
+      canvas.removeEventListener('wheel', onWheel);
       rebuildVersion += 1;
       observer.disconnect();
-      turntable.dispose();
+      viewport.dispose();
       curtain.dispose();
       probes?.dispose();
       scene.traverse(disposePreviewMaterial);
@@ -732,16 +1238,22 @@ async function createGaragePreview(canvas, initialBuild) {
   }
 }
 
-function createVehicleTurntable(canvas, getModel) {
+function createGarageViewportControls(canvas, {
+  getModel,
+  applyCamera,
+  mutateOrbit,
+}) {
   let yaw = -0.35;
   let activePointer = null;
+  let dragMode = null;
   let lastClientX = 0;
+  let lastClientY = 0;
 
   canvas.style.cursor = 'grab';
   canvas.style.touchAction = 'none';
   canvas.dataset.previewRotation = yaw.toFixed(4);
 
-  const apply = (object = getModel()) => {
+  const applyTurntable = (object = getModel()) => {
     if (object) object.rotation.y = yaw;
     canvas.dataset.previewRotation = yaw.toFixed(4);
   };
@@ -750,6 +1262,7 @@ function createVehicleTurntable(canvas, getModel) {
     if (event.pointerId !== activePointer) return;
     if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
     activePointer = null;
+    dragMode = null;
     canvas.style.cursor = 'grab';
   };
 
@@ -757,6 +1270,8 @@ function createVehicleTurntable(canvas, getModel) {
     if (event.button !== 0 || activePointer !== null) return;
     activePointer = event.pointerId;
     lastClientX = event.clientX;
+    lastClientY = event.clientY;
+    dragMode = event.metaKey ? 'orbit' : 'turntable';
     canvas.setPointerCapture(event.pointerId);
     canvas.style.cursor = 'grabbing';
     event.preventDefault();
@@ -765,9 +1280,16 @@ function createVehicleTurntable(canvas, getModel) {
   const onPointerMove = (event) => {
     if (event.pointerId !== activePointer) return;
     const deltaX = event.clientX - lastClientX;
+    const deltaY = event.clientY - lastClientY;
     lastClientX = event.clientX;
-    yaw += deltaX * 0.01;
-    apply();
+    lastClientY = event.clientY;
+    if (dragMode === 'orbit') {
+      mutateOrbit(deltaX, deltaY);
+      applyCamera();
+    } else {
+      yaw += deltaX * 0.01;
+      applyTurntable();
+    }
     event.preventDefault();
   };
 
@@ -777,7 +1299,7 @@ function createVehicleTurntable(canvas, getModel) {
   canvas.addEventListener('pointercancel', finishDrag);
 
   return {
-    apply,
+    applyTurntable,
     dispose() {
       canvas.removeEventListener('pointerdown', onPointerDown);
       canvas.removeEventListener('pointermove', onPointerMove);

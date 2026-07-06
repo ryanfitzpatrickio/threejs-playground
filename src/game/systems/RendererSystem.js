@@ -7,6 +7,7 @@ import {
   PMREMGenerator,
   RenderPipeline,
   SRGBColorSpace,
+  RGBAFormat,
   UnsignedByteType,
   WebGPURenderer,
 } from 'three/webgpu';
@@ -14,7 +15,7 @@ import { ClusteredLighting } from 'three/examples/jsm/lighting/ClusteredLighting
 import { ssr } from 'three/examples/jsm/tsl/display/SSRNode.js';
 import { ssao } from '../../three-addons/tsl/display/SSAONode.js';
 import { dualKawaseBloom } from '../../three-addons/tsl/display/DualKawaseBloomNode.js';
-import { getPostEffectMode, getRecommendedFogMaxDistance, getToneMappingMode } from '../config/qualityPresets.js';
+import { getPostEffectMode, getRecommendedFogMaxDistance, getToneMappingMode, mergeQualityPresetForScene } from '../config/qualityPresets.js';
 import { normalizeAerialHazeColor } from '../config/photorealismPresets.js';
 import { buildPostPipelinePlan } from '../render/postPipelinePlan.js';
 import { DrawCallProfiler } from '../render/drawCallProfiler.js';
@@ -111,10 +112,31 @@ export class RendererSystem {
     this.lastFrameTriangles = 0;
     this.drawCallProfiler = new DrawCallProfiler();
     this.drawProfileCounter = 0;
+    this.sceneContext = 'exterior';
+  }
+
+  getActiveQualityPreset() {
+    return mergeQualityPresetForScene(this.qualityPreset, this.sceneContext);
+  }
+
+  setSceneContext(context = 'exterior') {
+    const normalized = context === 'interior' ? 'interior' : 'exterior';
+    if (this.sceneContext === normalized) return this.snapshot();
+    this.sceneContext = normalized;
+    const activePreset = this.getActiveQualityPreset();
+    this.postPipelinePlan = buildPostPipelinePlan({
+      requestedMode: this.requestedPostEffectMode,
+      qualityPreset: activePreset,
+      backend: this.backend,
+      sceneContext: normalized,
+    });
+    this.invalidatePipeline();
+    this.resizeIfNeeded();
+    return this.snapshot();
   }
 
   async initialize() {
-    const preset = this.qualityPreset;
+    const preset = this.getActiveQualityPreset();
     const environmentPreset = preset.environment ?? {};
     this.weather = environmentPreset.weather ?? 'clear';
     this.fogEnabled = this.weather === 'fog';
@@ -182,6 +204,7 @@ export class RendererSystem {
       requestedMode: this.requestedPostEffectMode,
       qualityPreset: preset,
       backend: this.backend,
+      sceneContext: this.sceneContext,
     });
   }
 
@@ -235,7 +258,7 @@ export class RendererSystem {
   resizeIfNeeded(onResize) {
     const width = Math.max(1, this.canvas.clientWidth);
     const height = Math.max(1, this.canvas.clientHeight);
-    const pixelRatio = Math.min(globalThis.devicePixelRatio ?? 1, this.qualityPreset.maxPixelRatio ?? 2);
+    const pixelRatio = Math.min(globalThis.devicePixelRatio ?? 1, this.getActiveQualityPreset().maxPixelRatio ?? 2);
     const targetWidth = Math.floor(width * pixelRatio);
     const targetHeight = Math.floor(height * pixelRatio);
 
@@ -274,6 +297,7 @@ export class RendererSystem {
       postEffectModeRequested: this.requestedPostEffectMode,
       postEffectMode: this.postPipelinePlan?.effectiveMode ?? 'off',
       ssao: this.postPipelinePlan?.ssao ?? null,
+      sceneContext: this.sceneContext,
       normalPrePassAllocated: this.postPipelinePlan?.normalPrePass === true,
       ssrMrtAllocated: this.postPipelinePlan?.ssrMrt === true,
       fogMarchSteps: this.fogMarchSteps,
@@ -302,7 +326,7 @@ export class RendererSystem {
     };
   }
 
-  render({ scene, camera }) {
+  render({ scene, camera, deferExpensivePasses = false }) {
     this.ensureRenderPipeline(scene, camera);
     // Drives the SSAO updateInterval gate (and any other every-Nth-frame node
     // throttles installed by ensureRenderPipeline).
@@ -313,7 +337,12 @@ export class RendererSystem {
       this._prepassCamera.copy(camera, false);
       this._prepassCamera.layers.disable(CITY_FURNITURE_LAYER);
     }
-    this.renderPipeline.render();
+    this.deferExpensivePasses = deferExpensivePasses === true;
+    try {
+      this.renderPipeline.render();
+    } finally {
+      this.deferExpensivePasses = false;
+    }
     const renderInfo = this.renderer?.info?.render;
     if (renderInfo) {
       this.lastFrameDrawCalls = renderInfo.drawCalls ?? 0;
@@ -354,8 +383,9 @@ export class RendererSystem {
 
     const plan = this.postPipelinePlan ?? buildPostPipelinePlan({
       requestedMode: this.requestedPostEffectMode,
-      qualityPreset: this.qualityPreset,
+      qualityPreset: this.getActiveQualityPreset(),
       backend: this.backend,
+      sceneContext: this.sceneContext,
     });
     const trackedNodes = [];
     this._prepassCamera = null;
@@ -396,8 +426,12 @@ export class RendererSystem {
       const prePass = pass(scene, this._prepassCamera);
       prePass.name = 'SSAO.PrePass';
       prePass.transparent = false;
-      prePass.setMRT(mrt({ output: packNormalToRGB(normalView) }));
-      prePass.getTexture('output').type = UnsignedByteType;
+      prePass.setMRT(mrt({ output: vec4(packNormalToRGB(normalView), float(1)) }));
+      const normalTarget = prePass.getTexture('output');
+      normalTarget.type = UnsignedByteType;
+      // WebGPU WriteTexture requires 4-byte RGBA rows; vec3 normals alone fault with
+      // "layout (4) exceeds linear data size (3)".
+      normalTarget.format = RGBAFormat;
       trackedNodes.push(prePass);
 
       const prePassNormal = sample((uvNode) => unpackRGBToNormal(prePass.getTextureNode().sample(uvNode)));
@@ -416,19 +450,19 @@ export class RendererSystem {
       // the same frame index; on skipped frames the scene pass keeps sampling
       // the previous AO texture.
       const aoInterval = plan.ssao.updateInterval ?? 1;
-      if (aoInterval > 1) {
-        for (const node of [prePass, aoNode]) {
-          const originalUpdateBefore = node.updateBefore.bind(node);
-          let hasRendered = false;
-          node.updateBefore = (frame) => {
-            // Never skip the first update — the AO/pre-pass targets are empty
-            // until then and the scene pass would sample garbage.
-            if (!hasRendered || (this.pipelineFrameIndex ?? 0) % aoInterval === 0) {
-              hasRendered = true;
-              originalUpdateBefore(frame);
-            }
-          };
-        }
+      for (const node of [prePass, aoNode]) {
+        const originalUpdateBefore = node.updateBefore.bind(node);
+        let hasRendered = false;
+        node.updateBefore = (frame) => {
+          // Never skip the first update — the AO/pre-pass targets are empty
+          // until then and the scene pass would sample garbage. Once valid,
+          // retain the previous AO texture while terrain render objects churn.
+          if (hasRendered && this.deferExpensivePasses) return;
+          if (!hasRendered || (this.pipelineFrameIndex ?? 0) % aoInterval === 0) {
+            hasRendered = true;
+            originalUpdateBefore(frame);
+          }
+        };
       }
 
       scenePass.contextNode = builtinAOContext(aoNode.getTextureNode().sample(screenUV).r);
@@ -588,8 +622,9 @@ export class RendererSystem {
 
     this.postPipelinePlan = buildPostPipelinePlan({
       requestedMode: this.requestedPostEffectMode,
-      qualityPreset: this.qualityPreset,
+      qualityPreset: this.getActiveQualityPreset(),
       backend: this.backend,
+      sceneContext: this.sceneContext,
     });
     this.invalidatePipeline();
 

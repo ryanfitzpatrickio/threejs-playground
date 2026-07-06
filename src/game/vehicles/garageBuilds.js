@@ -9,8 +9,15 @@ import {
   DEFAULT_VEHICLE_CONFIG,
   applyLooseSurfaceTraction,
 } from '../config/vehicleConfig.js';
-import { resolveChassisSurfaceMode } from '../materials/createVehicleOverlayMaterials.js';
+import { chassisModeUsesAuthoredTexture, resolveChassisSurfaceMode, sanitizeChassisPartOverrides } from '../materials/createVehicleOverlayMaterials.js';
+import { getChassisPartOverridesForBuild } from './chassisMeshParts.js';
 import { resolveEngineProfile } from './engineProfiles.js';
+
+export const GARAGE_VEHICLE_TYPES = Object.freeze([
+  Object.freeze({ id: 'car', tab: 'cars', name: 'Car', description: 'Four-seat road and rally builds.' }),
+  Object.freeze({ id: 'horse', tab: 'rideables', name: 'Horse', description: 'The existing living mount.' }),
+  Object.freeze({ id: 'quad', tab: 'rideables', name: 'Quad bike', description: 'Single-rider AWD trail machine.' }),
+]);
 
 export const GARAGE_BUILDS_KEY = 'dreamfall:garage-builds:v1';
 export const GARAGE_ACTIVE_KEY = 'dreamfall:garage-active:v1';
@@ -31,9 +38,36 @@ export const GARAGE_CHASSIS_SURFACE_MODES = Object.freeze([
     name: 'PBR mix',
     description: 'Authored maps with normal and roughness, plus rain response.',
   }),
+  Object.freeze({
+    id: 'camo',
+    name: 'Obfuscation tape',
+    description: 'Matte dazzle tape on body UVs — glass and lights stay clear.',
+  }),
 ]);
 
 export const GARAGE_FRAME_PRESETS = Object.freeze([
+  Object.freeze({
+    id: 'electric',
+    name: 'Electric',
+    description: 'Compact EV platform with instant torque and a low center of gravity.',
+    frame: Object.freeze({
+      frameWidth: 1.88, frameLength: 4.62, frameHeight: 0.78,
+      wheelTrack: 1.68, wheelbase: 2.88, rideHeight: 0.78, offsetFromTires: -0.28,
+    }),
+    defaults: Object.freeze({
+      chassisId: 'orange-car',
+      chassisSurfaceMode: 'metallic',
+      tireId: 'tesla-tire',
+      engineProfile: 'electric',
+      enginePower: 9.2,
+      suspensionStiffness: 26,
+      suspensionDamping: 13,
+      traction: 0.62,
+      hideEngine: true,
+      wheelRadius: 0.42,
+      wheelWidth: 0.28,
+    }),
+  }),
   Object.freeze({
     id: 'compact',
     name: 'Compact',
@@ -97,17 +131,32 @@ export const GARAGE_CHASSIS_OPTIONS = Object.freeze([
       scale: Object.freeze([5.1, 3.8, 5.1]),
     }),
   }),
+  Object.freeze({
+    id: 'orange-car',
+    name: 'Orange EV',
+    description: 'Meshy Orange Thunder roadster — segmented shell with per-part materials.',
+    url: '/assets/models/orange-car.glb',
+    defaultTransform: Object.freeze({
+      position: Object.freeze([0, -0.08, 0.02]),
+      rotationDegrees: Object.freeze([0, 180, 0]),
+      scale: Object.freeze([40, 45, 40]),
+    }),
+  }),
 ]);
 
 export const GARAGE_TIRE_OPTIONS = Object.freeze([
-  Object.freeze({ id: 'default', name: 'Classic', description: 'Generated all-purpose tire and rim.', url: null }),
-  Object.freeze({ id: 'center', name: 'Center', description: 'Authored directional performance tire.', url: '/assets/models/tire-center.glb' }),
-  Object.freeze({ id: 'rally-wheel', name: 'Rally Wheel', description: 'Authored rally tire and wheel assembly.', url: '/assets/models/tire-rally-wheel.glb' }),
+  Object.freeze({ id: 'default', name: 'Classic', description: 'Generated all-purpose tire and rim.', vehicleTypes: ['car', 'quad'], url: null }),
+  Object.freeze({ id: 'center', name: 'Center', description: 'Authored directional performance tire.', vehicleTypes: ['car', 'quad'], url: '/assets/models/tire-center.glb' }),
+  Object.freeze({ id: 'rally-wheel', name: 'Rally Wheel', description: 'Authored rally tire and wheel assembly.', vehicleTypes: ['car', 'quad'], url: '/assets/models/tire-rally-wheel.glb' }),
+  Object.freeze({ id: 'tesla-tire', name: 'Tesla Wheel', description: 'Authored EV wheel and tire assembly.', vehicleTypes: ['car', 'quad'], url: '/assets/models/tesla-tire.glb' }),
+  Object.freeze({ id: 'quad-tire', name: 'Knobby ATV', description: 'Aggressive knobby off-road tire and rim.', vehicleTypes: ['quad'], url: '/assets/models/quad-tire.glb' }),
+  Object.freeze({ id: 'quad-model', name: 'Model tires', description: 'Built-in tires from the quad-bike mesh (can wobble).', vehicleTypes: ['quad'], url: null }),
 ]);
 
 export const GARAGE_ENGINE_OPTIONS = Object.freeze([
   Object.freeze({ id: 'bac', name: 'BAC Mono', description: 'High-rev V8 layers from markeasting/engine-audio (https://github.com/markeasting/engine-audio).' }),
   Object.freeze({ id: 'boxer', name: 'Boxer', description: 'Flat-six on/off load with boxer one-shot accents.' }),
+  Object.freeze({ id: 'electric', name: 'Electric', description: 'Layered EV motor, inverter, road hiss, regen, and throttle punch samples.' }),
 ]);
 
 export const GARAGE_DEFAULT_PERFORMANCE = Object.freeze({
@@ -126,6 +175,24 @@ export const GARAGE_DEFAULT_WHEELS = Object.freeze({
   inset: 0.12,
 });
 
+export const GARAGE_QUAD_DEFAULT_WHEELS = Object.freeze({
+  tireId: 'quad-tire',
+  radius: 0.35,
+  width: 0.27,
+  inset: 0,
+});
+
+export const GARAGE_QUAD_DEFAULT_FRAME = Object.freeze({
+  frameWidth: 1.34,
+  frameLength: 1.58,
+  frameHeight: 0.62,
+  wheelTrack: 1.34,
+  wheelbase: 1.36,
+  rideHeight: 0.69,
+  offsetFromTires: 0,
+  wheelAxleOffset: 0,
+});
+
 export const GARAGE_DEFAULT_CHASSIS_TRANSFORM = Object.freeze({
   position: Object.freeze([0, -0.1, 0.05]),
   rotationDegrees: Object.freeze([0, 180, 0]),
@@ -140,13 +207,20 @@ export function createGarageBuild(presetId = 'street', overrides = {}) {
   return sanitizeGarageBuild({
     id: createBuildId(),
     name: `${preset.name} Build`,
+    vehicleType: 'car',
+    paintId: 'forest',
     presetId: preset.id,
     chassisId: defaults.chassisId ?? 'bare',
     chassisSurfaceMode: defaults.chassisSurfaceMode ?? 'metallic',
     hideBackSeats: false,
-    hideEngine: false,
+    hideEngine: defaults.hideEngine === true,
     frame: { ...preset.frame },
-    wheels: { ...GARAGE_DEFAULT_WHEELS, tireId: defaults.tireId ?? GARAGE_DEFAULT_WHEELS.tireId },
+    wheels: {
+      ...GARAGE_DEFAULT_WHEELS,
+      tireId: defaults.tireId ?? GARAGE_DEFAULT_WHEELS.tireId,
+      radius: defaults.wheelRadius ?? GARAGE_DEFAULT_WHEELS.radius,
+      width: defaults.wheelWidth ?? GARAGE_DEFAULT_WHEELS.width,
+    },
     chassisTransform: cloneChassisTransform(defaultChassisTransform),
     performance: {
       ...GARAGE_DEFAULT_PERFORMANCE,
@@ -173,6 +247,12 @@ export function getGarageChassisOption(id) {
 
 export function getGarageTireOption(id) {
   return GARAGE_TIRE_OPTIONS.find((option) => option.id === id) ?? GARAGE_TIRE_OPTIONS[0];
+}
+
+export function getGarageTireOptionsForVehicleType(vehicleType = 'car') {
+  return GARAGE_TIRE_OPTIONS.filter((option) => (
+    !option.vehicleTypes || option.vehicleTypes.includes(vehicleType)
+  ));
 }
 
 export function getGarageEngineOption(id) {
@@ -219,6 +299,40 @@ export function getActiveGarageBuild() {
 export function vehicleOptionsFromGarageBuild(build) {
   if (!build) return {};
   const clean = sanitizeGarageBuild(build);
+  if (clean.vehicleType === 'quad') {
+    const tire = getGarageTireOption(clean.wheels.tireId);
+    const useEmbeddedModelTires = tire.id === 'quad-model';
+    return {
+      vehicleKind: 'quad',
+      name: clean.name,
+      paintId: clean.paintId,
+      wheelVisual: !useEmbeddedModelTires && tire.url ? { url: tire.url } : null,
+      useEmbeddedModelTires,
+      partOverrides: getChassisPartOverridesForBuild(clean, 'quad-bike'),
+      frameParameters: {
+        ...GARAGE_QUAD_DEFAULT_FRAME,
+        rideHeight: clean.frame.rideHeight,
+        offsetFromTires: clean.frame.offsetFromTires,
+      },
+      config: {
+        ground: {
+          enginePower: clean.performance.enginePower,
+          traction: clean.performance.traction,
+          wheelRadius: clean.wheels.radius,
+          wheelWidth: clean.wheels.width,
+          rayCast: {
+            wheelRadius: clean.wheels.radius,
+            suspensionStiffness: clean.performance.suspensionStiffness,
+            suspensionCompression: clean.performance.suspensionDamping,
+            suspensionRelaxation: clean.performance.suspensionDamping,
+            maxSteerYawRate: clean.performance.maxSteerYawRate,
+            highSpeedSteerYawRate: clean.performance.highSpeedSteerYawRate,
+          },
+        },
+      },
+    };
+  }
+  if (clean.vehicleType === 'horse') return { vehicleKind: 'horse', name: clean.name };
   const chassis = getGarageChassisOption(clean.chassisId);
   return {
     name: clean.name,
@@ -229,7 +343,8 @@ export function vehicleOptionsFromGarageBuild(build) {
           profileId: chassis.id,
           disableGlassDetection: clean.disableGlassDetection === true,
           chassisSurfaceMode: clean.chassisSurfaceMode,
-          useAuthoredTexture: clean.chassisSurfaceMode !== 'metallic',
+          useAuthoredTexture: chassisModeUsesAuthoredTexture(clean.chassisSurfaceMode),
+          partOverrides: getChassisPartOverridesForBuild(clean),
           ...cloneChassisTransform(clean.chassisTransform),
         }
       : false,
@@ -357,32 +472,65 @@ export function sanitizeGarageBuild(value = {}) {
   return {
     id: String(value.id || createBuildId()).slice(0, 80),
     name: String(value.name || `${preset.name} Build`).trim().slice(0, 48) || 'Untitled Build',
+    vehicleType: GARAGE_VEHICLE_TYPES.some((entry) => entry.id === value.vehicleType)
+      ? value.vehicleType
+      : 'car',
+    paintId: ['forest', 'rally-red', 'sand', 'black'].includes(value.paintId)
+      ? value.paintId
+      : 'forest',
     presetId: preset.id,
     chassisId: getGarageChassisOption(value.chassisId).id,
     hideBackSeats: value.hideBackSeats === true,
     hideEngine: value.hideEngine === true,
     disableGlassDetection: value.disableGlassDetection === true,
+    chassisPartOverrides: sanitizeChassisPartOverrides(value.chassisPartOverrides),
     chassisSurfaceMode: resolveChassisSurfaceMode(value),
-    useAuthoredTexture: resolveChassisSurfaceMode(value) !== 'metallic',
-    frame: {
-      frameWidth: finite(frame.frameWidth, preset.frame.frameWidth, 1.6, 2.6),
-      frameLength: finite(frame.frameLength, preset.frame.frameLength, 3.8, 6.4),
-      frameHeight: finite(frame.frameHeight, preset.frame.frameHeight, 0.65, 1.25),
-      wheelTrack: finite(frame.wheelTrack, preset.frame.wheelTrack, 1.5, 2.35),
-      wheelbase: finite(frame.wheelbase, preset.frame.wheelbase, 2.3, 4.2),
-      rideHeight: finite(frame.rideHeight, preset.frame.rideHeight, 0.65, 1.25),
-      offsetFromTires: finite(frame.offsetFromTires, preset.frame.offsetFromTires, -0.65, 0.1),
-    },
-    wheels: {
-      tireId: getGarageTireOption(wheels.tireId).id,
-      radius: finite(wheels.radius, GARAGE_DEFAULT_WHEELS.radius, 0.25, 0.62),
-      width: finite(wheels.width, GARAGE_DEFAULT_WHEELS.width, 0.18, 0.52),
-      inset: finite(wheels.inset, GARAGE_DEFAULT_WHEELS.inset, 0, 0.35),
-    },
+    useAuthoredTexture: chassisModeUsesAuthoredTexture(resolveChassisSurfaceMode(value)),
+    frame: (() => {
+      const isQuad = value.vehicleType === 'quad';
+      const frameDefaults = isQuad ? GARAGE_QUAD_DEFAULT_FRAME : preset.frame;
+      return {
+        frameWidth: finite(frame.frameWidth, frameDefaults.frameWidth, 1.6, 2.6),
+        frameLength: finite(frame.frameLength, frameDefaults.frameLength, 3.8, 6.4),
+        frameHeight: finite(frame.frameHeight, frameDefaults.frameHeight, 0.65, 1.25),
+        wheelTrack: finite(frame.wheelTrack, frameDefaults.wheelTrack, 1.5, 2.35),
+        wheelbase: finite(frame.wheelbase, frameDefaults.wheelbase, 2.3, 4.2),
+        rideHeight: finite(
+          frame.rideHeight,
+          frameDefaults.rideHeight,
+          isQuad ? 0.45 : 0.65,
+          isQuad ? 1.05 : 1.25,
+        ),
+        offsetFromTires: finite(
+          frame.offsetFromTires,
+          frameDefaults.offsetFromTires,
+          -0.65,
+          isQuad ? 0.35 : 0.1,
+        ),
+        wheelAxleOffset: finite(frame.wheelAxleOffset, frameDefaults.wheelAxleOffset ?? 0, -0.55, 0.55),
+      };
+    })(),
+    wheels: (() => {
+      const wheelDefaults = value.vehicleType === 'quad'
+        ? GARAGE_QUAD_DEFAULT_WHEELS
+        : GARAGE_DEFAULT_WHEELS;
+      const tireOptions = getGarageTireOptionsForVehicleType(
+        value.vehicleType === 'quad' ? 'quad' : 'car',
+      );
+      const tireId = tireOptions.some((option) => option.id === wheels.tireId)
+        ? wheels.tireId
+        : wheelDefaults.tireId;
+      return {
+        tireId: getGarageTireOption(tireId).id,
+        radius: finite(wheels.radius, wheelDefaults.radius, 0.25, 0.62),
+        width: finite(wheels.width, wheelDefaults.width, 0.18, 0.52),
+        inset: finite(wheels.inset, wheelDefaults.inset, 0, 0.35),
+      };
+    })(),
     chassisTransform: {
       position: sanitizeVector(chassisTransform.position, GARAGE_DEFAULT_CHASSIS_TRANSFORM.position, -2, 2),
       rotationDegrees: sanitizeVector(chassisTransform.rotationDegrees, GARAGE_DEFAULT_CHASSIS_TRANSFORM.rotationDegrees, -360, 360),
-      scale: sanitizeVector(chassisTransform.scale, GARAGE_DEFAULT_CHASSIS_TRANSFORM.scale, 0.5, 12),
+      scale: sanitizeVector(chassisTransform.scale, GARAGE_DEFAULT_CHASSIS_TRANSFORM.scale, 0.5, 50),
     },
     performance: {
       engineProfile: resolveEngineProfile(performance.engineProfile),

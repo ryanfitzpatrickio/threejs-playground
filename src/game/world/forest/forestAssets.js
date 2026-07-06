@@ -7,12 +7,9 @@ import {
 import { makeBarkMaterial } from './seedthree/barkMaterial.js';
 import { makeFoliageMaterial } from './seedthree/leaf-cards.js';
 import { getForestSpecies, normalizeForestSpecies } from './forestSpecies.js';
+import { FOREST_LEAVES_URL, forestBarkUrl } from './forestSpeciesTextures.js';
 
 const assetCache = new Map();
-
-function texRoot(speciesKey) {
-  return `/assets/textures/forest/${normalizeForestSpecies(speciesKey)}/`;
-}
 
 function loadTex(loader, url, srgb = true) {
   return new Promise((resolve, reject) => {
@@ -25,7 +22,7 @@ function loadTex(loader, url, srgb = true) {
         resolve(tex);
       },
       undefined,
-      reject,
+      (err) => reject(new Error(`forest texture failed: ${url} (${err?.message ?? err})`)),
     );
   });
 }
@@ -41,7 +38,7 @@ export async function loadForestSpeciesAssets(speciesKey = 'pine') {
   if (cached) return cached;
 
   const species = getForestSpecies(key);
-  const root = texRoot(key);
+  const barkRoot = forestBarkUrl(key);
   const loader = new TextureLoader();
   const barkBase = species.bark.replace('_albedo.png', '');
   const leafBase = species.leaf.replace(/(_albedo)?\.png$/, '');
@@ -55,13 +52,13 @@ export async function loadForestSpeciesAssets(speciesKey = 'pine') {
     leafNormal,
     leafRoughness,
   ] = await Promise.all([
-    loadTex(loader, `${root}${species.bark}`, true),
-    optTex(loader, `${root}${barkBase}_normal.png`, false),
-    optTex(loader, `${root}${barkBase}_roughness.png`, false),
-    loadTex(loader, `${root}${species.leaf}`, true),
-    optTex(loader, `${root}${leafBase}_translucency.png`, false),
-    optTex(loader, `${root}${leafBase}_normal.png`, false),
-    optTex(loader, `${root}${leafBase}_roughness.png`, false),
+    loadTex(loader, `${barkRoot}${species.bark}`, true),
+    optTex(loader, `${barkRoot}${barkBase}_normal.png`, false),
+    optTex(loader, `${barkRoot}${barkBase}_roughness.png`, false),
+    loadTex(loader, `${FOREST_LEAVES_URL}${species.leaf}`, true),
+    optTex(loader, `${FOREST_LEAVES_URL}${leafBase}_translucency.png`, false),
+    optTex(loader, `${FOREST_LEAVES_URL}${leafBase}_normal.png`, false),
+    optTex(loader, `${FOREST_LEAVES_URL}${leafBase}_roughness.png`, false),
   ]);
 
   const assets = {
