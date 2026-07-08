@@ -22,6 +22,7 @@ import {
   normalizePoi,
   normalizeEntity,
   makeId,
+  roadElevationMode,
 } from '../world/worldMap/worldMapSchema.js';
 import { zoneContains, zoneBounds } from '../world/worldMap/zoneGeometry.js';
 import { sampleCenterline } from '../world/worldMap/roadProfile.js';
@@ -62,7 +63,8 @@ export class WorldMapEditor {
     this.roadWidth = 8; // default width for new roads
     this.roadTrackStyle = null; // default GT3 trackside preset for new roads (null = plain)
     this.roadSurface = null; // null follows track style; otherwise asphalt | dirt
-    this.roadElevation = null; // null follows terrain; finite number is fixed world Y
+    this.roadElevation = null; // finite number when roadElevationMode === 'fixed'
+    this.roadElevationMode = 'terrain'; // terrain | fixed | gentleSlope
     this.riverWidth = 10; // default width for new rivers
     this.riverDepth = 6; // default depth (carve) for new rivers
     this.riverOceanLeft = false; // default ocean-fill (left) for new rivers
@@ -452,10 +454,17 @@ export class WorldMapEditor {
       return;
     }
     this._commit(() => {
-      const road = {
-        id: makeId('r'), points: draft.points, width: this.roadWidth, type: 'road',
-        trackStyle: this.roadTrackStyle, surface: this.roadSurface, elevation: this.roadElevation,
-      };
+      const road = normalizeRoad({
+        id: makeId('r'),
+        points: draft.points,
+        width: this.roadWidth,
+        type: 'road',
+        trackStyle: this.roadTrackStyle,
+        surface: this.roadSurface,
+        elevation: this.roadElevationMode === 'fixed' ? (this.roadElevation ?? 0) : null,
+        elevationMode: this.roadElevationMode === 'gentleSlope' ? 'gentleSlope' : null,
+      });
+      if (!road) return;
       this.map.roads.push(road);
       this.selection = { kind: 'road', id: road.id };
     });
@@ -1065,9 +1074,39 @@ export class WorldMapEditor {
     const numeric = value === null || value === '' ? NaN : Number(value);
     const next = Number.isFinite(numeric) ? numeric : null;
     this.roadElevation = next;
+    this.roadElevationMode = next === null ? this.roadElevationMode : 'fixed';
     if (this.selection?.kind === 'road') {
       const road = this._roadById(this.selection.id);
-      if (road) { road.elevation = next; this.flushAutosave(); }
+      if (road) {
+        road.elevation = next;
+        delete road.elevationMode;
+        this.flushAutosave();
+      }
+    }
+    this._dirty = true;
+    this.emitChange();
+  }
+
+  setRoadElevationMode(mode) {
+    const next = mode === 'gentleSlope' || mode === 'fixed' ? mode : 'terrain';
+    this.roadElevationMode = next;
+    if (next === 'fixed' && !Number.isFinite(this.roadElevation)) this.roadElevation = 0;
+    if (next !== 'fixed') this.roadElevation = null;
+    if (this.selection?.kind === 'road') {
+      const road = this._roadById(this.selection.id);
+      if (road) {
+        if (next === 'gentleSlope') {
+          road.elevation = null;
+          road.elevationMode = 'gentleSlope';
+        } else if (next === 'fixed') {
+          road.elevation = this.roadElevation ?? 0;
+          delete road.elevationMode;
+        } else {
+          road.elevation = null;
+          delete road.elevationMode;
+        }
+        this.flushAutosave();
+      }
     }
     this._dirty = true;
     this.emitChange();
@@ -1326,6 +1365,25 @@ export class WorldMapEditor {
     }
   }
 
+  setSelectedElevationType(type) {
+    if (this.selection?.kind !== 'zone') return;
+    const zone = this._zoneById(this.selection.id);
+    if (!zone || zone.type !== 'terrain') return;
+    const next = type === 'gentleSlope' ? 'gentleSlope' : undefined;
+    const props = { ...zone.props };
+    if (next) {
+      props.elevationType = next;
+      delete props.minHeight;
+      delete props.maxHeight;
+      delete props.relief;
+    } else {
+      delete props.elevationType;
+    }
+    zone.props = props;
+    this.flushAutosave();
+    this.emitChange();
+  }
+
   // Elevation constraint on a `terrain` zone: minHeight guarantees the surface
   // never dips below it (e.g. "always > 0" for a guaranteed mountain); maxHeight
   // guarantees it never rises above it (e.g. "always < 0" for a canyon/valley
@@ -1333,7 +1391,7 @@ export class WorldMapEditor {
   setSelectedMinHeight(value) {
     if (this.selection?.kind !== 'zone') return;
     const zone = this._zoneById(this.selection.id);
-    if (!zone || zone.type !== 'terrain') return;
+    if (!zone || zone.type !== 'terrain' || zone.props?.elevationType === 'gentleSlope') return;
     const n = Number(value);
     zone.props = { ...zone.props, minHeight: value === '' || !Number.isFinite(n) ? undefined : n };
     this.flushAutosave();
@@ -1343,7 +1401,7 @@ export class WorldMapEditor {
   setSelectedMaxHeight(value) {
     if (this.selection?.kind !== 'zone') return;
     const zone = this._zoneById(this.selection.id);
-    if (!zone || zone.type !== 'terrain') return;
+    if (!zone || zone.type !== 'terrain' || zone.props?.elevationType === 'gentleSlope') return;
     const n = Number(value);
     zone.props = { ...zone.props, maxHeight: value === '' || !Number.isFinite(n) ? undefined : n };
     this.flushAutosave();
@@ -1358,7 +1416,7 @@ export class WorldMapEditor {
   setSelectedRelief(value) {
     if (this.selection?.kind !== 'zone') return;
     const zone = this._zoneById(this.selection.id);
-    if (!zone || zone.type !== 'terrain') return;
+    if (!zone || zone.type !== 'terrain' || zone.props?.elevationType === 'gentleSlope') return;
     const n = Number(value);
     zone.props = { ...zone.props, relief: value === '' || !Number.isFinite(n) || n <= 0 ? undefined : n };
     this.flushAutosave();
@@ -1469,6 +1527,7 @@ export class WorldMapEditor {
         selected = {
           kind: 'zone', id: z.id, type: z.type, shape: z.shape, seed: z.props?.seed, cityStyle: z.props?.cityStyle ?? 'downtown', biome: z.props?.biome ?? '',
           forestSpecies: z.props?.species ?? 'pine', forestDensity: z.props?.density ?? '',
+          elevationType: z.props?.elevationType ?? 'natural',
           minHeight: z.props?.minHeight ?? '', maxHeight: z.props?.maxHeight ?? '', relief: z.props?.relief ?? '',
         };
       }
@@ -1477,6 +1536,7 @@ export class WorldMapEditor {
       if (r) selected = {
         kind: 'road', id: r.id, width: r.width, trackStyle: r.trackStyle ?? null,
         surface: r.surface ?? null, elevation: r.elevation ?? null,
+        elevationMode: roadElevationMode(r),
       };
     } else if (this.selection?.kind === 'river') {
       const rv = this._riverById(this.selection.id);
@@ -1521,6 +1581,7 @@ export class WorldMapEditor {
       roadTrackStyle: this.roadTrackStyle,
       roadSurface: this.roadSurface,
       roadElevation: this.roadElevation,
+      roadElevationMode: this.roadElevationMode,
       riverWidth: this.riverWidth,
       riverDepth: this.riverDepth,
       riverOceanLeft: this.riverOceanLeft,
@@ -1619,13 +1680,20 @@ export class WorldMapEditor {
         pointsCount: Array.isArray(z.points) ? z.points.length : 0,
         props: z.props ? { ...z.props } : {},
       })),
-      roads: this.map.roads.map((r) => ({
-        id: r.id,
-        pointsCount: r.points ? r.points.length : 0,
-        width: r.width,
-        trackStyle: r.trackStyle || null,
-        elevation: r.elevation,
-      })),
+      roads: this.map.roads.map((r) => {
+        const pts = Array.isArray(r.points) ? r.points : [];
+        // Small sample so AI can see the rough shape/ends when editing an existing course
+        const sample = pts.length ? [pts[0], pts[Math.floor((pts.length-1)/2)], pts[pts.length-1]].filter(Boolean) : [];
+        return {
+          id: r.id,
+          pointsCount: pts.length,
+          width: r.width,
+          trackStyle: r.trackStyle || null,
+          surface: r.surface || null,
+          elevation: r.elevation,
+          pointsSample: sample,
+        };
+      }),
       rivers: this.map.rivers.map((r) => ({
         id: r.id,
         pointsCount: r.points ? r.points.length : 0,
@@ -1673,7 +1741,9 @@ export class WorldMapEditor {
       width: opts.width ?? this.roadWidth,
       trackStyle: opts.trackStyle ?? this.roadTrackStyle ?? null,
       surface: opts.surface ?? this.roadSurface ?? null,
-      elevation: opts.elevation ?? this.roadElevation ?? null,
+      elevation: opts.elevation ?? (this.roadElevationMode === 'fixed' ? this.roadElevation : null),
+      elevationMode: opts.elevationMode
+        ?? (this.roadElevationMode === 'gentleSlope' ? 'gentleSlope' : null),
     });
     if (!road) return { success: false, error: 'invalid road after normalize' };
     this.map.roads.push(road);

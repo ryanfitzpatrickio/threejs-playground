@@ -13,6 +13,12 @@ import { chassisModeUsesAuthoredTexture, resolveChassisSurfaceMode, sanitizeChas
 import { getChassisPartOverridesForBuild } from './chassisMeshParts.js';
 import { resolveEngineProfile } from './engineProfiles.js';
 
+let garageChassisOptionsOverride = null;
+
+export function setGarageChassisOptionsOverride(options) {
+  garageChassisOptionsOverride = options ? Object.freeze([...options]) : null;
+}
+
 export const GARAGE_VEHICLE_TYPES = Object.freeze([
   Object.freeze({ id: 'car', tab: 'cars', name: 'Car', description: 'Four-seat road and rally builds.' }),
   Object.freeze({ id: 'horse', tab: 'rideables', name: 'Horse', description: 'The existing living mount.' }),
@@ -156,6 +162,7 @@ export const GARAGE_TIRE_OPTIONS = Object.freeze([
 export const GARAGE_ENGINE_OPTIONS = Object.freeze([
   Object.freeze({ id: 'bac', name: 'BAC Mono', description: 'High-rev V8 layers from markeasting/engine-audio (https://github.com/markeasting/engine-audio).' }),
   Object.freeze({ id: 'boxer', name: 'Boxer', description: 'Flat-six on/off load with boxer one-shot accents.' }),
+  Object.freeze({ id: 'quad', name: 'Quad Bike', description: 'ATV engine with dedicated idle loop + layered on/off load samples.' }),
   Object.freeze({ id: 'electric', name: 'Electric', description: 'Layered EV motor, inverter, road hiss, regen, and throttle punch samples.' }),
 ]);
 
@@ -242,7 +249,8 @@ export function getGarageFramePreset(id) {
 }
 
 export function getGarageChassisOption(id) {
-  return GARAGE_CHASSIS_OPTIONS.find((option) => option.id === id) ?? GARAGE_CHASSIS_OPTIONS[0];
+  const options = garageChassisOptionsOverride ?? GARAGE_CHASSIS_OPTIONS;
+  return options.find((option) => option.id === id) ?? GARAGE_CHASSIS_OPTIONS[0];
 }
 
 export function getGarageTireOption(id) {

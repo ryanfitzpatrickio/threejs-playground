@@ -1647,13 +1647,24 @@ select {
 .garage-surface-mode-list { display: grid; gap: 8px; margin-top: 10px; }
 .garage-surface-mode-card { width: 100%; text-align: left; }
 .garage-mesh-parts { margin-top: 14px; }
+.garage-mesh-parts-header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.garage-mesh-parts-header h2,
+.garage-mesh-parts-header h3 {
+  flex: 1;
+  margin: 0;
+}
 .garage-mesh-parts h3 {
-  margin: 0 0 4px;
   color: rgb(244 239 228 / 62%);
   font-size: 10px;
   letter-spacing: 1px;
   text-transform: uppercase;
 }
+.garage-mesh-parts-pick { flex-shrink: 0; }
 .garage-mesh-parts-hint { margin: 0 0 8px; color: rgb(244 239 228 / 38%); font-size: 9px; line-height: 1.35; }
 .garage-mesh-parts-list {
   display: grid;
@@ -2725,4 +2736,315 @@ button.dbg-row.dbg-action:hover {
     padding: 5px 7px 6px;
   }
   .stats-fps .fps { font-size: 15px; }
+}
+
+/* Bodyshop (dev-only chassis editor, ported from cruise car-builder) */
+.bodyshop-shell {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+}
+
+.bodyshop-title {
+  color: #d0a15c;
+  font-size: 0.82rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.bodyshop-field {
+  width: 100%;
+}
+
+.bodyshop-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+  color: #aaa;
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
+.bodyshop-checkbox input {
+  margin-top: 2px;
+}
+
+.builder-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  background: #1a1a1a;
+}
+
+.builder-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: #171411;
+  color: #f4efe4;
+  gap: 8px;
+  flex-shrink: 0;
+  border-bottom: 1px solid rgb(208 161 92 / 20%);
+}
+
+.builder-toolbar-left,
+.builder-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.builder-divider {
+  width: 1px;
+  height: 20px;
+  background: rgb(244 239 228 / 18%);
+  margin: 0 4px;
+}
+
+.builder-mode-btn {
+  padding: 4px 10px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: rgb(244 239 228 / 72%);
+  cursor: pointer;
+  font-size: 0.82rem;
+}
+
+.builder-mode-btn:hover { background: rgb(244 239 228 / 8%); }
+.builder-mode-btn.is-active {
+  background: rgb(208 161 92 / 18%);
+  color: #f4efe4;
+  border-color: rgb(208 161 92 / 55%);
+}
+
+.builder-status-bar {
+  padding: 4px 12px;
+  background: #12100e;
+  color: rgb(244 239 228 / 45%);
+  font-size: 0.78rem;
+  flex-shrink: 0;
+}
+
+.builder-layout {
+  display: grid;
+  grid-template-columns: 220px 1fr 260px;
+  flex: 1;
+  min-height: 0;
+}
+
+.builder-panel {
+  background: #171411;
+  color: #f4efe4;
+  overflow-y: auto;
+  font-size: 0.82rem;
+}
+
+.builder-left-panel { border-right: 1px solid rgb(244 239 228 / 10%); }
+.builder-right-panel { border-left: 1px solid rgb(244 239 228 / 10%); }
+
+.builder-section {
+  padding: 8px;
+  border-bottom: 1px solid rgb(244 239 228 / 8%);
+}
+
+.builder-section-title {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #d0a15c;
+  margin: 0 0 6px;
+}
+
+.builder-checklist { display: flex; flex-direction: column; gap: 2px; }
+.builder-check-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  color: rgb(244 239 228 / 38%);
+  font-size: 0.78rem;
+}
+.builder-check-item.is-matched { color: #8fd48f; }
+
+.builder-scene-list { display: flex; flex-direction: column; }
+.builder-scene-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  cursor: pointer;
+  border-radius: 2px;
+}
+.builder-scene-item:hover { background: rgb(244 239 228 / 6%); }
+.builder-scene-item.is-selected { background: rgb(208 161 92 / 16%); }
+
+.builder-vis-toggle {
+  background: none;
+  border: none;
+  color: rgb(244 239 228 / 45%);
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 0.75rem;
+  min-width: 14px;
+}
+
+.builder-item-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.builder-item-type { color: rgb(244 239 228 / 28%); font-size: 0.7rem; }
+
+.builder-rename-input {
+  flex: 1;
+  background: #12100e;
+  border: 1px solid rgb(244 239 228 / 14%);
+  color: #f4efe4;
+  padding: 3px 6px;
+  font-size: 0.8rem;
+  border-radius: 2px;
+}
+
+.builder-viewport {
+  position: relative;
+  background: #d6dbde;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.builder-canvas { display: block; width: 100%; height: 100%; }
+
+.builder-transform-group { margin-bottom: 6px; }
+.builder-transform-group label {
+  display: block;
+  font-size: 0.72rem;
+  color: rgb(244 239 228 / 45%);
+  margin-bottom: 2px;
+}
+
+.builder-vec3 {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 3px;
+}
+
+.builder-vec3 input {
+  background: #12100e;
+  border: 1px solid rgb(244 239 228 / 12%);
+  color: #f4efe4;
+  padding: 3px 4px;
+  font-size: 0.78rem;
+  border-radius: 2px;
+  width: 100%;
+}
+
+.builder-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.builder-actions .ghost-button,
+.builder-actions .solid-button,
+.builder-actions .danger-button {
+  width: 100%;
+  font-size: 0.8rem;
+  padding: 5px 8px;
+}
+
+.builder-toolbar .ghost-button,
+.builder-toolbar .solid-button {
+  font-size: 0.82rem;
+  padding: 4px 10px;
+}
+
+.builder-slider { width: 100%; accent-color: #d0a15c; margin: 2px 0 4px; }
+
+.builder-wheel-selector {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+}
+
+.builder-wheel-btn {
+  padding: 4px 6px;
+  border: 2px solid rgb(244 239 228 / 18%);
+  border-radius: 3px;
+  background: #12100e;
+  color: #f4efe4;
+  cursor: pointer;
+  font-size: 0.72rem;
+  text-align: center;
+}
+
+.builder-wheel-btn:hover { background: rgb(244 239 228 / 6%); }
+.builder-wheel-btn.is-active {
+  background: rgb(208 161 92 / 18%);
+  color: #f4efe4;
+}
+
+.bodyshop-shell .solid-button,
+.bodyshop-shell .ghost-button,
+.bodyshop-shell .danger-button {
+  padding: 6px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.bodyshop-shell .solid-button {
+  border: none;
+  background: #d0a15c;
+  color: #171411;
+}
+
+.bodyshop-shell .ghost-button {
+  border: 1px solid rgb(244 239 228 / 18%);
+  background: rgb(244 239 228 / 6%);
+  color: #f4efe4;
+}
+
+.bodyshop-shell .danger-button {
+  border: 1px solid rgb(232 132 114 / 35%);
+  background: rgb(180 70 50 / 12%);
+  color: #e88472;
+}
+
+.bodyshop-shell .solid-button:disabled,
+.bodyshop-shell .ghost-button:disabled,
+.bodyshop-shell .danger-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.hidden-file-input { display: none; }
+
+.bodyshop-hint {
+  display: block;
+  color: rgb(244 239 228 / 38%);
+  font-size: 0.75rem;
+}
+
+.bodyshop-locator-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin: 8px 0;
+}
+
+.builder-wheel-btn.is-missing {
+  border-color: rgb(232 132 114 / 45%);
+  color: rgb(232 132 114 / 85%);
+}
+
+@media (max-width: 900px) {
+  .builder-layout { grid-template-columns: 1fr; grid-template-rows: auto 1fr auto; }
+  .builder-left-panel,
+  .builder-right-panel { max-height: 28vh; }
 }

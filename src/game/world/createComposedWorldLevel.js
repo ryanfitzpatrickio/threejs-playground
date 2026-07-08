@@ -142,7 +142,10 @@ export function createComposedWorldLevel(qualityPreset = {}, { worldMap = null, 
       terrain.ensureGroundCollider?.(position, physics, options) ?? false,
 
     getBlockingColliderAt: ({ position, radius, feetY, height, stepHeight }) =>
-      colliderBlockingAt({ position, radius, feetY, height, stepHeight, colliders: city.colliders }) ?? null,
+      colliderBlockingAt({
+        position, radius, feetY, height, stepHeight,
+        colliders: [...terrain.colliders, ...city.colliders],
+      }) ?? null,
 
     // River water-surface query for the character swim detector (MovementSystem).
     // Delegates to the terrain sub-level (city has no water). Without this explicit

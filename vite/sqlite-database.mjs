@@ -7,13 +7,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_DB_PATH = path.resolve(__dirname, '..', 'data', 'dreamfall.db');
 export const DEFAULT_DATA_ROOT = path.resolve(__dirname, '..', 'data');
 
-const ALLOWED_COLLECTIONS = new Set(['blueprints', 'worldmaps', 'mapbuilder', 'garage', 'state']);
+const ALLOWED_COLLECTIONS = new Set(['blueprints', 'worldmaps', 'mapbuilder', 'garage', 'bodyshop', 'state']);
 const ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 const COLLECTION_DIRS = {
   blueprints: 'blueprints',
   worldmaps: 'worldmaps',
   mapbuilder: 'mapbuilder',
   garage: 'garage',
+  bodyshop: 'bodyshop',
 };
 
 const dbCache = new Map();
@@ -28,7 +29,7 @@ function getDbInode(dbPath) {
 
 function normalizeStoredEntry(collection, id, data) {
   if (!data || typeof data !== 'object') return data;
-  if (collection === 'mapbuilder' || id === '_draft') return data;
+  if (collection === 'mapbuilder' || collection === 'bodyshop' || id === '_draft') return data;
   if (!Array.isArray(data) && collection !== 'state') data.id = id;
   return data;
 }
@@ -114,6 +115,7 @@ export function buildStoreIndex(db) {
     worldmaps: [],
     mapbuilder: [],
     garage: [],
+    bodyshop: [],
     state: readAppState(db),
   };
 
@@ -132,6 +134,7 @@ export function buildStoreSnapshot(db) {
     worldmaps: {},
     mapbuilder: {},
     garage: {},
+    bodyshop: {},
     state: readAppState(db),
   };
 

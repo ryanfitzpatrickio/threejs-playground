@@ -5,13 +5,16 @@ import { defineConfig } from 'vite';
 import solidPlugin from 'vite-plugin-solid';
 import { WebSocketServer } from 'ws';
 import { dreamfallStorePlugin } from './vite/dreamfall-store-plugin.mjs';
+import { bodyshopPlugin } from './vite/bodyshopPlugin.mjs';
 import { forestLeavesPlugin } from './vite/forest-leaves-plugin.mjs';
+import { grokBridgePlugin } from './vite/grokBridge.mjs';
 
 const threeModule = fileURLToPath(new URL('./node_modules/three/build/three.webgpu.js', import.meta.url));
 const threeTslModule = fileURLToPath(new URL('./node_modules/three/build/three.tsl.js', import.meta.url));
 const mainHtml = fileURLToPath(new URL('./index.html', import.meta.url));
 const cityGiExampleHtml = fileURLToPath(new URL('./webgpu_generator_city.html', import.meta.url));
 const devToolsModule = fileURLToPath(new URL('./src/dev/devTools.jsx', import.meta.url));
+const bodyshopModule = fileURLToPath(new URL('./src/dev/BodyshopScene.jsx', import.meta.url));
 const devToolsPublicId = 'virtual:dreamfall-dev-tools';
 const devToolsResolvedId = `\0${devToolsPublicId}`;
 
@@ -24,7 +27,10 @@ function devToolsPlugin(enabled) {
     load(id) {
       if (id !== devToolsResolvedId) return null;
       if (enabled) {
-        return `export { createDevTools } from ${JSON.stringify(devToolsModule)};`;
+        return `
+          export { createDevTools } from ${JSON.stringify(devToolsModule)};
+          export { BodyshopScene } from ${JSON.stringify(bodyshopModule)};
+        `;
       }
       return `
         export function createDevTools() {
@@ -35,6 +41,7 @@ function devToolsPlugin(enabled) {
             Views() { return null; },
           };
         }
+        export function BodyshopScene() { return null; }
       `;
     },
   };
@@ -278,251 +285,6 @@ function cleanupCodexSession(session) {
   session.pendingToolCalls.clear();
 }
 
-function getGrokEnv() {
-  const extraPaths = ['/opt/homebrew/bin', '/usr/local/bin', `${process.env.HOME}/.local/bin`];
-  return { ...process.env, PATH: `${process.env.PATH}:${extraPaths.join(':')}` };
-}
-
-function checkGrokAvailability() {
-  try {
-    const version = execSync('grok --version', {
-      encoding: 'utf8',
-      timeout: 5000,
-      env: getGrokEnv(),
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
-    return { available: true, version };
-  } catch {
-    return { available: false, error: 'Grok CLI not found. Make sure "grok" is on PATH (e.g. ~/.local/bin) and authenticated.' };
-  }
-}
-
-function grokStatusMiddleware() {
-  return (req, res) => {
-    if (req.method !== 'GET') {
-      res.statusCode = 405;
-      res.setHeader('allow', 'GET');
-      res.end('Method Not Allowed');
-      return;
-    }
-    sendJson(res, 200, checkGrokAvailability());
-  };
-}
-
-async function runGrokGenerate({ prompt, summary, mode = 'blueprint' }) {
-  const env = getGrokEnv();
-
-  const currentSummary = summary ? JSON.stringify(summary, null, 2) : 'empty scene';
-  const isWorldMap = mode === 'worldmap' || mode === 'map';
-
-  let instruction;
-  if (isWorldMap) {
-    const b = summary?.bounds || {minX:-512,minZ:-512,maxX:512,maxZ:512};
-    const existingPois = (summary?.poiAnchors && summary.poiAnchors.length)
-      ? summary.poiAnchors.join('; ')
-      : (summary?.pois || []).map(p => `${p.kind} "${p.name||p.id}" at x=${p.x},z=${p.z}`).join('; ') || 'none yet';
-    instruction = `OUTPUT ONLY A SINGLE VALID JSON OBJECT. NOTHING ELSE. NO EXPLANATION. NO MARKDOWN. START WITH { AND END WITH }.
-
-You are generating a Dreamfall world map. Use the current bounds EXACTLY. FILL the map.
-
-**CRITICAL: Existing Points of Interest (POIs) — read them (they include relative position like "north edge" or "near center") and use them to steer what and where to place things**
-Existing POIs: ${existingPois}
-
-Rules for POIs:
-- Always COPY the exact existing POIs into output "map.pois" (same id, name, kind, x, z).
-- Use POIs to steer generation: roads/rivers should connect to landmarks and city_gates, place city zones near city_gates, add detail/entities near landmarks, treat "spawn" as an important central or starting location.
-- When the user gives a description, integrate new content around the pre-placed POIs.
-
-Required exact top level: {"summary": "<short description of what you built and how you used the POIs>", "map": <full world map object> }
-
-World map schema reminder (respect bounds size, generate dense useful content):
-{
-  "version":1, "name":"...", "chunkSize":32,
-  "bounds": ${JSON.stringify(b)},
-  "spawn":{"x":0,"z":0,"yaw":0},
-  "zones":[ {"id":"z1","type":"terrain"|"city"|"wilds"|"loopout","shape":"rect","rect":{...},"props":{}} , ... ],
-  "roads":[ {"id":"r1","points":[{"x":...,"z":...}, ...],"width":8,...} , ...],
-  "rivers":[...], "pois":[...],
-  "entities":[ {"blueprintId":"... (use from available if any)", "x":..., "z":..., "yaw":0, "scale":1, "groundMode":"none"|"merge"|"platform"} , ...]
-}
-
-Current map summary:
-${currentSummary}
-
-User request: ${prompt || 'Create a complete filled world map.'}
-
-JSON ONLY:
-`;
-  } else {
-    instruction = `OUTPUT ONLY A SINGLE VALID JSON OBJECT. NOTHING ELSE.
-
-You are generating a Dreamfall blueprint project.
-
-Required: {"summary": "...", "project": <mapbuilder project object>}
-
-Use current summary. Prefer adding objects.
-
-Summary:
-${currentSummary}
-
-Request: ${prompt || 'small test area with a few objects.'}
-
-JSON ONLY:
-`;
-  }
-
-  const args = [
-    '--single', instruction,
-    '--output-format', 'json',
-    '--always-approve',
-    '--permission-mode', 'bypassPermissions',
-    '--no-memory',
-    '--no-plan',
-    '--no-subagents',
-    '--max-turns', '2',
-    '--effort', 'low',
-  ];
-
-  // Try to give the CLI a schema hint for the wrapper (helps structured output)
-  const wrapperSchema = isWorldMap
-    ? { type: 'object', properties: { summary: { type: 'string' }, map: { type: 'object' } }, required: ['summary', 'map'] }
-    : { type: 'object', properties: { summary: { type: 'string' }, project: { type: 'object' } }, required: ['summary', 'project'] };
-  args.push('--json-schema', JSON.stringify(wrapperSchema));
-
-  return await new Promise((resolve) => {
-    let stdout = '';
-    let stderr = '';
-    const proc = spawn('grok', args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env,
-      cwd: process.cwd(),
-    });
-    proc.stdout.on('data', (d) => { stdout += d.toString(); });
-    proc.stderr.on('data', (d) => { stderr += d.toString(); });
-
-    const hardTimeout = setTimeout(() => {
-      if (!proc.killed) proc.kill('SIGTERM');
-      setTimeout(() => { if (!proc.killed) proc.kill('SIGKILL'); }, 2000);
-    }, 180000);
-
-    proc.on('close', (code) => {
-      clearTimeout(hardTimeout);
-      let cliEnvelope = null;
-      const trimmed = stdout.trim();
-      try { cliEnvelope = JSON.parse(trimmed); } catch {}
-
-      // Collect candidate texts from all known places the CLI might put content
-      const candidates = [];
-      if (cliEnvelope) {
-        if (typeof cliEnvelope.text === 'string') candidates.push(cliEnvelope.text);
-        if (typeof cliEnvelope.thought === 'string') candidates.push(cliEnvelope.thought);
-      }
-      candidates.push(trimmed);
-
-      let bestText = '';
-      for (let c of candidates) {
-        if (!c) continue;
-        c = c.replace(/^\s*```(?:json)?\s*\n?/gi, '').replace(/\n?\s*```\s*$/gi, '').trim();
-        if (c.length > bestText.length) bestText = c;
-      }
-
-      // Try direct parse first
-      let result = null;
-      try { result = JSON.parse(bestText); } catch {}
-
-      // If not, search for the largest plausible JSON object containing our keys
-      if (!result || typeof result !== 'object') {
-        const matches = [...bestText.matchAll(/\{[\s\S]*?\}/g)].map(m => m[0]);
-        for (const m of matches.sort((a, b) => b.length - a.length)) {
-          try {
-            const parsed = JSON.parse(m);
-            if (parsed && typeof parsed === 'object' && (parsed.map || parsed.project || parsed.data || parsed.summary)) {
-              result = parsed;
-              break;
-            }
-          } catch {}
-        }
-      }
-
-      // Last resort: any object with summary + (map or project)
-      if (!result || typeof result !== 'object') {
-        try {
-          const anyJson = JSON.parse(bestText.slice(bestText.indexOf('{'), bestText.lastIndexOf('}') + 1));
-          if (anyJson && typeof anyJson === 'object') result = anyJson;
-        } catch {}
-      }
-
-      const data = result && typeof result === 'object' ? (result.map || result.project || result.data) : null;
-      if (result && typeof result === 'object' && data && typeof data === 'object') {
-        const isMap = !!result.map;
-        resolve({
-          success: true,
-          summary: String(result.summary || (isMap ? 'World map generated by Grok.' : 'Content generated by Grok.')),
-          project: result.project || (result.map ? null : data),
-          map: result.map || (result.project && !result.map ? null : data),
-          raw: cliEnvelope || bestText,
-        });
-        return;
-      }
-
-      // Include any partial content we found so the user sees something
-      const partial = (cliEnvelope && (cliEnvelope.text || cliEnvelope.thought)) || bestText;
-      const baseErr = `Failed to obtain JSON from Grok (exit ${code}). ${stderr ? 'stderr: ' + stderr.slice(0, 280) : ''}`.trim();
-      const hint = (stderr || '').includes('max turns') || (baseErr.includes('max turns'))
-        ? ' Try a shorter/simpler prompt, or switch to Codex for incremental edits.'
-        : '';
-      resolve({
-        success: false,
-        error: baseErr + hint,
-        raw: cliEnvelope || bestText,
-        partial,
-      });
-    });
-
-    proc.on('error', (err) => {
-      clearTimeout(hardTimeout);
-      resolve({ success: false, error: `Grok spawn error: ${err?.message || err}` });
-    });
-  });
-}
-
-function grokGenerateMiddleware() {
-  return (req, res) => {
-    if (req.method !== 'POST') {
-      res.statusCode = 405;
-      res.setHeader('allow', 'POST');
-      res.end('Method Not Allowed');
-      return;
-    }
-    let body = '';
-    req.on('data', (chunk) => { body += chunk; });
-    req.on('end', async () => {
-      let input = {};
-      try { input = body ? JSON.parse(body) : {}; } catch { input = {}; }
-      const result = await runGrokGenerate({
-        prompt: String(input.prompt || ''),
-        summary: input.summary || null,
-        mode: input.mode || 'blueprint',
-      });
-      sendJson(res, 200, result);
-    });
-  };
-}
-
-function grokBridgePlugin() {
-  return {
-    name: 'dreamfall-grok-bridge',
-    configureServer(server) {
-      server.middlewares.use('/api/grok/status', grokStatusMiddleware());
-      server.middlewares.use('/api/grok/generate', grokGenerateMiddleware());
-    },
-    configurePreviewServer(server) {
-      server.middlewares.use('/api/grok/status', grokStatusMiddleware());
-      server.middlewares.use('/api/grok/generate', grokGenerateMiddleware());
-    },
-  };
-}
-
 function codexBridgePlugin() {
   return {
     name: 'dreamfall-codex-bridge',
@@ -546,7 +308,7 @@ export default defineConfig(({ command, isPreview }) => {
       devToolsPlugin(isDevServer),
       dreamfallStorePlugin(),
       forestLeavesPlugin(),
-      ...(isDevServer ? [codexBridgePlugin(), grokBridgePlugin()] : []),
+      ...(isDevServer ? [codexBridgePlugin(), grokBridgePlugin(), bodyshopPlugin()] : []),
     ],
     resolve: {
       alias: [

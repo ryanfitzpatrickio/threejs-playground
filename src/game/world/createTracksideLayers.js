@@ -18,10 +18,14 @@
 
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { color } from 'three/tsl';
 import { createRallySpectatorGeometry } from './rallySpectatorGeometry.js';
 import { disposeObject3D } from '../utils/disposeObject3D.js';
 import { buildRibbonFrame, offsetPoint, placementsAlong } from '../../world/worldMap/trackFrame.js';
+import { BRIDGE_THRESH } from '../../world/worldMap/roadProfile.js';
+import { deckSurfaceHeightAt } from './createRoadworks.js';
 import { resolveCrossSection } from './trackCrossSection.js';
+import { RoadsideBuildingGenerator, ROADSIDE_FRONTAGE_OVERLAP, createRoadsideFacadeMaterial, createRoadsideGlassMaterial } from '../../three-addons/generators/city/RoadsideBuildingGenerator.js';
 import { createRallySurfaceMaterial, loadRallySurfaceSet } from '../materials/rallySurfaceTextures.js';
 import { disablePbrEnvironment } from '../materials/disablePbrEnvironment.js';
 import { collectRallyCrowdPlacements } from './rallyCrowdPlacements.js';
@@ -38,6 +42,26 @@ const WALL_OVERLAP = 0.15;
 // for crosswalk/stop-line decals. This gate applies to visible geometry, instances,
 // and wall colliders alike.
 const INTERSECTION_CLEARANCE = 2.5;
+
+// Roadside building dual-LOD cross-fade band. Near (detailed LOD0) and far (POM
+// box LOD1) swap opacity across ONE overlapping range [BUILDING_LOD_NEAR,
+// BUILDING_LOD_FAR] — near fades 1→0 while far fades 0→1 over the same span, so
+// there is never a gap where both tiers are invisible (and never a span where
+// both are fully opaque and double-darken).
+const BUILDING_LOD_NEAR = 110; // inside this, near buildings are fully opaque
+const BUILDING_LOD_FAR = 140;  // beyond this, far boxes are fully opaque
+
+/** When the road spans water/a deep gap, keep trackside surfaces on the shoulder grade. */
+export function resolveTracksideGroundY({ roadY, terrainY }) {
+  if (roadY - terrainY > BRIDGE_THRESH) return roadY + SURFACE_LIFT;
+  return terrainY;
+}
+
+/** @deprecated Use resolveTracksideGroundY */
+export const resolveRoadsideBuildingGroundY = resolveTracksideGroundY;
+
+const SHOULDER_DECK_THICK = 0.6;
+const SHOULDER_DECK_OVERLAP = 0.15;
 
 // One shared vertex-coloured material for every trackside surface (curb stripes +
 // shoulder verge) so all surface bands merge into a single draw call. Walls reuse
@@ -151,6 +175,12 @@ const standMaterial = new THREE.MeshStandardMaterial({
   side: THREE.DoubleSide,
 });
 
+// Roadside building facade/glass materials are built per archetype inside
+// addArchetype (createRoadsideFacadeMaterial / createRoadsideGlassMaterial from
+// the generator) — they bake in the aBuildingFade opacityNode for the cross-fade,
+// so there are no shared base materials here. Each mesh owns its own material and
+// disposeObject3D frees it on level teardown.
+
 for (const mat of [
   tracksideMaterial,
   wallMaterial,
@@ -166,6 +196,7 @@ for (const mat of [
 const _color = new THREE.Color();
 // Scratch for the wall collider's oriented-box basis (avoids per-segment allocs).
 const _fwd = new THREE.Vector3();
+const _normal = new THREE.Vector3();
 const _up = new THREE.Vector3(0, 1, 0);
 const _right = new THREE.Vector3();
 const _basis = new THREE.Matrix4();
@@ -178,6 +209,14 @@ const _cardMat = new THREE.Matrix4();
 const _cardScale = new THREE.Matrix4();
 const _cardPos = new THREE.Vector3();
 
+// Building placement / LOD scratch.
+const _bldFwd = new THREE.Vector3();
+const _bldRight = new THREE.Vector3();
+const _bldUp = new THREE.Vector3(0, 1, 0);
+const _bldMat = new THREE.Matrix4();
+const _bldScale = new THREE.Matrix4();
+const _bldQuat = new THREE.Quaternion();
+
 export function createTracksideLayers({ profile, sampleHeight, resolve = resolveCrossSection, crowdQuality = 'low' }) {
   const group = new THREE.Group();
   group.name = 'TracksideLayers';
@@ -189,6 +228,7 @@ export function createTracksideLayers({ profile, sampleHeight, resolve = resolve
   const chevronCurbGeoms = [];
   const wallGeoms = [];
   const instanced = []; // InstancedMesh objects (fences + sponsor boards)
+  const buildingMeshes = []; // { near: InstancedMesh|null, far: InstancedMesh|null } pairs for crossfade
   const crowdPlacements = [];
   const useAnimatedCrowd = crowdQuality !== 'low';
 
@@ -222,6 +262,11 @@ export function createTracksideLayers({ profile, sampleHeight, resolve = resolve
             }));
           } else {
             surfaceGeoms.push(buildSurfaceBand({ frame, band, sign, uInner, uOuter, sampleHeight, allowedAtArc }));
+          }
+          if (band.kind === 'shoulder') {
+            colliders.push(...buildBridgedShoulderColliders({
+              frame, band, sign, uInner, uOuter, sampleHeight, allowedAtArc, roadIndex, side,
+            }));
           }
           uOut[side] = uOuter;
         } else if (band.kind === 'chevronCurb') {
@@ -279,6 +324,15 @@ export function createTracksideLayers({ profile, sampleHeight, resolve = resolve
           });
           instanced.push(...meshes);
           uOut[side] = uInner + (band.depth ?? 11);
+        } else if (band.kind === 'roadsideBuildings') {
+          const built = buildRoadsideBuildings({
+            frame, band, sign, uLine: uInner, sampleHeight, allowedAtArc, roadIndex, side,
+            buildingMeshes,
+          });
+          instanced.push(...built.meshes);
+          colliders.push(...built.colliders);
+          // Consume the building footprint depth so later bands (if any) sit outside.
+          uOut[side] = uInner + (built.depth ?? 12);
         }
       }
     }
@@ -308,9 +362,14 @@ export function createTracksideLayers({ profile, sampleHeight, resolve = resolve
   for (const mesh of instanced) {
     if (mesh.isInstancedMesh) mesh.computeBoundingSphere();
     else mesh.geometry?.computeBoundingSphere();
-    mesh.userData.lodDistance = mesh.name.includes('Grandstand')
-      ? 520
-      : mesh.name === 'Trackside Fence' ? 220 : 300;
+    if (mesh.userData?.isRoadsideBuilding) {
+      // Building LOD is managed by dedicated cross-fade update; keep always considered.
+      mesh.userData.lodDistance = 99999;
+    } else {
+      mesh.userData.lodDistance = mesh.name.includes('Grandstand')
+        ? 520
+        : mesh.name === 'Trackside Fence' ? 220 : 300;
+    }
     group.add(mesh);
   }
 
@@ -363,7 +422,11 @@ export function createTracksideLayers({ profile, sampleHeight, resolve = resolve
     group,
     colliders,
     crowdPlacements,
-    updateLOD: (position) => updateDistanceLOD(group, position),
+    buildingMeshes, // exposed so levels can attach special handling if desired
+    updateLOD: (position) => {
+      updateDistanceLOD(group, position);
+      updateBuildingLOD(buildingMeshes, position);
+    },
     dispose: () => disposeObject3D(group),
   };
 }
@@ -384,6 +447,48 @@ function updateDistanceLOD(root, position) {
   });
 }
 
+function updateBuildingLOD(buildings, position) {
+  if (!position || !buildings || !buildings.length) return;
+  const t0 = BUILDING_LOD_NEAR;
+  const t1 = BUILDING_LOD_FAR;
+  const span = t1 - t0;
+
+  for (const entry of buildings) {
+    const { near, glass, far, anchors } = entry;
+    if (!anchors || !anchors.length) continue;
+    const n = anchors.length;
+    const nearF = near?.geometry?.attributes?.aBuildingFade;
+    const glassF = glass?.geometry?.attributes?.aBuildingFade;
+    const farF = far?.geometry?.attributes?.aBuildingFade;
+
+    let nearMax = 0;
+    let farMax = 0;
+    for (let i = 0; i < n; i += 1) {
+      const a = anchors[i];
+      const dist = Math.hypot(a.x - position.x, a.z - position.z);
+      const t = smoothstep01((dist - t0) / span); // 0 near, 1 far
+      const nf = 1 - t;
+      const ff = t;
+      if (nearF && i < near.count) { nearF.setX(i, nf); if (nf > nearMax) nearMax = nf; }
+      if (glassF && i < glass.count) glassF.setX(i, nf);
+      if (farF && i < far.count) { farF.setX(i, ff); if (ff > farMax) farMax = ff; }
+    }
+    if (nearF) nearF.needsUpdate = true;
+    if (glassF) glassF.needsUpdate = true;
+    if (farF) farF.needsUpdate = true;
+
+    // Cull tiers that are fully faded so we don't rasterise opacity-0 boxes.
+    if (near) near.visible = nearMax > 0.02;
+    if (glass) glass.visible = nearMax > 0.02;
+    if (far) far.visible = farMax > 0.02;
+  }
+}
+
+function smoothstep01(t) {
+  const x = Math.max(0, Math.min(1, t));
+  return x * x * (3 - 2 * x);
+}
+
 function buildIntersectionGate(intersections = [], roadIndex, frame) {
   const exclusions = [];
   for (const intersection of intersections) {
@@ -400,10 +505,86 @@ function buildIntersectionGate(intersections = [], roadIndex, frame) {
   return (arc) => exclusions.every((range) => Math.abs(arc - range.centerArc) > range.radius);
 }
 
+// Walkable shoulder decks over water/bridges — the paved ribbon only covers ±half,
+// so the grey verge strip needs its own colliders when terrain drops away.
+function buildBridgedShoulderColliders({
+  frame, band, sign, uInner, uOuter, sampleHeight, allowedAtArc, roadIndex, side,
+}) {
+  const { n, roadY, arc } = frame;
+  const lift = (band.lift ?? 0) + SURFACE_LIFT;
+  const shoulderWidth = uOuter - uInner;
+  const colliders = [];
+
+  for (let i = 0; i < n - 1; i += 1) {
+    if (!allowedAtArc(arc[i]) || !allowedAtArc(arc[i + 1])) continue;
+
+    const pIn0 = offsetPoint(frame, i, sign * uInner);
+    const pOut0 = offsetPoint(frame, i, sign * uOuter);
+    const pIn1 = offsetPoint(frame, i + 1, sign * uInner);
+    const pOut1 = offsetPoint(frame, i + 1, sign * uOuter);
+
+    const terrainY0 = sampleHeight(pOut0.x, pOut0.z);
+    const terrainY1 = sampleHeight(pOut1.x, pOut1.z);
+    const bridged0 = roadY[i] - terrainY0 > BRIDGE_THRESH;
+    const bridged1 = roadY[i + 1] - terrainY1 > BRIDGE_THRESH;
+    if (!bridged0 && !bridged1) continue;
+
+    const yIn0 = roadY[i] + lift;
+    const yIn1 = roadY[i + 1] + lift;
+    const yOut0 = resolveTracksideGroundY({ roadY: roadY[i], terrainY: terrainY0 });
+    const yOut1 = resolveTracksideGroundY({ roadY: roadY[i + 1], terrainY: terrainY1 });
+    const topY = Math.max(yIn0, yIn1, yOut0, yOut1);
+
+    _fwd.set(pIn1.x - pIn0.x, yIn1 - yIn0, pIn1.z - pIn0.z);
+    const segLen3 = _fwd.length() || 1;
+    _fwd.multiplyScalar(1 / segLen3);
+    _right.set(pOut0.x - pIn0.x, yOut0 - yIn0, pOut0.z - pIn0.z);
+    if (_right.lengthSq() < 1e-8) _right.set(sign, 0, 0);
+    _right.normalize();
+    _normal.copy(_fwd).cross(_right).normalize();
+    _basis.makeBasis(_right, _normal, _fwd);
+    _quat.setFromRotationMatrix(_basis);
+
+    const midX = (pIn0.x + pIn1.x + pOut0.x + pOut1.x) * 0.25;
+    const midZ = (pIn0.z + pIn1.z + pOut0.z + pOut1.z) * 0.25;
+    const midY = (yIn0 + yIn1 + yOut0 + yOut1) * 0.25;
+    const halfThick = SHOULDER_DECK_THICK * 0.5;
+
+    colliders.push({
+      name: `Track Shoulder ${roadIndex}-${i}-${side}`,
+      minX: Math.min(pIn0.x, pIn1.x, pOut0.x, pOut1.x) - SHOULDER_DECK_OVERLAP,
+      maxX: Math.max(pIn0.x, pIn1.x, pOut0.x, pOut1.x) + SHOULDER_DECK_OVERLAP,
+      minZ: Math.min(pIn0.z, pIn1.z, pOut0.z, pOut1.z) - SHOULDER_DECK_OVERLAP,
+      maxZ: Math.max(pIn0.z, pIn1.z, pOut0.z, pOut1.z) + SHOULDER_DECK_OVERLAP,
+      topY,
+      bottomY: topY - SHOULDER_DECK_THICK,
+      surfaceHeightAt: (x, z) => deckSurfaceHeightAt({
+        x, z,
+        x0: pIn0.x, z0: pIn0.z, y0: yIn0,
+        x1: pIn1.x, z1: pIn1.z, y1: yIn1,
+      }),
+      center: {
+        x: midX - _normal.x * halfThick,
+        y: midY - _normal.y * halfThick,
+        z: midZ - _normal.z * halfThick,
+      },
+      halfExtents: { x: shoulderWidth * 0.5, y: halfThick, z: segLen3 * 0.5 + SHOULDER_DECK_OVERLAP },
+      orientation: { x: _quat.x, y: _quat.y, z: _quat.z, w: _quat.w },
+      width: shoulderWidth,
+      depth: segLen3,
+      vaultable: false,
+    });
+  }
+
+  return colliders;
+}
+
 // A flat-ish offset ribbon: inner vertex at [sign*uInner], outer at [sign*uOuter],
 // one pair per sample. curb sits at road height + lift on both edges (raised
 // rumble); shoulder's inner edge is at road height and its outer edge drops to the
-// natural terrain so it meets the surrounding land. Colour is baked per-vertex:
+// natural terrain so it meets the surrounding land. Over water/bridges the outer
+// edge stays at road shoulder height (see resolveTracksideGroundY).
+// Colour is baked per-vertex:
 // curb alternates colorA/colorB by arc cell (stripes); shoulder is a solid colour.
 function buildSurfaceBand({ frame, band, sign, uInner, uOuter, sampleHeight, allowedAtArc }) {
   const { n, roadY, arc } = frame;
@@ -418,7 +599,9 @@ function buildSurfaceBand({ frame, band, sign, uInner, uOuter, sampleHeight, all
     const yInner = roadY[i] + lift;
     // Curb: outer edge stays at road height (flat strip). Shoulder: outer edge
     // meets the natural terrain at that point so the verge feathers into the land.
-    const yOuter = isCurb ? roadY[i] + lift : sampleHeight(pout.x, pout.z);
+    const yOuter = isCurb
+      ? roadY[i] + lift
+      : resolveTracksideGroundY({ roadY: roadY[i], terrainY: sampleHeight(pout.x, pout.z) });
 
     if (isCurb) {
       const cell = Math.floor(arc[i] / Math.max(0.1, band.stripe ?? 1.5));
@@ -449,7 +632,7 @@ function buildTexturedShoulder({ frame, band, sign, uInner, uOuter, sampleHeight
     const pin = offsetPoint(frame, i, sign * uInner);
     const pout = offsetPoint(frame, i, sign * uOuter);
     const yInner = roadY[i] + lift;
-    const yOuter = sampleHeight(pout.x, pout.z);
+    const yOuter = resolveTracksideGroundY({ roadY: roadY[i], terrainY: sampleHeight(pout.x, pout.z) });
     const o = i * 6;
     positions[o] = pin.x; positions[o + 1] = yInner; positions[o + 2] = pin.z;
     positions[o + 3] = pout.x; positions[o + 4] = yOuter; positions[o + 5] = pout.z;
@@ -1341,6 +1524,22 @@ function setPropMatrix(fx, fz, px, py, pz, scale) {
   _cardMat.setPosition(px, py, pz);
 }
 
+// Building-specific matrix setter: facade facing inward (toward road = -sign * normal).
+function setBuildingMatrix(fx, fz, px, py, pz, rotY = 0) {
+  _bldFwd.set(fx, 0, fz);
+  if (_bldFwd.lengthSq() < 1e-8) _bldFwd.set(0, 0, 1);
+  _bldFwd.normalize();
+  _bldRight.crossVectors(_bldUp, _bldFwd).normalize();
+  const up = _bldUp;
+  _bldMat.makeBasis(_bldRight, up, _bldFwd);
+  if (rotY !== 0) {
+    _bldQuat.setFromAxisAngle(up, rotY);
+    _bldMat.multiply(_bldScale.makeRotationFromQuaternion(_bldQuat)); // post rotate a bit for variety
+  }
+  _bldMat.setPosition(px, py, pz);
+  return _bldMat;
+}
+
 // ---- Procedural prop geometry (vertex-coloured, base at y=0, +Z = track-facing) ----
 
 function buildPropGeometry(prop, band) {
@@ -1477,4 +1676,155 @@ function makeStrip(positions, colors, n, uvs = null, segmentAllowed = null) {
   geom.setIndex(indices);
   geom.computeVertexNormals();
   return geom;
+}
+
+// ---------------------------------------------------------------------------
+// Roadside buildings builder (dual LOD, instanced, cross-fading).
+// Places buildings along the road frame, orients each facade toward the road,
+// samples terrain for the base, and emits LOD0 (detailed opaque + glass) and
+// LOD1 (POM/interior box) InstancedMeshes plus oriented-box colliders. LOD0 and
+// LOD1 are built from the SAME generator so the far box footprint/height matches
+// the near building exactly — no pop at the cross-fade.
+function buildRoadsideBuildings({ frame, band, sign, uLine, sampleHeight, allowedAtArc, roadIndex, side, buildingMeshes = [] }) {
+  const every = Math.max(8, band.spacing ?? 16);
+  const frontageWidth = every + ROADSIDE_FRONTAGE_OVERLAP;
+  const rawAnchors = placementsAlong(frame, every, { phase: every * 0.5, lateral: sign * uLine })
+    .filter((a) => allowedAtArc(a.s));
+  if (rawAnchors.length === 0) return { meshes: [], colliders: [], depth: 12 };
+
+  // Sample ground per anchor. The facade (+Z local) faces the road centreline, so
+  // the inward normal is -sign*(road normal); the building centre is offset by
+  // depth/2 along it so the front face lands on the road edge (the anchor).
+  const anchors = rawAnchors;
+
+  // Two archetype buckets (strip / apartment) so each template geometry batches
+  // into one InstancedMesh per tier, deterministic by road + arc + side.
+  const stripAnchors = [];
+  const aptAnchors = [];
+  for (const a of anchors) {
+    const r = Math.abs(Math.sin((roadIndex + 7) * 1.37 + a.s * 0.031 + (side === 'left' ? 0.5 : 0))) % 1;
+    (r < 0.38 ? aptAnchors : stripAnchors).push(a);
+  }
+
+  const meshes = [];
+  const colliders = [];
+
+  const addArchetype = (gen, archAnchors) => {
+    if (!archAnchors.length) return;
+    const n = archAnchors.length;
+
+    // Same generator → matching footprint/height across tiers (lod1.height == lod0.height).
+    const lod0 = gen.buildLOD0();
+    const lod1 = gen.buildLOD1();
+    const { width, depth, height } = lod0;
+
+    // aBuildingFade drives per-instance opacity on every tier for the cross-fade.
+    const fadeNear = new THREE.InstancedBufferAttribute(new Float32Array(n).fill(1), 1);
+    const fadeFar = new THREE.InstancedBufferAttribute(new Float32Array(n).fill(0), 1);
+
+    lod0.opaque.setAttribute('aBuildingFade', fadeNear);
+    // Per-archetype facade material (brick/concrete/frame/AC keyed off the baked
+    // partId). Each archetype owns its own material so disposeObject3D frees it
+    // cleanly on level teardown — never share these at module scope.
+    const opaqueMat = createRoadsideFacadeMaterial(color(gen.colorBase));
+    const near = new THREE.InstancedMesh(lod0.opaque, opaqueMat, n);
+    near.name = `Roadside ${gen.style} LOD0`;
+    near.castShadow = true;
+    near.receiveShadow = true;
+    near.userData.isRoadsideBuilding = true;
+    near.userData.fadeAttr = fadeNear;
+
+    // Glass tier (shopfronts + window panes) with raymarched lit interiors.
+    let glass = null;
+    if (lod0.glass) {
+      const fadeGlass = new THREE.InstancedBufferAttribute(new Float32Array(n).fill(1), 1);
+      lod0.glass.setAttribute('aBuildingFade', fadeGlass);
+      const glassMat = createRoadsideGlassMaterial();
+      glass = new THREE.InstancedMesh(lod0.glass, glassMat, n);
+      glass.name = `Roadside ${gen.style} Glass`;
+      glass.castShadow = false;
+      glass.receiveShadow = false;
+      glass.userData.isRoadsideBuilding = true;
+      glass.userData.fadeAttr = fadeGlass;
+    }
+
+    lod1.geometry.setAttribute('aBuildingFade', fadeFar);
+    const far = new THREE.InstancedMesh(lod1.geometry, lod1.material, n);
+    far.name = `Roadside ${gen.style} LOD1`;
+    far.castShadow = false;
+    far.receiveShadow = false;
+    far.userData.isRoadsideBuilding = true;
+    far.userData.fadeAttr = fadeFar;
+
+    // One matrix per placement, shared by all three tiers. Facade faces inward;
+    // centre offset by depth/2 so the front face sits on the road edge. Do not add
+    // frontage yaw/scale jitter here: the row is packed on `every` metre centers
+    // and the template width is `every + overlap`, so neighbouring buildings must
+    // keep their generated width to clamp instead of exposing sky/terrain seams.
+    for (let i = 0; i < n; i += 1) {
+      const a = archAnchors[i];
+      const inwardX = -sign * a.nx;
+      const inwardZ = -sign * a.nz;
+      const cx = a.x - inwardX * (depth * 0.5);
+      const cz = a.z - inwardZ * (depth * 0.5);
+      const terrainY = Math.max(sampleHeight(a.x, a.z), sampleHeight(cx, cz));
+      const groundY = resolveTracksideGroundY({ roadY: a.roadY, terrainY });
+      setBuildingMatrix(inwardX, inwardZ, cx, groundY - 0.05, cz, 0);
+      near.setMatrixAt(i, _bldMat);
+      if (glass) glass.setMatrixAt(i, _bldMat);
+      far.setMatrixAt(i, _bldMat);
+    }
+    near.instanceMatrix.needsUpdate = true;
+    if (glass) glass.instanceMatrix.needsUpdate = true;
+    far.instanceMatrix.needsUpdate = true;
+
+    // Oriented-box colliders: half-extents in the building's local frame (X=width,
+    // Y=height, Z=depth), rotated so the facade faces the road, sized to the actual
+    // roof height. The AABB fields are a conservative envelope for ground-snapping
+    // (PhysicsSystem builds the Rapier cuboid from center+halfExtents+orientation).
+    const foundation = 0.6;
+    const maxHalf = Math.max(width, depth) * 0.5 + 0.3;
+    for (let i = 0; i < n; i += 1) {
+      const a = archAnchors[i];
+      const inwardX = -sign * a.nx;
+      const inwardZ = -sign * a.nz;
+      const cx = a.x - inwardX * (depth * 0.5);
+      const cz = a.z - inwardZ * (depth * 0.5);
+      const terrainY = Math.max(sampleHeight(a.x, a.z), sampleHeight(cx, cz));
+      const groundY = resolveTracksideGroundY({ roadY: a.roadY, terrainY });
+      const baseY = groundY - foundation;
+      const topY = baseY + height;
+      _bldFwd.set(inwardX, 0, inwardZ).normalize();
+      _bldRight.crossVectors(_bldUp, _bldFwd).normalize();
+      _bldMat.makeBasis(_bldRight, _bldUp, _bldFwd);
+      _bldQuat.setFromRotationMatrix(_bldMat);
+      colliders.push({
+        name: `RoadsideBuilding-${roadIndex}-${side}-${gen.style}-${i}`,
+        minX: cx - maxHalf, maxX: cx + maxHalf,
+        minZ: cz - maxHalf, maxZ: cz + maxHalf,
+        bottomY: baseY, topY,
+        center: { x: cx, y: (baseY + topY) * 0.5, z: cz },
+        halfExtents: { x: width * 0.5, y: height * 0.5, z: depth * 0.5 },
+        orientation: { x: _bldQuat.x, y: _bldQuat.y, z: _bldQuat.z, w: _bldQuat.w },
+        width, depth,
+        vaultable: false,
+        climbable: true,
+        noGroundSnap: false,
+        type: 'building',
+      });
+    }
+
+    meshes.push(near);
+    if (glass) meshes.push(glass);
+    meshes.push(far);
+    if (Array.isArray(buildingMeshes)) buildingMeshes.push({ near, glass, far, anchors: archAnchors });
+  };
+
+  const stripGen = new RoadsideBuildingGenerator({ style: 'strip', seed: 17 + roadIndex * 3, width: frontageWidth });
+  const aptGen = new RoadsideBuildingGenerator({ style: 'apartment', seed: 91 + roadIndex * 5, width: frontageWidth });
+  addArchetype(stripGen, stripAnchors);
+  addArchetype(aptGen, aptAnchors);
+
+  const usedDepth = aptAnchors.length ? 11.5 : (stripAnchors.length ? 9.2 : 12);
+  return { meshes, colliders, depth: usedDepth };
 }

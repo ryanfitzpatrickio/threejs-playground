@@ -139,10 +139,27 @@ export class SceneSystem {
     this._sceneFog.far = Math.max(this._sceneFog.near + 24, Math.floor(distance * 0.88));
   }
 
-  // No-op: the clipmap shadow node follows the camera itself and manages its own
-  // per-level light cameras. Kept so existing call sites stay valid. The sun stays
-  // at its fixed offset, giving a constant light direction the node reads.
-  updateShadowFollow(/* position */) {}
+  // Clipmaps follow the camera themselves. When they are disabled, translate the
+  // standard directional-light frustum with the active locomotion root instead.
+  // Moving the light and target together preserves the sun direction, while the
+  // texel-snapped horizontal target keeps the shadow projection stable.
+  updateShadowFollow(position) {
+    if (this.clipmapShadow || !position || !this.sun) return;
+
+    const texelSize = this.shadowTexelSize > 0 ? this.shadowTexelSize : 1;
+    const targetY = Number.isFinite(position.y) ? position.y : this._shadowTargetY;
+    this._shadowTargetY = THREE.MathUtils.lerp(this._shadowTargetY, targetY, 0.12);
+    this._shadowFollow.set(
+      Math.round(position.x / texelSize) * texelSize,
+      this._shadowTargetY,
+      Math.round(position.z / texelSize) * texelSize,
+    );
+
+    this.sun.target.position.copy(this._shadowFollow);
+    this.sun.position.copy(this._shadowFollow).add(SUN_OFFSET);
+    this.sun.target.updateMatrixWorld(true);
+    this.sun.updateMatrixWorld(true);
+  }
 
   // Set the camera the clipmap shadow centers on (after CameraSystem init).
   setShadowCamera(camera) {

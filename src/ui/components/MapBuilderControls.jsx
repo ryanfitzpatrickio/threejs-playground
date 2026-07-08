@@ -1,5 +1,6 @@
 import { For, Show, createSignal, createEffect, onCleanup, onMount } from 'solid-js';
 import { TERRAIN_TEXTURE_LIBRARY } from '../../map/editorTerrainMaterial.js';
+import { ROAD_ELEVATION_MODES, ROAD_ELEVATION_MODE_ORDER } from '../../world/worldMap/worldMapSchema.js';
 
 const MAP_CODEX_TOOLS = [
   {
@@ -943,18 +944,32 @@ After edits, respond with a concise summary of what changed.`;
             </label>
             <label class="field-row">
               <span>Elevation</span>
-              <select value={snapshot().roadElevation == null ? 'terrain' : 'fixed'} onChange={(e) => builder()?.setRoadElevation(e.currentTarget.value === 'fixed' ? 0 : null)}>
-                <option value="terrain">Follow terrain</option>
-                <option value="fixed">Fixed height</option>
+              <select
+                value={snapshot().roadElevationMode ?? 'terrain'}
+                onChange={(e) => {
+                  const mode = e.currentTarget.value;
+                  if (mode === 'fixed') builder()?.setRoadElevationMode('fixed');
+                  else if (mode === 'gentleSlope') builder()?.setRoadElevationMode('gentleSlope');
+                  else builder()?.setRoadElevationMode('terrain');
+                }}
+              >
+                <For each={ROAD_ELEVATION_MODE_ORDER}>
+                  {(mode) => <option value={mode}>{ROAD_ELEVATION_MODES[mode].label}</option>}
+                </For>
               </select>
             </label>
-            {snapshot().roadElevation != null && (
+            <Show when={(snapshot().roadElevationMode ?? 'terrain') === 'fixed'}>
               <label class="field-row">
                 <span>World Y</span>
                 <input type="number" step="0.5" value={snapshot().roadElevation} onChange={(e) => builder()?.setRoadElevation(e.currentTarget.value)} />
                 <strong>m</strong>
               </label>
-            )}
+            </Show>
+            <Show when={(snapshot().roadElevationMode ?? 'terrain') === 'gentleSlope'}>
+              <p style={{ 'font-size': '11px', color: '#8d9384', 'line-height': 1.4, margin: '2px 0 8px' }}>
+                One smooth grade from terrain height at the road start to height at the end.
+              </p>
+            </Show>
             <div class="button-grid">
               <button class="tb-btn" disabled={!snapshot().roadDrafting} onClick={() => builder()?.finishRoadDraft()}>Finish</button>
               <button class="tb-btn" disabled={!snapshot().roadDrafting} onClick={() => builder()?.cancelRoadDraft()}>Cancel</button>

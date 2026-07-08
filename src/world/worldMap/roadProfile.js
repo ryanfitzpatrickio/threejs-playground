@@ -13,12 +13,14 @@
 
 import { buildRoadIntersections } from './roadIntersections.js';
 import { surfaceForRoad } from './roadSurface.js';
+import { roadElevationMode } from './worldMapSchema.js';
 
 const SAMPLE_SPACING = 2;     // metres between centerline samples
 const SMOOTH_RADIUS = 16;     // moving-average half-window (samples) → ~64 m window
 const MAX_GRADE = 0.12;       // max |dy/ds| the road allows
 export const BRIDGE_THRESH = 2.5; // roadY above terrain by more than this → bridge
 const EDGE_BLEND = 6;         // corridor falloff (m) beyond the road half-width
+const GENTLE_SLOPE_EDGE_BLEND_MIN = 20; // wider cut/fill feather for graded roads
 const CELL = 16;              // spatial-hash cell size (m)
 // Tunnel-style roads (trackStyle: 'tunnel') need the OPPOSITE of the grounded
 // carve: terrain must stay ABOVE the bore, not graded down to meet it. These two
@@ -98,6 +100,30 @@ function smooth(values, radius) {
   return out;
 }
 
+/** Constant grade from terrain at the road start to terrain at the road end. */
+function buildGentleSlopeRoadY(terrainY, s) {
+  const n = terrainY.length;
+  const roadY = new Float64Array(n);
+  const total = Math.max(1e-6, s[n - 1]);
+  const y0 = terrainY[0];
+  const y1 = terrainY[n - 1];
+  const delta = y1 - y0;
+  for (let k = 0; k < n; k += 1) {
+    roadY[k] = y0 + delta * (s[k] / total);
+  }
+  return roadY;
+}
+
+function gentleSlopeEdgeBlend(terrainY) {
+  let minT = terrainY[0];
+  let maxT = terrainY[0];
+  for (let i = 1; i < terrainY.length; i += 1) {
+    if (terrainY[i] < minT) minT = terrainY[i];
+    if (terrainY[i] > maxT) maxT = terrainY[i];
+  }
+  return Math.max(EDGE_BLEND, GENTLE_SLOPE_EDGE_BLEND_MIN, (maxT - minT) * 0.85);
+}
+
 /**
  * @param {Object} opts
  * @param {Array}  opts.roads     world-map roads ([{ points, width }])
@@ -145,14 +171,15 @@ export function buildRoadProfile({
     }
 
     const fixedY = Number.isFinite(road.elevation) ? road.elevation : null;
+    const gentleSlope = roadElevationMode(road) === 'gentleSlope';
+    const conforms = fixedY !== null || gentleSlope;
     const terrainY = new Float64Array(n);
     const wilds = new Uint8Array(n);
     const cityPin = new Uint8Array(n);
     for (let i = 0; i < n; i += 1) {
       terrainY[i] = sampleHeight(samples[i].x, samples[i].z);
-      // Fixed roads conform even inside wilds; do not classify those samples as
-      // unsupported bridge gaps.
-      wilds[i] = fixedY === null && isWilds(samples[i].x, samples[i].z) ? 1 : 0;
+      // Conforming roads (fixed / gentle slope) grade terrain even inside wilds.
+      wilds[i] = conforms ? 0 : (isWilds(samples[i].x, samples[i].z) ? 1 : 0);
       cityPin[i] = isCity(samples[i].x, samples[i].z) ? 1 : 0;
     }
 
@@ -180,6 +207,8 @@ export function buildRoadProfile({
     let roadY;
     if (fixedY !== null) {
       roadY = new Float64Array(n).fill(fixedY);
+    } else if (gentleSlope) {
+      roadY = buildGentleSlopeRoadY(terrainY, s);
     } else if (road.trackStyle === 'tunnel') {
       // A bore goes STRAIGHT through, ignoring whatever the terrain does in
       // between — a single straight-line grade from portal to portal (flat if
@@ -211,12 +240,13 @@ export function buildRoadProfile({
 
     const grounded = new Uint8Array(n);
     for (let k = 0; k < n; k += 1) {
-      grounded[k] = fixedY !== null || (!wilds[k] && roadY[k] - terrainY[k] <= BRIDGE_THRESH) ? 1 : 0;
+      grounded[k] = conforms || (!wilds[k] && roadY[k] - terrainY[k] <= BRIDGE_THRESH) ? 1 : 0;
     }
 
     built.push({
       road, samples, n, width, half, roadY, terrainY, grounded, wilds, s,
-      fixed: fixedY !== null,
+      edgeBlend: gentleSlope ? gentleSlopeEdgeBlend(terrainY) : EDGE_BLEND,
+      fixed: conforms,
       // 1 outside junctions, eased to 0 inside. The ribbon shader uses this to
       // stop ordinary lane/edge lines before intersection-specific decals.
       intersectionMask: new Float32Array(n).fill(1),
@@ -241,40 +271,65 @@ export function buildRoadProfile({
     });
   }
 
-  // Spatial hash: bucket sample indices by cell. Numeric keys — string keys
-  // allocate on every lookup, and corridorAt runs per terrain vertex.
-  const grid = new Map();
+  // Spatial hash: bucket segment/intersection candidates by every cell their
+  // inflated corridor bounds touch. That makes corridorAt a single-cell lookup
+  // instead of scanning outward through mostly-empty rings for every terrain
+  // vertex at high driving speeds.
+  const segmentGrid = new Map();
+  const intersectionGrid = new Map();
   const key = (cx, cz) => (cx + 0x8000) * 0x10000 + (cz + 0x8000);
+  const addToGrid = (target, minX, minZ, maxX, maxZ, value) => {
+    const minCx = Math.floor(minX / CELL);
+    const maxCx = Math.floor(maxX / CELL);
+    const minCz = Math.floor(minZ / CELL);
+    const maxCz = Math.floor(maxZ / CELL);
+    for (let cx = minCx; cx <= maxCx; cx += 1) {
+      for (let cz = minCz; cz <= maxCz; cz += 1) {
+        const kk = key(cx, cz);
+        let arr = target.get(kk);
+        if (!arr) { arr = []; target.set(kk, arr); }
+        arr.push(value);
+      }
+    }
+  };
   for (let r = 0; r < built.length; r += 1) {
     const b = built[r];
-    for (let k = 0; k < b.n; k += 1) {
-      const cx = Math.floor(b.samples[k].x / CELL);
-      const cz = Math.floor(b.samples[k].z / CELL);
-      const kk = key(cx, cz);
-      let arr = grid.get(kk);
-      if (!arr) { arr = []; grid.set(kk, arr); }
-      arr.push(r * 1e7 + k); // pack (road, sample)
+    const reach = b.half + (b.edgeBlend ?? EDGE_BLEND);
+    for (let k = 0; k < b.n - 1; k += 1) {
+      const a = b.samples[k];
+      const c = b.samples[k + 1];
+      addToGrid(
+        segmentGrid,
+        Math.min(a.x, c.x) - reach,
+        Math.min(a.z, c.z) - reach,
+        Math.max(a.x, c.x) + reach,
+        Math.max(a.z, c.z) + reach,
+        r * 1e7 + k, // pack (road, segment)
+      );
     }
   }
 
-  // Search range: enough whole cells to reach the widest road's corridor edge
-  // from any query point — samples sit on the CENTERLINE, so a corridor point
-  // can be half + EDGE_BLEND away from the nearest sample. The old fixed 3x3
-  // neighbourhood only guaranteed ~CELL (16 m) of lateral reach: any road wider
-  // than ~21 m authored (x1.5 profile scale) lost terrain conform + collision
-  // beyond that, while the full-width ribbon still drew.
-  let maxReach = 0;
-  for (const b of built) maxReach = Math.max(maxReach, b.half + EDGE_BLEND);
-  const cellRange = Math.max(1, Math.ceil(maxReach / CELL));
+  for (let i = 0; i < intersections.length; i += 1) {
+    const intersection = intersections[i];
+    if (!intersection.grounded) continue;
+    const connected = built[intersection.connections?.[0]?.roadIndex];
+    const blend = connected?.edgeBlend ?? EDGE_BLEND;
+    const reach = intersection.radius + blend;
+    addToGrid(
+      intersectionGrid,
+      intersection.x - reach,
+      intersection.z - reach,
+      intersection.x + reach,
+      intersection.z + reach,
+      i,
+    );
+  }
 
-  // Nearest-on-segment query over candidate samples, scanned ring-by-ring
-  // outward. A cell on Chebyshev ring r is at least (r-1)*CELL away, so once a
-  // ring starts beyond the running best the remaining rings can't win and the
-  // scan stops — points on/near a road resolve in the innermost rings and wide
-  // maps keep ~3x3 cost despite the larger worst-case reach.
+  // Nearest-on-segment query over candidates pre-bucketed into the query cell.
   const corridorAt = (x, z) => {
     const cx = Math.floor(x / CELL);
     const cz = Math.floor(z / CELL);
+    const kk = key(cx, cz);
     let best = null;
     let bestDist = Infinity;
     let bestWeight = 0;
@@ -283,15 +338,20 @@ export function buildRoadProfile({
     // intersection surface is a flat disc of `radius` at intersection.y, and
     // the corners between arms aren't guaranteed to fall inside any single
     // road's corridor (nor at full weight near unequal-width joins).
-    for (const intersection of intersections) {
-      if (!intersection.grounded) continue;
-      const reach = intersection.radius + EDGE_BLEND;
+    const intersectionCandidates = intersectionGrid.get(kk);
+    if (intersectionCandidates) for (const intersectionIndex of intersectionCandidates) {
+      const intersection = intersections[intersectionIndex];
+      const connected = built[intersection.connections?.[0]?.roadIndex];
+      const blend = connected?.edgeBlend ?? EDGE_BLEND;
+      const reach = intersection.radius + blend;
       const ddx = x - intersection.x;
       if (ddx > reach || ddx < -reach) continue;
       const ddz = z - intersection.z;
       if (ddz > reach || ddz < -reach) continue;
-      const d = Math.hypot(ddx, ddz);
-      const w = d <= intersection.radius ? 1 : 1 - (d - intersection.radius) / EDGE_BLEND;
+      const dSq = ddx * ddx + ddz * ddz;
+      if (dSq > reach * reach) continue;
+      const d = Math.sqrt(dSq);
+      const w = d <= intersection.radius ? 1 : 1 - (d - intersection.radius) / blend;
       if (w <= 0 || w < bestWeight || (w === bestWeight && d >= bestDist)) continue;
       bestWeight = w;
       bestDist = d;
@@ -307,58 +367,47 @@ export function buildRoadProfile({
       };
     }
 
-    for (let ring = 0; ring <= cellRange; ring += 1) {
-      // Stop once no farther candidate can win: rings at r are ≥ (r-1)*CELL
-      // away, which can neither beat a full-strength claim on distance nor
-      // out-weigh it.
-      if (best && bestWeight >= 1 && bestDist <= (ring - 1) * CELL) break;
-      for (let dx = -ring; dx <= ring; dx += 1) {
-      for (let dz = -ring; dz <= ring; dz += 1) {
-        if (Math.max(Math.abs(dx), Math.abs(dz)) !== ring) continue;
-        const arr = grid.get(key(cx + dx, cz + dz));
-        if (!arr) continue;
-        for (const packed of arr) {
-          const r = Math.floor(packed / 1e7);
-          const k = packed - r * 1e7;
-          const b = built[r];
-          // Project onto the two adjacent segments.
-          for (const seg of [k - 1, k]) {
-            if (seg < 0 || seg >= b.n - 1) continue;
-            const a = b.samples[seg], c = b.samples[seg + 1];
-            const abx = c.x - a.x, abz = c.z - a.z;
-            const lenSq = abx * abx + abz * abz;
-            const rawT = lenSq > 0 ? ((x - a.x) * abx + (z - a.z) * abz) / lenSq : 0;
-            let t = rawT;
-            t = Math.max(0, Math.min(1, t));
-            const px = a.x + t * abx, pz = a.z + t * abz;
-            const d = Math.hypot(x - px, z - pz);
-            // Strongest corridor claims the point, nearest wins ties. Pure
-            // nearest-centerline selection let a narrow road's weak feather
-            // shadow a wider road's full-strength corridor beside a junction —
-            // an unconformed (collision) hole under the flat junction pad.
-            const w = d <= b.half ? 1 : 1 - (d - b.half) / EDGE_BLEND;
-            if (w > 0 && (w > bestWeight || (w === bestWeight && d < bestDist))) {
-              bestWeight = w;
-              bestDist = d;
-              const roadY = b.roadY[seg] + (b.roadY[seg + 1] - b.roadY[seg]) * t;
-              const grounded = b.grounded[seg] && b.grounded[seg + 1];
-              // Arc-length distance to the NEAREST end of this road — used by
-              // tunnel roads to find the portal approach (see TUNNEL_PORTAL_LENGTH).
-              const segS = b.s[seg] + (b.s[seg + 1] - b.s[seg]) * t;
-              const portalDist = Math.min(segS, b.s[b.n - 1] - segS);
-              best = {
-                roadY,
-                grounded,
-                half: b.half,
-                tunnel: b.road?.trackStyle === 'tunnel',
-                portalDist,
-                withinRoad: rawT >= -1e-6 && rawT <= 1 + 1e-6,
-                surface: surfaceForRoad(b.road),
-              };
-            }
-          }
-        }
-      }
+    const segmentCandidates = segmentGrid.get(kk);
+    if (segmentCandidates) for (const packed of segmentCandidates) {
+      const r = Math.floor(packed / 1e7);
+      const seg = packed - r * 1e7;
+      const b = built[r];
+      const a = b.samples[seg], c = b.samples[seg + 1];
+      const abx = c.x - a.x, abz = c.z - a.z;
+      const lenSq = abx * abx + abz * abz;
+      const rawT = lenSq > 0 ? ((x - a.x) * abx + (z - a.z) * abz) / lenSq : 0;
+      let t = rawT;
+      t = Math.max(0, Math.min(1, t));
+      const px = a.x + t * abx, pz = a.z + t * abz;
+      const dx = x - px, dz = z - pz;
+      const blend = b.edgeBlend ?? EDGE_BLEND;
+      const reach = b.half + blend;
+      const dSq = dx * dx + dz * dz;
+      if (dSq > reach * reach) continue;
+      const d = Math.sqrt(dSq);
+      // Strongest corridor claims the point, nearest wins ties. Pure
+      // nearest-centerline selection let a narrow road's weak feather
+      // shadow a wider road's full-strength corridor beside a junction —
+      // an unconformed (collision) hole under the flat junction pad.
+      const w = d <= b.half ? 1 : 1 - (d - b.half) / blend;
+      if (w > 0 && (w > bestWeight || (w === bestWeight && d < bestDist))) {
+        bestWeight = w;
+        bestDist = d;
+        const roadY = b.roadY[seg] + (b.roadY[seg + 1] - b.roadY[seg]) * t;
+        const grounded = b.grounded[seg] && b.grounded[seg + 1];
+        // Arc-length distance to the NEAREST end of this road — used by
+        // tunnel roads to find the portal approach (see TUNNEL_PORTAL_LENGTH).
+        const segS = b.s[seg] + (b.s[seg + 1] - b.s[seg]) * t;
+        const portalDist = Math.min(segS, b.s[b.n - 1] - segS);
+        best = {
+          roadY,
+          grounded,
+          half: b.half,
+          tunnel: b.road?.trackStyle === 'tunnel',
+          portalDist,
+          withinRoad: rawT >= -1e-6 && rawT <= 1 + 1e-6,
+          surface: surfaceForRoad(b.road),
+        };
       }
     }
     if (!best || bestWeight <= 0) return null;
@@ -416,6 +465,17 @@ export function applyRoadCorridorHeight(h, corridor, bridgeClearance) {
     return h * (1 - corridor.weight) + corridor.roadY * corridor.weight;
   }
   return Math.min(h, corridor.roadY - bridgeClearance);
+}
+
+/** Re-clamp terrain under a bridged road deck. Call after river (or other) carves
+ *  that run later in the shaping stack — otherwise a channel trench punches through
+ *  the crossing and the heightfield no longer backs the deck colliders. */
+export function clampBridgedRoadFloor(h, corridor, bridgeClearance) {
+  if (!corridor || corridor.weight <= 0 || corridor.tunnel) return h;
+  if (corridor.weight < 0.999) return h;
+  const floor = corridor.grounded ? corridor.roadY : corridor.roadY - bridgeClearance;
+  if (!corridor.grounded) return floor;
+  return h < floor ? floor : h;
 }
 
 /**

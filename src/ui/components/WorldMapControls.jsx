@@ -1,5 +1,5 @@
 import { For, Show, createSignal, createMemo, onCleanup, onMount } from 'solid-js';
-import { ZONE_TYPES, ZONE_TYPE_ORDER, POI_KINDS, POI_KIND_ORDER, ENTITY_GROUND_MODES, ENTITY_GROUND_MODE_ORDER, TERRAIN_BIOMES, TERRAIN_BIOME_ORDER, CITY_STYLES, CITY_STYLE_ORDER, FOREST_SPECIES, FOREST_SPECIES_ORDER } from '../../world/worldMap/worldMapSchema.js';
+import { ZONE_TYPES, ZONE_TYPE_ORDER, POI_KINDS, POI_KIND_ORDER, ENTITY_GROUND_MODES, ENTITY_GROUND_MODE_ORDER, TERRAIN_BIOMES, TERRAIN_BIOME_ORDER, TERRAIN_ELEVATION_TYPES, TERRAIN_ELEVATION_TYPE_ORDER, ROAD_ELEVATION_MODES, ROAD_ELEVATION_MODE_ORDER, CITY_STYLES, CITY_STYLE_ORDER, FOREST_SPECIES, FOREST_SPECIES_ORDER } from '../../world/worldMap/worldMapSchema.js';
 import { parseForestSpeciesMix } from '../../game/world/forest/forestSpecies.js';
 import { listScenes, WORLDMAP_DRAFT_ID } from '../../world/worldMap/worldMapScenes.js';
 import { listBlueprints } from '../../map/blueprintLibrary.js';
@@ -154,12 +154,14 @@ export function WorldMapControls(props) {
     },
     {
       name: 'add_road',
-      description: 'Add a road spline. points is array of {x,z} or [x,z]. Must stay inside map bounds. Use multiple points to span the map.',
+      description: 'Add a road spline (the main way to create rally stages or race circuits). points: array of {x,z} or [x,z]. width optional. trackStyle makes it a real course: "rallySpectator" (crowds+rope, perfect for rally), "rallyStage", "urbanCircuit" (barriers+grandstands for city race), "roadsideBuildings". surface: "mud" (deep ruts for rally), "dirt", or "asphalt".',
       inputSchema: {
         type: 'object',
         properties: {
           points: { type: 'array', items: { oneOf: [{ type: 'array', minItems: 2, maxItems: 2 }, { type: 'object' }] } },
           width: { type: 'number' },
+          trackStyle: { type: 'string', description: 'rallySpectator | rallyStage | urbanCircuit | roadsideBuildings | tunnel' },
+          surface: { type: 'string', description: 'mud | dirt | asphalt' },
         },
         required: ['points'],
         additionalProperties: false,
@@ -284,6 +286,12 @@ Rules:
 - Always keep added features INSIDE the current bounds.
 - Prefer rect zones that cover large areas; roads/rivers should have 3+ points and traverse significant distance.
 - Entities must use exact blueprintId values from availableBlueprints.
+
+**Race / Rally course guidance (use when user mentions rally, race, circuit, stage):**
+- To create a rally course: use add_road with trackStyle "rallySpectator" (crowds + rope + marshals — best for lively rally) or "rallyStage". Add surface "mud" for deep ruts. Surround with wilds + forest + hilly terrain zones for nature.
+- To create a race / event course: use trackStyle "urbanCircuit" on the main loop (barriers, grandstands, gantries — pro racing feel). Use "roadsideBuildings" for urban backdrops. Wrap everything in city zones so buildings form the skyline/event-center backdrop. Prefer asphalt.
+- A course should be a flowing closed loop. Use districts like "Forest Hairpin", "Main Straight", "Paddock", "Spectator Zone".
+
 Coordinate system: X horizontal, Z vertical on the 2D map (same as world X/Z).
 After edits respond with a short summary of what you changed or added.
 
@@ -300,7 +308,7 @@ ${JSON.stringify({ zones: (s.zones||[]).length, roads: (s.roads||[]).length, ent
       if (name === 'get_map_summary') return { success: true, summary: e.getMapSummary() };
       if (name === 'add_rect_zone') return e.addZone({ type: args.type, rect: args.rect, props: args.props });
       if (name === 'add_poly_zone') return e.addZone({ type: args.type, points: args.points, props: args.props });
-      if (name === 'add_road') return e.addRoad(args.points, { width: args.width });
+      if (name === 'add_road') return e.addRoad(args.points, { width: args.width, trackStyle: args.trackStyle, surface: args.surface });
       if (name === 'add_river') return e.addRiver(args.points, { width: args.width, depth: args.depth, oceanLeft: args.oceanLeft, oceanRight: args.oceanRight });
       if (name === 'add_poi') return e.addPoi(args);
       if (name === 'place_entity') return e.addEntity(args);
@@ -315,7 +323,7 @@ ${JSON.stringify({ zones: (s.zones||[]).length, roads: (s.roads||[]).length, ent
         if (!target) return { success: false, error: `POI not found for query: ${args.poi}` };
         let pts = Array.isArray(args.points) && args.points.length > 0 ? [...args.points] : [];
         pts.push({ x: target.x, z: target.z });
-        return e.addRoad(pts, { width: args.width });
+        return e.addRoad(pts, { width: args.width, trackStyle: args.trackStyle, surface: args.surface });
       }
 
       if (name === 'place_near_poi') {
@@ -419,7 +427,11 @@ ${JSON.stringify({ zones: (s.zones||[]).length, roads: (s.roads||[]).length, ent
       }).then((r) => r.json());
       if (!res || res.success === false) {
         const msg = res?.error || 'Grok generation failed';
-        if (res?.partial) setAiText(`Partial output:\n${String(res.partial).slice(0, 400)}`);
+        if (res?.partial) {
+          setAiText(`Partial output:\n${String(res.partial).slice(0, 600)}`);
+          // Log more details to help debug JSON extraction problems
+          if (res.raw) console.warn('[grok] raw response snippet:', String(res.raw).slice(0, 600));
+        }
         throw new Error(msg);
       }
       let mapData = res.map || res.project;
@@ -564,13 +576,27 @@ ${JSON.stringify({ zones: (s.zones||[]).length, roads: (s.roads||[]).length, ent
         <label style={{ 'font-size': '11px', color: '#8d9384', 'margin-top': '6px', display: 'block' }}>Elevation</label>
         <select
           style={field}
-          value={(snap().selected?.kind === 'road' ? snap().selected.elevation : snap().roadElevation) == null ? 'terrain' : 'fixed'}
-          onChange={(e) => editor()?.setRoadElevation(e.target.value === 'fixed' ? 0 : null)}
+          value={
+            snap().selected?.kind === 'road'
+              ? (snap().selected.elevationMode ?? 'terrain')
+              : snap().roadElevationMode
+          }
+          onChange={(e) => {
+            const mode = e.target.value;
+            if (mode === 'fixed') editor()?.setRoadElevationMode('fixed');
+            else if (mode === 'gentleSlope') editor()?.setRoadElevationMode('gentleSlope');
+            else editor()?.setRoadElevationMode('terrain');
+          }}
         >
-          <option value="terrain">Follow terrain</option>
-          <option value="fixed">Fixed height</option>
+          <For each={ROAD_ELEVATION_MODE_ORDER}>
+            {(mode) => <option value={mode}>{ROAD_ELEVATION_MODES[mode].label}</option>}
+          </For>
         </select>
-        <Show when={(snap().selected?.kind === 'road' ? snap().selected.elevation : snap().roadElevation) != null}>
+        <Show when={
+          (snap().selected?.kind === 'road'
+            ? snap().selected.elevationMode
+            : snap().roadElevationMode) === 'fixed'
+        }>
           <label style={{ 'font-size': '11px', color: '#8d9384' }}>World Y (m)</label>
           <input
             style={field}
@@ -582,6 +608,15 @@ ${JSON.stringify({ zones: (s.zones||[]).length, roads: (s.roads||[]).length, ent
           <Show when={(snap().selected?.kind === 'road' ? snap().selected.trackStyle : snap().roadTrackStyle) === 'tunnel'}>
             <div style={{ 'font-size': '11px', color: '#8d9384' }}>Fixed height + tunnel creates a flat bore.</div>
           </Show>
+        </Show>
+        <Show when={
+          (snap().selected?.kind === 'road'
+            ? snap().selected.elevationMode
+            : snap().roadElevationMode) === 'gentleSlope'
+        }>
+          <div style={{ 'font-size': '11px', color: '#8d9384', 'line-height': 1.4 }}>
+            Grades the road in one smooth line from the terrain height at its start to the height at its end; surrounding terrain conforms with a wider feather on steep cuts.
+          </div>
         </Show>
         <Show when={snap().tool === 'road'}>
           <div style={{ 'font-size': '11px', color: '#8d9384', 'line-height': 1.4 }}>
@@ -725,35 +760,52 @@ ${JSON.stringify({ zones: (s.zones||[]).length, roads: (s.roads||[]).length, ent
             <option value="">Base (gentle)</option>
             <For each={TERRAIN_BIOME_ORDER}>{(b) => <option value={b}>{TERRAIN_BIOMES[b].label}</option>}</For>
           </select>
-          <label style={{ 'font-size': '11px', color: '#8d9384' }}>Min elevation (m)</label>
-          <input
+          <label style={{ 'font-size': '11px', color: '#8d9384' }}>Elevation type</label>
+          <select
             style={field}
-            type="number"
-            placeholder="Unconstrained"
-            value={snap().selected.minHeight ?? ''}
-            onInput={(e) => editor()?.setSelectedMinHeight(e.target.value)}
-          />
-          <label style={{ 'font-size': '11px', color: '#8d9384' }}>Max elevation (m)</label>
-          <input
-            style={field}
-            type="number"
-            placeholder="Unconstrained"
-            value={snap().selected.maxHeight ?? ''}
-            onInput={(e) => editor()?.setSelectedMaxHeight(e.target.value)}
-          />
-          <Show when={(snap().selected.minHeight !== '') !== (snap().selected.maxHeight !== '')}>
-            <label style={{ 'font-size': '11px', color: '#8d9384' }}>Relief above/below (m)</label>
+            value={snap().selected.elevationType ?? 'natural'}
+            onChange={(e) => editor()?.setSelectedElevationType(e.target.value)}
+          >
+            <For each={TERRAIN_ELEVATION_TYPE_ORDER}>
+              {(t) => <option value={t}>{TERRAIN_ELEVATION_TYPES[t].label}</option>}
+            </For>
+          </select>
+          <Show when={(snap().selected.elevationType ?? 'natural') === 'natural'}>
+            <label style={{ 'font-size': '11px', color: '#8d9384' }}>Min elevation (m)</label>
             <input
               style={field}
               type="number"
-              placeholder="Auto (biome amplitude)"
-              value={snap().selected.relief ?? ''}
-              onInput={(e) => editor()?.setSelectedRelief(e.target.value)}
+              placeholder="Unconstrained"
+              value={snap().selected.minHeight ?? ''}
+              onInput={(e) => editor()?.setSelectedMinHeight(e.target.value)}
             />
+            <label style={{ 'font-size': '11px', color: '#8d9384' }}>Max elevation (m)</label>
+            <input
+              style={field}
+              type="number"
+              placeholder="Unconstrained"
+              value={snap().selected.maxHeight ?? ''}
+              onInput={(e) => editor()?.setSelectedMaxHeight(e.target.value)}
+            />
+            <Show when={(snap().selected.minHeight !== '') !== (snap().selected.maxHeight !== '')}>
+              <label style={{ 'font-size': '11px', color: '#8d9384' }}>Relief above/below (m)</label>
+              <input
+                style={field}
+                type="number"
+                placeholder="Auto (biome amplitude)"
+                value={snap().selected.relief ?? ''}
+                onInput={(e) => editor()?.setSelectedRelief(e.target.value)}
+              />
+            </Show>
+            <div style={{ 'font-size': '11px', color: '#8d9384', 'line-height': 1.4 }}>
+              Set min &gt; 0 to guarantee a mountain (never dips to sea level); set max &lt; 0 to guarantee a canyon/valley (never rises above it). The noise is remapped (not clamped) so the whole zone keeps natural rolling relief instead of a flat plateau — Relief controls how many metres of that variation to keep above the floor / below the ceiling (defaults to the biome's own amplitude). Eases in over ~24m at the zone edge.
+            </div>
           </Show>
-          <div style={{ 'font-size': '11px', color: '#8d9384', 'line-height': 1.4 }}>
-            Set min &gt; 0 to guarantee a mountain (never dips to sea level); set max &lt; 0 to guarantee a canyon/valley (never rises above it). The noise is remapped (not clamped) so the whole zone keeps natural rolling relief instead of a flat plateau — Relief controls how many metres of that variation to keep above the floor / below the ceiling (defaults to the biome's own amplitude). Eases in over ~24m at the zone edge.
-          </div>
+          <Show when={snap().selected.elevationType === 'gentleSlope'}>
+            <div style={{ 'font-size': '11px', color: '#8d9384', 'line-height': 1.4 }}>
+              Samples the existing procedural terrain inside this zone, finds the lowest and highest points, then reshapes the surface into a smooth planar ramp between them. Eases in over ~24m at the zone edge.
+            </div>
+          </Show>
         </Show>
         <Show when={snap().selected.kind === 'zone' && snap().selected.type === 'city'}>
           <label style={{ 'font-size': '11px', color: '#8d9384' }}>City style</label>

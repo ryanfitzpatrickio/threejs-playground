@@ -63,6 +63,28 @@ export const TERRAIN_BIOMES = {
 
 export const TERRAIN_BIOME_ORDER = ['plains', 'hills', 'mountains', 'alpine'];
 
+export const TERRAIN_ELEVATION_TYPES = {
+  natural: { label: 'Natural' },
+  gentleSlope: { label: 'Gentle slope' },
+};
+
+export const TERRAIN_ELEVATION_TYPE_ORDER = ['natural', 'gentleSlope'];
+
+export const ROAD_ELEVATION_MODES = {
+  terrain: { label: 'Follow terrain' },
+  fixed: { label: 'Fixed height' },
+  gentleSlope: { label: 'Gentle slope' },
+};
+
+export const ROAD_ELEVATION_MODE_ORDER = ['terrain', 'fixed', 'gentleSlope'];
+
+/** Resolve a road's elevation mode (terrain / fixed / gentleSlope). */
+export function roadElevationMode(road) {
+  if (road?.elevationMode === 'gentleSlope') return 'gentleSlope';
+  if (Number.isFinite(road?.elevation)) return 'fixed';
+  return 'terrain';
+}
+
 export {
   FOREST_SPECIES,
   FOREST_SPECIES_ORDER,
@@ -172,6 +194,16 @@ export function normalizeZone(raw) {
       ? Number(props.density)
       : DEFAULT_FOREST_DENSITY;
     props.seed = Number.isFinite(Number(props.seed)) ? Number(props.seed) : 1;
+  }
+  if (type === 'terrain') {
+    if (props.elevationType === 'gentleSlope') {
+      props.elevationType = 'gentleSlope';
+      delete props.minHeight;
+      delete props.maxHeight;
+      delete props.relief;
+    } else {
+      delete props.elevationType;
+    }
   }
 
   if (raw.shape === 'polygon') {
@@ -311,6 +343,19 @@ export function normalizeRoad(raw) {
     || (typeof elevationInput === 'string' && elevationInput.trim() !== ''))
     ? num(elevationInput, NaN)
     : NaN;
+  const elevationMode = raw.elevationMode === 'gentleSlope' ? 'gentleSlope' : null;
+  if (elevationMode === 'gentleSlope') {
+    return {
+      id: typeof raw.id === 'string' && raw.id ? raw.id : makeId('r'),
+      points,
+      width: Math.max(2, num(raw.width, DEFAULT_ROAD_WIDTH)),
+      type: typeof raw.type === 'string' && raw.type ? raw.type : 'road',
+      trackStyle: typeof raw.trackStyle === 'string' && raw.trackStyle ? raw.trackStyle : null,
+      surface: normalizeRoadSurface(raw.surface),
+      elevation: null,
+      elevationMode: 'gentleSlope',
+    };
+  }
   return {
     id: typeof raw.id === 'string' && raw.id ? raw.id : makeId('r'),
     points,

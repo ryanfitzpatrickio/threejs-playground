@@ -38,13 +38,14 @@ import {
 import {
   buildRoadProfile,
   applyRoadCorridorHeight,
+  clampBridgedRoadFloor,
   sampleCenterline,
 } from '../world/worldMap/roadProfile.js';
 import { buildRiverProfile, applyRiverCorridorHeight } from '../world/worldMap/riverProfile.js';
 import { createRoadworks } from '../game/world/createRoadworks.js';
 import { createTracksideLayers } from '../game/world/createTracksideLayers.js';
 import { createRiverworks } from '../game/world/createRiverworks.js';
-import { normalizeRoad, normalizeRiver, makeId } from '../world/worldMap/worldMapSchema.js';
+import { normalizeRoad, normalizeRiver, makeId, roadElevationMode } from '../world/worldMap/worldMapSchema.js';
 
 const GLTFExporterPromise = import('three/examples/jsm/exporters/GLTFExporter.js').then(m => m.GLTFExporter);
 
@@ -148,6 +149,7 @@ export class MapBuilder {
     this.selectedRiverId = null;
     this.roadWidth = 8;
     this.roadElevation = null;
+    this.roadElevationMode = 'terrain';
     this.riverWidth = 10;
     this.riverDepth = 6;
     this.roadCorridor = null;   // corridorAt(x,z) from buildRoadProfile (null = no carve)
@@ -1673,6 +1675,7 @@ export class MapBuilder {
       ...(typeof r.trackStyle === 'string' && r.trackStyle ? { trackStyle: r.trackStyle } : {}),
       ...(typeof r.surface === 'string' && r.surface ? { surface: r.surface } : {}),
       ...(Number.isFinite(r.elevation) ? { elevation: r.elevation } : {}),
+      ...(r.elevationMode === 'gentleSlope' ? { elevationMode: 'gentleSlope' } : {}),
     }));
   }
 
@@ -1723,6 +1726,7 @@ export class MapBuilder {
           const wz = originZ + j * step;
           if (hasRoad) h = applyRoadCorridorHeight(h, this.roadCorridor(wx, wz), BRIDGE_CLEARANCE);
           if (hasRiver) h = applyRiverCorridorHeight(h, this.riverCorridor(wx, wz));
+          if (hasRoad) h = clampBridgedRoadFloor(h, this.roadCorridor(wx, wz), BRIDGE_CLEARANCE);
         }
         pos.setY(idx, h);
       }
@@ -1787,6 +1791,7 @@ export class MapBuilder {
       this.roadworksPreview = createRoadworks({
         profile,
         sampleHeight: (x, z) => this.manager.getHeightAt(x, z),
+        riverCorridorAt: this.riverCorridor,
       });
       this.roadsGroup.add(this.roadworksPreview.group);
       // GT3-style trackside layers for any road with a trackStyle (colliders ignored
@@ -1906,7 +1911,8 @@ export class MapBuilder {
       points: this.roadDraft.points,
       width: this.roadWidth,
       type: 'road',
-      elevation: this.roadElevation,
+      elevation: this.roadElevationMode === 'fixed' ? (this.roadElevation ?? 0) : null,
+      elevationMode: this.roadElevationMode === 'gentleSlope' ? 'gentleSlope' : null,
     });
     this.roadDraft = null;
     this.clearDraftLine('road');
@@ -2094,7 +2100,35 @@ export class MapBuilder {
     const numeric = value === null || value === '' ? NaN : Number(value);
     const next = Number.isFinite(numeric) ? numeric : null;
     const road = this.currentRoad();
-    if (road) road.elevation = next; else this.roadElevation = next;
+    if (road) {
+      road.elevation = next;
+      delete road.elevationMode;
+    } else {
+      this.roadElevation = next;
+    }
+    this.roadElevationMode = next === null ? this.roadElevationMode : 'fixed';
+    this.rebuildOverlays();
+    this.emitChange();
+  }
+
+  setRoadElevationMode(mode) {
+    const next = mode === 'gentleSlope' || mode === 'fixed' ? mode : 'terrain';
+    this.roadElevationMode = next;
+    if (next === 'fixed' && !Number.isFinite(this.roadElevation)) this.roadElevation = 0;
+    if (next !== 'fixed') this.roadElevation = null;
+    const road = this.currentRoad();
+    if (road) {
+      if (next === 'gentleSlope') {
+        road.elevation = null;
+        road.elevationMode = 'gentleSlope';
+      } else if (next === 'fixed') {
+        road.elevation = this.roadElevation ?? 0;
+        delete road.elevationMode;
+      } else {
+        road.elevation = null;
+        delete road.elevationMode;
+      }
+    }
     this.rebuildOverlays();
     this.emitChange();
   }
@@ -2358,6 +2392,9 @@ export class MapBuilder {
       selectedRiverId: this.selectedRiverId,
       roadWidth: this.currentRoad()?.width ?? this.roadWidth,
       roadElevation: this.currentRoad() ? this.currentRoad().elevation : this.roadElevation,
+      roadElevationMode: this.currentRoad()
+        ? roadElevationMode(this.currentRoad())
+        : this.roadElevationMode,
       riverWidth: this.currentRiver()?.width ?? this.riverWidth,
       riverDepth: this.currentRiver()?.depth ?? this.riverDepth,
       blueprints: listBlueprints(),

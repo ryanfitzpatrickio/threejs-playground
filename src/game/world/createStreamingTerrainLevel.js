@@ -26,8 +26,13 @@ import { disposeObject3D } from '../utils/disposeObject3D.js';
 import { ZONE_TYPES, POI_KINDS, ENTITY_GROUND_MODES, TERRAIN_BIOMES } from '../../world/worldMap/worldMapSchema.js';
 import { zoneContains, zoneDistanceOutside, zoneBounds } from '../../world/worldMap/zoneGeometry.js';
 import {
+  buildGentleSlopeProfiles,
+  applyGentleSlopeProfiles,
+} from '../../world/worldMap/terrainGentleSlope.js';
+import {
   buildRoadProfile,
   applyRoadCorridorHeight,
+  clampBridgedRoadFloor,
   findNearestRoadPoint,
   TUNNEL_INTERIOR_HEIGHT,
 } from '../../world/worldMap/roadProfile.js';
@@ -42,7 +47,7 @@ import { getQualityLevel } from '../config/qualityPresets.js';
 import { isSpectatorCrowdEnabled } from '../config/renderDebugSettings.js';
 import { createRiverworks } from './createRiverworks.js';
 import { createBlueprintEntities, collectBlueprintRoads, collectBlueprintRivers, collectBlueprintTerrainTexture } from './createBlueprintEntities.js';
-import { getGroundHeightAt as colliderGroundHeightAt } from './createBaseLevel.js';
+import { getGroundHeightAt as colliderGroundHeightAt, getBlockingColliderAt as colliderBlockingAt } from './createBaseLevel.js';
 import { createMudDeformField } from './mudDeformField.js';
 import { surfaceForRoad } from '../../world/worldMap/roadSurface.js';
 
@@ -212,7 +217,7 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
   // to preserve above the floor / below the ceiling — defaults to the zone's own
   // biome amplitude if unset. Either, both, or neither of min/max may be set.
   const elevationZones = (worldMap?.zones ?? [])
-    .filter((z) => z.type === 'terrain')
+    .filter((z) => z.type === 'terrain' && z.props?.elevationType !== 'gentleSlope')
     .map((z) => {
       const minHeight = Number(z.props?.minHeight);
       const maxHeight = Number(z.props?.maxHeight);
@@ -228,6 +233,8 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
       };
     })
     .filter(Boolean);
+
+  let gentleSlopeProfiles = [];
 
   // REMAPS the natural noise into the requested band rather than clamping it.
   // A clamp (h = max(h, floor)) pins every point where the raw noise falls below
@@ -283,7 +290,8 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
     const authored = manager.hasAuthored?.(cx, cz) ?? false;
     const hasFlatten = flattenZones.length > 0;
     const hasElevation = elevationZones.length > 0;
-    if (authored && !hasFlatten && !hasElevation && !roadCorridor && !blueprintMergeSampler && !riverCorridor) return;
+    const hasGentleSlope = gentleSlopeProfiles.length > 0;
+    if (authored && !hasFlatten && !hasElevation && !hasGentleSlope && !roadCorridor && !blueprintMergeSampler && !riverCorridor) return;
 
     const res = data.resolution;
     const step = data.size / (res - 1);
@@ -297,7 +305,11 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
         let h = data.heights[idx];
         const amp = biomeAmplitudeAt(wx, wz);
         if (!authored) h *= amp;
-        if (hasElevation) h = applyElevationZones(wx, wz, h, amp);
+        if (hasGentleSlope) {
+          h = applyGentleSlopeProfiles(wx, wz, h, gentleSlopeProfiles, ELEVATION_MARGIN);
+        } else if (hasElevation) {
+          h = applyElevationZones(wx, wz, h, amp);
+        }
         if (hasFlatten) {
           const t = flattenFactor(wx, wz);
           if (t > 0) h = h * (1 - t) + FLATTEN_TARGET_Y * t;
@@ -326,12 +338,21 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
         if (riverCorridor) {
           h = applyRiverCorridorHeight(h, riverCorridor(wx, wz));
         }
+        // River carves run after the road clamp; re-assert bridged floors so water
+        // channels cannot punch through deck crossings.
+        if (roadCorridor) {
+          h = clampBridgedRoadFloor(h, roadCorridor(wx, wz), BRIDGE_CLEARANCE);
+        }
         data.heights[idx] = h;
       }
     }
   };
 
   const manager = new ChunkManager(TERRAIN_PARAMS);
+  gentleSlopeProfiles = buildGentleSlopeProfiles(worldMap?.zones, (wx, wz) => {
+    const amp = biomeAmplitudeAt(wx, wz);
+    return manager.procedural(wx, wz) * amp;
+  });
 
   // NOTE: the legacy 3D Map-Builder sculpt overlay is intentionally NOT loaded
   // globally here. Those authored chunks are not biome-scaled, so they stepped
@@ -421,7 +442,11 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
   const sampleShapedHeight = (wx, wz) => {
     const ampAtSample = biomeAmplitudeAt(wx, wz);
     let h = manager.procedural(wx, wz) * ampAtSample;
-    h = applyElevationZones(wx, wz, h, ampAtSample);
+    if (gentleSlopeProfiles.length > 0) {
+      h = applyGentleSlopeProfiles(wx, wz, h, gentleSlopeProfiles, ELEVATION_MARGIN);
+    } else {
+      h = applyElevationZones(wx, wz, h, ampAtSample);
+    }
     const t = flattenFactor(wx, wz);
     if (t > 0) h = h * (1 - t) + FLATTEN_TARGET_Y * t;
     // Stamp merge-mode blueprint terrain FIRST (mirrors shapeChunk's pass exactly)
@@ -447,6 +472,9 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
     // terrain — no recursion.
     if (riverCorridor) {
       h = applyRiverCorridorHeight(h, riverCorridor(wx, wz));
+    }
+    if (roadCorridor) {
+      h = clampBridgedRoadFloor(h, roadCorridor(wx, wz), BRIDGE_CLEARANCE);
     }
     return h;
   };
@@ -694,7 +722,12 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
   }
 
   if (roadProfile) {
-    roadworks = createRoadworks({ profile: roadProfile, sampleHeight: sampleShapedHeight, mudField });
+    roadworks = createRoadworks({
+      profile: roadProfile,
+      sampleHeight: sampleShapedHeight,
+      mudField,
+      riverCorridorAt: riverCorridor,
+    });
     group.add(roadworks.group);
     // GT3-style trackside stack (curbs/shoulders/walls) for roads with a trackStyle.
     // Its wall colliders go into level.colliders so the vehicle is contained.
@@ -1051,6 +1084,18 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
         const sink = mudField.sampleDepthAt(position.x, position.z);
         if (sink > 0) ground -= sink;
       }
+      // Trackside walls/buildings beside bridged roads and over water.
+      if (colliders.length) {
+        const objectY = colliderGroundHeightAt({
+          position,
+          radius,
+          maxStepUp: options.maxStepUp,
+          maxSnapDown: options.maxSnapDown,
+          colliders,
+          baseHeight: -Infinity,
+        });
+        if (objectY > ground) ground = objectY;
+      }
       return ground;
     },
 
@@ -1109,8 +1154,9 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
       return built > 0;
     },
 
-    // Terrain is never a vertical wall; the heightfield provides the surface.
-    getBlockingColliderAt: () => null,
+    // Trackside walls/buildings (roadworks decks are handled above).
+    getBlockingColliderAt: ({ position, radius, feetY, height, stepHeight }) =>
+      colliderBlockingAt({ position, radius, feetY, height, stepHeight, colliders }),
 
     // Water surface query for the character swim detector (MovementSystem). Returns
     // { waterY, weight } at a world point; weight 0 outside every river corridor.

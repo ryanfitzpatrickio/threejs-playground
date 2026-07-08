@@ -1,12 +1,14 @@
 // Layered engine sound sets for EngineAudio (https://github.com/markeasting/engine-audio style).
 //
 // Each profile supplies looping on/off-load layers (low + high RPM ranges) plus optional
-// limiter and transmission layers. The BAC profile is taken directly from the reference's
+// limiter, transmission, and idle layers. The BAC profile is taken directly from the reference's
 // bac_mono configuration (same filenames, bufferRpm anchors, and volume balance).
+// 'quad' adds a dedicated idle loop for ATV/quad bike engines.
 
 export const ENGINE_PROFILE_IDS = Object.freeze({
   bac: 'bac',
   boxer: 'boxer',
+  quad: 'quad',
   electric: 'electric',
 });
 
@@ -89,6 +91,36 @@ const BOXER_ENGINE_SOUNDS = {
   },
 };
 
+const QUAD_ENGINE_SOUNDS = {
+  // Quad bike / ATV engine: dedicated idle + on-load / off-load layers.
+  // Provided by user as quadidle / quadonlow etc; mapped to standard layered keys.
+  idle: {
+    source: '/audio/engine/quad/idle.mp3',
+    bufferRpm: 900,
+    volume: 0.85,
+  },
+  on_low: {
+    source: '/audio/engine/quad/on-low.mp3',
+    bufferRpm: 1100,
+    volume: 0.58,
+  },
+  on_high: {
+    source: '/audio/engine/quad/on-high.mp3',
+    bufferRpm: 1100,
+    volume: 0.58,
+  },
+  off_low: {
+    source: '/audio/engine/quad/off-low.mp3',
+    bufferRpm: 950,
+    volume: 0.45,
+  },
+  off_high: {
+    source: '/audio/engine/quad/off-high.mp3',
+    bufferRpm: 950,
+    volume: 0.45,
+  },
+};
+
 const ELECTRIC_ENGINE_SOUNDS = {
   on_low: {
     source: '/audio/engine/electric/on-low.mp3',
@@ -134,6 +166,7 @@ const ELECTRIC_EXTERIOR_IDLE_URL = '/audio/engine/electric/exterior-idle.mp3';
 export const ENGINE_PROFILES = Object.freeze({
   [ENGINE_PROFILE_IDS.bac]: BAC_ENGINE_SOUNDS,
   [ENGINE_PROFILE_IDS.boxer]: BOXER_ENGINE_SOUNDS,
+  [ENGINE_PROFILE_IDS.quad]: QUAD_ENGINE_SOUNDS,
   [ENGINE_PROFILE_IDS.electric]: ELECTRIC_ENGINE_SOUNDS,
 });
 
@@ -163,4 +196,28 @@ export function resolveExteriorIdleUrl(profileId) {
 /** @deprecated Use isElectricEngineProfile() — electric is sample-based now. */
 export function isProceduralEngineProfile(profileId) {
   return false;
+}
+
+export function getEngineAudioTuning(profileId) {
+  const id = resolveEngineProfile(profileId);
+  if (id === 'quad') {
+    // Quad/ATV: lower revving, torquey, distinct from high-rev muscle car profiles.
+    // Crossfades tuned to typical quad RPM range so layers blend at realistic points.
+    return Object.freeze({
+      crossfadeLow: 1600,
+      crossfadeHigh: 4800,
+      throttleCrossfade: 0.9,
+      pitchFactor: 0.14,
+      limiterStartRpm: 5200,
+      masterVolume: 0.36,
+    });
+  }
+  return Object.freeze({
+    crossfadeLow: 3000,
+    crossfadeHigh: 6500,
+    throttleCrossfade: 1.0,
+    pitchFactor: 0.2,
+    limiterStartRpm: 6800,
+    masterVolume: 0.4,
+  });
 }

@@ -64,7 +64,7 @@ export class QuadBikeVehicle extends BaseVehicle {
         ...(options.frameParameters ?? {}),
       },
       config: {
-        engineProfile: 'boxer',
+        engineProfile: 'quad',
         damping: { linear: 0.08, angular: 1.05 },
         seats: [{
           name: 'quad-rider', offset: [0, 0.28, 0.05], facing: 0, isDriver: true,

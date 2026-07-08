@@ -142,10 +142,40 @@ export class VehicleSystem {
         vehicle.spawnPosition.x,
         vehicle.spawnPosition.z,
       );
-      const surfaceY = Math.max(
+      let surfaceY = Math.max(
         Number.isFinite(analytic) ? analytic : -Infinity,
         Number.isFinite(physicsY) ? physicsY : -Infinity,
       );
+
+      // Also sample a bit ahead of the vehicle (in its facing direction) when
+      // choosing spawn height. Otherwise the rigid chassis collider (or front
+      // suspension) can spawn already intersecting a rise / seam / deck edge
+      // immediately in front of the center point. This is the "invisible bump
+      // right in front of the car" that appears once the full world (detailed
+      // heightfields + road decks) has loaded after spawn. Using max( center, front )
+      // lifts just enough to clear the front without the old "use max over whole
+      // footprint" problem on side slopes.
+      if (Number.isFinite(vehicle.spawnRotationY)) {
+        const yaw = vehicle.spawnRotationY;
+        const fwdX = -Math.sin(yaw);
+        const fwdZ = -Math.cos(yaw);
+        const frontSampleX = vehicle.spawnPosition.x + fwdX * 1.8;
+        const frontSampleZ = vehicle.spawnPosition.z + fwdZ * 1.8;
+        const frontAnalytic = this.level.getGroundHeightAt(
+          { x: frontSampleX, y: 0, z: frontSampleZ },
+          0,
+          { preferRoadSurface: true },
+        );
+        const frontPhysicsY = raycastPhysicsSurfaceY(this.physics, frontSampleX, frontSampleZ);
+        const frontS = Math.max(
+          Number.isFinite(frontAnalytic) ? frontAnalytic : -Infinity,
+          Number.isFinite(frontPhysicsY) ? frontPhysicsY : -Infinity,
+        );
+        if (Number.isFinite(frontS)) {
+          surfaceY = Math.max(surfaceY, frontS);
+        }
+      }
+
       if (Number.isFinite(surfaceY)) {
         vehicle.spawnPosition.y = surfaceY + clearance + SPAWN_EXTRA_CLEARANCE;
       }
@@ -545,6 +575,7 @@ export class VehicleSystem {
     // AnimationStateSystem drives the seated state from next frame; play it now
     // so there's no one-frame gap to idle.
     character.animationController?.play?.(vehicle.driverAnimationState ?? 'ridingHorse', 0.12);
+    if (vehicle.doorRig) vehicle.doorOpenTarget = 1;
   }
 
   _exit({ character, level }) {
@@ -552,6 +583,7 @@ export class VehicleSystem {
     if (!vehicle) {
       return;
     }
+    if (vehicle.doorRig) vehicle.doorOpenTarget = 0;
     const seatIndex = vehicle.clearOccupant(character);
     vehicle.getExitWorldPosition(_exitPos, level);
     character.group.position.copy(_exitPos);

@@ -27,7 +27,8 @@ import {
   setQualityLevel,
   setToneMappingMode,
 } from '../game/config/qualityPresets.js';
-import { createDevTools } from 'virtual:dreamfall-dev-tools';
+import { createDevTools, BodyshopScene } from 'virtual:dreamfall-dev-tools';
+import { loadGarageChassisOptions } from '../game/vehicles/bodyshopChassisRegistry.js';
 
 function readStoredLevel() {
   try {
@@ -39,7 +40,8 @@ function readStoredLevel() {
 }
 
 export function App() {
-  const [viewMode, setViewMode] = createSignal('game'); // 'game' | 'garage' | dev-tool views
+  const [viewMode, setViewMode] = createSignal('game'); // 'game' | 'garage' | 'bodyshop' | dev-tool views
+  const [chassisRefreshToken, setChassisRefreshToken] = createSignal(0);
   const [levelMode, setLevelModeSignal] = createSignal(readStoredLevel());
   const [gameSnapshot, setGameSnapshot] = createSignal(null);
   const [quality, setQuality] = createSignal(getQualityLevel());
@@ -153,6 +155,7 @@ export function App() {
 
   const isGame = () => viewMode() === 'game';
   const isGarage = () => viewMode() === 'garage';
+  const isBodyshop = () => viewMode() === 'bodyshop';
   const isCutTest = () => viewMode() === 'cutTest';
 
   // Stable key for the playable canvas: changes only when the scene actually
@@ -201,6 +204,8 @@ export function App() {
     setLevelModeSignal(next);
     switchTo('game');
   };
+
+  let bodyshopApi = null;
 
   const devTools = createDevTools({
     viewMode,
@@ -337,7 +342,29 @@ export function App() {
 
       {isCutTest() && <CutTestCanvas />}
 
-      {isGarage() && <GarageScene onDrive={() => setLevelMode(levelMode())} />}
+      {isGarage() && (
+        <GarageScene
+          chassisRefreshToken={chassisRefreshToken()}
+          onOpenBodyshop={() => switchTo('bodyshop')}
+          onDrive={() => setLevelMode(levelMode())}
+        />
+      )}
+
+      {isBodyshop() && (
+        <BodyshopScene
+          onReady={(api) => {
+            bodyshopApi = api;
+          }}
+          onBack={async () => {
+            await bodyshopApi?.flushAutosave?.();
+            switchTo('garage');
+          }}
+          onPublished={async () => {
+            await loadGarageChassisOptions({ force: true });
+            setChassisRefreshToken((value) => value + 1);
+          }}
+        />
+      )}
 
       <devTools.Views />
     </main>

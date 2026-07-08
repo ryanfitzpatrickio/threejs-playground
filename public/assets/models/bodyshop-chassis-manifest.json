@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "mustang67",
+      "name": "Mustang 67",
+      "description": "old style mustang",
+      "url": "/assets/models/mustang67.glb",
+      "defaultTransform": {
+        "position": [
+          0,
+          -0.1,
+          0.05
+        ],
+        "rotationDegrees": [
+          0,
+          180,
+          0
+        ],
+        "scale": [
+          6.3,
+          6.3,
+          6.3
+        ]
+      },
+      "devOnly": true
+    }
+  ]
+}

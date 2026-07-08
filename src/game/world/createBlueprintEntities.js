@@ -421,6 +421,7 @@ export function collectBlueprintRoads(worldMap) {
         elevation: Number.isFinite(Number(road.elevation)) && road.elevation !== null
           ? Number(road.elevation)
           : null,
+        ...(road.elevationMode === 'gentleSlope' ? { elevationMode: 'gentleSlope' } : {}),
       });
     }
   }

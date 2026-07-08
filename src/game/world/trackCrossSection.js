@@ -64,6 +64,8 @@
  *   → apex), `thickness` (m, shell thickness used for colliders), `color`. Ignores
  *   side/gap (spans the road from the centerline, like gantry).
  * TunnelLight bands: `every` (m spacing), `color`.
+ * RoadsideBuildings bands: `spacing` (m), `gap`. Emits procedural low-rise strips
+ * and apartment blocks flanking the road using dual-LOD (detailed near + POM far).
  */
 
 export const TRACK_CROSS_SECTIONS = {
@@ -173,6 +175,17 @@ export const TRACK_CROSS_SECTIONS = {
       { kind: 'tunnelBore', wallHeight: 3.4, archRise: 1.8, thickness: 0.5, color: 0x5a5850 },
       // Ceiling lights every 18m.
       { kind: 'tunnelLight', every: 18, color: 0xfff2c8 },
+    ],
+  },
+
+  roadsideBuildings: {
+    label: 'Roadside Buildings',
+    bands: [
+      // Sidewalk / verge strip before the buildings.
+      { kind: 'shoulder', side: 'both', width: 3.5, lift: 0.1, color: 0xcccccc },
+      // Procedural buildings band. Spacing controls placement density; gap
+      // offsets from the shoulder. The builder will consume lateral depth.
+      { kind: 'roadsideBuildings', side: 'both', gap: 0.2, spacing: 16 },
     ],
   },
 };

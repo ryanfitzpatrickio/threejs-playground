@@ -613,6 +613,12 @@ export function classifyVehicleOverlayMesh(mesh, profileId = null, {
   if (/\b(?:glass|window|windshield|windscreen)\b/.test(label)) {
     return disableGlassDetection ? VEHICLE_OVERLAY_PART.CHASSIS : VEHICLE_OVERLAY_PART.GLASS;
   }
+  if (/\b(?:headlight|head[\s_]?lamp)\b/.test(label)) {
+    return VEHICLE_OVERLAY_PART.HEADLIGHT_LENS;
+  }
+  if (/\b(?:tail[\s_]?light|tail[\s_]?lamp|taillight)\b/.test(label)) {
+    return VEHICLE_OVERLAY_PART.TAIL_LIGHT;
+  }
   if (names.some((name) => /^(?:chassis|chasis|body shell)$/i.test(name.replaceAll('_', ' ')))) {
     return VEHICLE_OVERLAY_PART.CHASSIS;
   }

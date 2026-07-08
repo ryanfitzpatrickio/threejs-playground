@@ -23,6 +23,7 @@ const cache = {
   worldmaps: {},
   mapbuilder: {},
   garage: {},
+  bodyshop: {},
 };
 
 /** @type {Record<string, unknown>} */
@@ -153,6 +154,16 @@ export function setMapBuilderAutosave(project, options = { debounce: true }) {
   queuePersist('mapbuilder', '_autosave', project, options);
 }
 
+export function getBodyshopAutosave() {
+  return cache.bodyshop?._autosave ?? null;
+}
+
+export function setBodyshopAutosave(session, options = { debounce: true }) {
+  if (!cache.bodyshop) cache.bodyshop = {};
+  cache.bodyshop._autosave = session;
+  queuePersist('bodyshop', '_autosave', session, options);
+}
+
 function setPersistError(err) {
   persistError = err?.message || String(err);
   console.error('[fileStore] persist failed:', persistError);
@@ -225,6 +236,7 @@ function clearCache() {
   cache.worldmaps = {};
   cache.mapbuilder = {};
   cache.garage = {};
+  cache.bodyshop = {};
   state = {};
 }
 
@@ -234,6 +246,7 @@ function applySnapshot(snapshot, readOnly) {
   cache.worldmaps = { ...(snapshot.worldmaps ?? {}) };
   cache.mapbuilder = { ...(snapshot.mapbuilder ?? {}) };
   cache.garage = { ...(snapshot.garage ?? {}) };
+  cache.bodyshop = { ...(snapshot.bodyshop ?? {}) };
   state = snapshot.state && typeof snapshot.state === 'object' ? { ...snapshot.state } : {};
 }
 
@@ -247,6 +260,7 @@ async function hydrateFromIndex(index, readOnly) {
     worldmaps: {},
     mapbuilder: {},
     garage: {},
+    bodyshop: {},
     state: index.state ?? {},
   }, readOnly);
 
@@ -300,6 +314,18 @@ async function hydrateFromIndex(index, readOnly) {
     );
   }
 
+  for (const meta of index.bodyshop ?? []) {
+    fetches.push(
+      fetchJson(readOnly ? prodUrl('bodyshop', meta.id) : apiUrl('bodyshop', meta.id))
+        .then((data) => {
+          cache.bodyshop[meta.id] = data;
+        })
+        .catch((err) => {
+          console.error(`[fileStore] failed to load bodyshop ${meta.id}:`, err?.message || err);
+        }),
+    );
+  }
+
   await Promise.allSettled(fetches);
   notifyStoreHydrated();
 }
@@ -337,7 +363,7 @@ async function loadDevStore() {
   try {
     index = await fetchJson('/data/index.json');
   } catch {
-    index = { blueprints: [], worldmaps: [], mapbuilder: [], garage: [], state: {} };
+    index = { blueprints: [], worldmaps: [], mapbuilder: [], garage: [], bodyshop: [], state: {} };
   }
   await hydrateFromIndex(index, true);
   if (isStoreEmpty(index)) {
@@ -346,7 +372,7 @@ async function loadDevStore() {
 }
 
 function isStoreEmpty(snapshotOrIndex) {
-  const hasCollections = ['blueprints', 'worldmaps', 'mapbuilder', 'garage'].some((collection) => {
+  const hasCollections = ['blueprints', 'worldmaps', 'mapbuilder', 'garage', 'bodyshop'].some((collection) => {
     const bucket = snapshotOrIndex[collection];
     if (Array.isArray(bucket)) return bucket.length > 0;
     return bucket && Object.keys(bucket).length > 0;
@@ -512,6 +538,7 @@ export function __seedFileStoreForTests(snapshot = {}) {
   Object.assign(cache.worldmaps, snapshot.worldmaps ?? {});
   Object.assign(cache.mapbuilder, snapshot.mapbuilder ?? {});
   Object.assign(cache.garage, snapshot.garage ?? {});
+  Object.assign(cache.bodyshop, snapshot.bodyshop ?? {});
   state = { ...state, ...(snapshot.state ?? {}) };
   writable = false;
   initialized = true;

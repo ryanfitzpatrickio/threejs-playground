@@ -9,14 +9,13 @@
 //
 // This file implements the playback + blending engine (Web Audio). Sample sets live in
 // engineProfiles.js (BAC Mono profile matches the reference's bac_mono configuration exactly;
-// boxer is a local variant that adds one-shot on-load accents).
+// boxer is a local variant that adds one-shot on-load accents; quad uses lower-rev ATV/quad
+// tuning for crossfades, pitch, and idle layer to avoid muscle-car character).
 
 import * as THREE from 'three';
+import { getEngineAudioTuning } from './engineProfiles.js';
 
-const RPM_CROSSFADE_LOW = 3000;
-const RPM_CROSSFADE_HIGH = 6500;
-const THROTTLE_CROSSFADE = 1.0; // match original library exactly
-const RPM_PITCH_FACTOR = 0.2;   // match original
+const DEFAULT_TUNING = getEngineAudioTuning('bac');
 
 const MASTER_VOLUME = 0.4; // reduced by another 33% (now ~44% of original 0.9)
 
@@ -29,14 +28,20 @@ export class EngineAudio {
     this._isMuted = false;
     this._lastThrottle = 0;
     this._lastAccentTime = 0;
+
+    // Per-profile audio behavior (crossfades, pitch, etc.). Defaults for muscle-car profiles.
+    this.tuning = { ...DEFAULT_TUNING };
   }
 
-  async init(soundConfig) {
+  async init(soundConfig, profileId = null) {
     if (this._initialized) return;
+
+    this.profileId = profileId || 'bac';
+    this.tuning = { ...getEngineAudioTuning(this.profileId) };
 
     this.ctx = new (window.AudioContext || window.webkitAudioContext)();
     this.masterGain = this.ctx.createGain();
-    this.masterGain.gain.value = MASTER_VOLUME;
+    this.masterGain.gain.value = this.tuning.masterVolume ?? MASTER_VOLUME;
 
     // Note: we intentionally skip the high-pass here to match the raw demo sound
     // (original repo demo has no high-pass filter on the layers)
@@ -112,7 +117,8 @@ export class EngineAudio {
       source.buffer = s.buffer;
       source.loop = false;
       if (rpm != null && s.bufferRpm != null) {
-        const detune = (rpm - s.bufferRpm) * RPM_PITCH_FACTOR;
+        const pf = this.tuning?.pitchFactor ?? 0.2;
+        const detune = (rpm - s.bufferRpm) * pf;
         source.detune.value = detune;
       }
       const gain = this.ctx.createGain();
@@ -145,9 +151,15 @@ export class EngineAudio {
       return;
     }
 
+    const cfLow = this.tuning.crossfadeLow ?? 3000;
+    const cfHigh = this.tuning.crossfadeHigh ?? 6500;
+    const thCross = this.tuning.throttleCrossfade ?? 1.0;
+    const pitchF = this.tuning.pitchFactor ?? 0.2;
+    const limStart = this.tuning.limiterStartRpm ?? 6800;
+
     // RPM crossfade (low <-> high)
     const rpmX = THREE.MathUtils.clamp(
-      (r - RPM_CROSSFADE_LOW) / (RPM_CROSSFADE_HIGH - RPM_CROSSFADE_LOW),
+      (r - cfLow) / (cfHigh - cfLow),
       0,
       1
     );
@@ -155,15 +167,19 @@ export class EngineAudio {
     const highGain = Math.cos((1 - rpmX) * 0.5 * Math.PI);
 
     // Throttle crossfade (off <-> on)
-    const onX = THREE.MathUtils.clamp(t / THROTTLE_CROSSFADE, 0, 1);
+    const onX = THREE.MathUtils.clamp(t / thCross, 0, 1);
     const onGain = Math.cos((1 - onX) * 0.5 * Math.PI);
     const offGain = Math.cos(onX * 0.5 * Math.PI);
 
     // Limiter amount (simple ramp near redline, original uses soft_limiter ratio)
-    const limiterGain = THREE.MathUtils.clamp((r - 6800) / (900 - 0), 0, 1.0);
+    const limiterGain = THREE.MathUtils.clamp((r - limStart) / (900 - 0), 0, 1.0);
 
     // Minimal idle baseline to keep engine audible at low RPM (original has no extra)
     const idlePresence = THREE.MathUtils.clamp((1400 - r) / 800, 0, 0.15);
+
+    // Dedicated idle layer gain (for 'quad' and future profiles that ship an idle loop).
+    // Strongest near true idle + closed throttle; fades with RPM and throttle.
+    const idleMix = THREE.MathUtils.clamp((2050 - r) / 1300, 0, 1) * (1 - t * 0.55);
 
     // Trigger boxer on-load one-shot accents (one-shot punch) when throttle rises.
     // The on_* loop layers then provide the sustained sound "afterwards".
@@ -173,7 +189,7 @@ export class EngineAudio {
     const RISE_THRESHOLD = 0.12;
     if (throttleRise > RISE_THRESHOLD && (now - this._lastAccentTime) > ACCENT_COOLDOWN) {
       this._lastAccentTime = now;
-      const useHigh = r > RPM_CROSSFADE_LOW + 400;
+      const useHigh = r > (this.tuning.crossfadeLow ?? 3000) + 400;
       const accentKey = useHigh ? 'on_accent_high' : 'on_accent_low';
       const accent = this.samples[accentKey];
       if (accent && accent.isOneShot) {
@@ -193,17 +209,28 @@ export class EngineAudio {
       s.gain.gain.value = g;
 
       if (applyPitch && s.source && s.bufferRpm != null) {
-        const detune = (r - s.bufferRpm) * RPM_PITCH_FACTOR;
+        const detune = (r - s.bufferRpm) * pitchF;
         s.source.detune.value = detune;
       }
     };
 
     // Core layers — exact same as original library applySounds for BAC samples
     setLayer('on_low', onGain * lowGain);
-    setLayer('off_low', offGain * lowGain + idlePresence);
+    // For profiles with a dedicated 'idle' sample (quad), let the idle layer provide
+    // most of the low-rpm presence instead of boosting off_low.
+    const hasIdleLayer = !!this.samples['idle'];
+    const offLowExtra = hasIdleLayer ? 0 : idlePresence;
+    setLayer('off_low', offGain * lowGain + offLowExtra);
     setLayer('on_high', onGain * highGain);
     setLayer('off_high', offGain * highGain);
     setLayer('limiter', limiterGain, false);
+
+    // Profile-provided idle loop (e.g. quad bike). Prominent at true idle.
+    // Extra emphasis for quad so the dedicated idle sample is clearly used instead of
+    // falling back to off-low (which can sound more muscle-car).
+    const idleBoost = (this.profileId === 'quad') ? 1.3 : 1.05;
+    const idleVal = hasIdleLayer ? (idleMix * idleBoost + idlePresence * 0.2) : 0;
+    setLayer('idle', idleVal);
 
     // Transmission / gear whine layers from the repo (modeled after original engine-audio)
     const trannyGear = g > 0 ? 1 : 0;

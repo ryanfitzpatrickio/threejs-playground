@@ -28,7 +28,7 @@ export const GROUND_VEHICLE_MAX_SPEED_MS = (200 * 1609.344) / 3600; // 200 mph â
 export const DEFAULT_VEHICLE_CONFIG = {
   domain: VEHICLE_DOMAINS.GROUND,
 
-  // Layered in-cabin engine audio profile ('bac' | 'boxer' | 'electric'). See engineProfiles.js.
+  // Layered in-cabin engine audio profile ('bac' | 'boxer' | 'quad' | 'electric'). See engineProfiles.js.
   engineProfile: 'bac',
 
   // Chassis collider + inertia. `density` drives mass (mass = density * volume) unless

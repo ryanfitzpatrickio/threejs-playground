@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import {
   applyRoadCorridorHeight,
   buildRoadProfile,
+  clampBridgedRoadFloor,
 } from '../src/world/worldMap/roadProfile.js';
-import { normalizeRoad } from '../src/world/worldMap/worldMapSchema.js';
+import { applyRiverCorridorHeight } from '../src/world/worldMap/riverProfile.js';
+import { normalizeRoad, roadElevationMode } from '../src/world/worldMap/worldMapSchema.js';
 import { createRoadworks } from '../src/game/world/createRoadworks.js';
 
 const points = [{ x: -20, z: 0 }, { x: 20, z: 0 }];
@@ -27,6 +29,35 @@ for (const x of [-15, 0, 15]) {
 const fixedRoadworks = createRoadworks({ profile: fixed, sampleHeight: () => -30 });
 assert.equal(fixedRoadworks.colliders.length, 0, 'fixed grounded roads must not regain bridge colliders');
 fixedRoadworks.dispose();
+
+const fixedOverRiver = buildRoadProfile({
+  roads: [{ id: 'fixed', points, width: 8, elevation: 5 }],
+  sampleHeight: bumpyHeight,
+});
+const fixedRiverRoadworks = createRoadworks({
+  profile: fixedOverRiver,
+  sampleHeight: (x, z) => {
+    let h = bumpyHeight(x, z);
+    h = applyRoadCorridorHeight(h, fixedOverRiver.corridorAt(x, z), 4);
+    if (Math.abs(z) < 12 && Math.abs(x) < 15) {
+      h = applyRiverCorridorHeight(h, { bedY: -12, waterY: -6, weight: 1 });
+      h = clampBridgedRoadFloor(h, fixedOverRiver.corridorAt(x, z), 4);
+    }
+    return h;
+  },
+  riverCorridorAt: (x, z) => (Math.abs(z) < 12 && Math.abs(x) < 15
+    ? { bedY: -12, waterY: -6, weight: 1 }
+    : null),
+});
+assert.equal(fixedRiverRoadworks.colliders.length, 0,
+  'fixed roads grade terrain to roadY and must not regain bridge decks over rivers');
+const shaped = fixedOverRiver.corridorAt(0, 0);
+let terrainAtCrossing = bumpyHeight(0, 0);
+terrainAtCrossing = applyRoadCorridorHeight(terrainAtCrossing, shaped, 4);
+terrainAtCrossing = applyRiverCorridorHeight(terrainAtCrossing, { bedY: -12, waterY: -6, weight: 1 });
+terrainAtCrossing = clampBridgedRoadFloor(terrainAtCrossing, shaped, 4);
+assert.equal(terrainAtCrossing, 5, 'fixed road over river keeps terrain at roadY');
+fixedRiverRoadworks.dispose();
 
 const common = {
   roads: [{ id: 'follow', points, width: 8 }],
@@ -61,5 +92,42 @@ assert.equal(normalized.elevation, -3.5);
 for (const elevation of [null, undefined, 'garbage', Infinity, {}, []]) {
   assert.equal(normalizeRoad({ id: 'invalid', points, width: 8, elevation }).elevation, null);
 }
+
+const gentle = buildRoadProfile({
+  roads: [{ id: 'slope', points, width: 8, elevationMode: 'gentleSlope' }],
+  sampleHeight: bumpyHeight,
+  smoothRadius: 0,
+  maxGrade: Infinity,
+});
+assert.equal(gentle.roads.length, 1);
+const gentleRoad = gentle.roads[0];
+assert.ok([...gentleRoad.grounded].every((value) => value === 1), 'gentle slope road must be grounded');
+assert.ok(Math.abs(gentleRoad.roadY[0] - gentleRoad.terrainY[0]) < 1e-6,
+  'gentle slope road starts flush with terrain (no top ledge)');
+assert.ok(Math.abs(gentleRoad.roadY[gentleRoad.n - 1] - gentleRoad.terrainY[gentleRoad.n - 1]) < 1e-6,
+  'gentle slope road ends flush with terrain');
+const grades = [];
+for (let k = 1; k < gentleRoad.n; k += 1) {
+  const ds = gentleRoad.s[k] - gentleRoad.s[k - 1];
+  if (ds > 1e-6) grades.push((gentleRoad.roadY[k] - gentleRoad.roadY[k - 1]) / ds);
+}
+const g0 = grades[0];
+assert.ok(grades.every((g) => Math.abs(g - g0) < 1e-6), 'gentle slope road has uniform grade');
+assert.ok((gentleRoad.edgeBlend ?? 6) >= 20, 'gentle slope uses a wider terrain feather');
+
+const hillside = (x) => 12 + x * 0.35;
+const cliff = buildRoadProfile({
+  roads: [{ id: 'hill', points: [{ x: -30, z: 0 }, { x: 30, z: 0 }], width: 8, elevationMode: 'gentleSlope' }],
+  sampleHeight: hillside,
+  smoothRadius: 0,
+  maxGrade: Infinity,
+});
+const hillRoad = cliff.roads[0];
+assert.ok(Math.abs(hillRoad.roadY[0] - hillRoad.terrainY[0]) < 1e-6,
+  'downhill gentle slope does not drop below terrain at the top');
+
+const gentleNorm = normalizeRoad({ id: 'slope', points, width: 8, elevationMode: 'gentleSlope' });
+assert.equal(gentleNorm.elevationMode, 'gentleSlope');
+assert.equal(gentleNorm.elevation, null);
 
 console.log('road fixed elevation verification passed');

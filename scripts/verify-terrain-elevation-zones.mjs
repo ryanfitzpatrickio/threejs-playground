@@ -197,4 +197,42 @@ assert.ok(insideBoth.every((h) => h >= 5 - 1e-6 && h <= 8 + 1e-6),
   'zone with both min and max bounds every height inside [5, 8]');
 ok('a zone with both minHeight and maxHeight bounds terrain into that band');
 
+// ---- gentle slope: reshapes zone into a planar ramp from lowest → highest sample
+const worldSlope = {
+  ...createEmptyWorldMap(),
+  zones: [rectZone({ biome: 'hills', elevationType: 'gentleSlope' })],
+};
+const slopeLevel = createStreamingTerrainLevel({}, { worldMap: worldSlope });
+const insideSlope = collectHeightsCoreWide(slopeLevel);
+assert.ok(insideSlope.length > 0, 'gentle-slope zone produced heights');
+const slopeSpread = arrMax(insideSlope) - arrMin(insideSlope);
+assert.ok(slopeSpread > 2,
+  `gentle slope keeps meaningful height range (spread=${slopeSpread.toFixed(2)}m)`);
+
+// A perfect plane has zero residual when regressed against the low→high axis.
+const { buildGentleSlopeProfiles, gentleSlopeHeightAt } = await import('../src/world/worldMap/terrainGentleSlope.js');
+const { ChunkManager } = await import('../src/world/terrain/ChunkManager.js');
+const slopeMgr = new ChunkManager({ chunkSize: 32, resolution: 33, seed: 1729, amplitude: 2.8, octaves: 5 });
+const hillsAmp = 11;
+const sampleBase = (wx, wz) => slopeMgr.procedural(wx, wz) * hillsAmp;
+const [profile] = buildGentleSlopeProfiles(worldSlope.zones, sampleBase);
+assert.ok(profile, 'gentle slope profile built from zone');
+let maxResidual = 0;
+for (let x = -60; x <= 60; x += 8) {
+  for (let z = -60; z <= 60; z += 8) {
+    const expected = gentleSlopeHeightAt(profile, x, z);
+    const actual = slopeLevel.getGroundHeightAt({ x, y: 0, z }, 0);
+    maxResidual = Math.max(maxResidual, Math.abs(actual - expected));
+  }
+}
+assert.ok(maxResidual < 0.15,
+  `gentle slope terrain matches the planar ramp (max residual=${maxResidual.toFixed(3)}m)`);
+ok('gentle slope reshapes terrain into a smooth ramp between existing low/high points');
+
+const outsideSlope = collectHeightsFar(slopeLevel, new THREE.Vector3(600, 0, 600), 200);
+assert.ok(outsideSlope.length > 0, 'far-away streaming produced heights for slope map');
+const outsideSlopeMax = arrMax(outsideSlope);
+assert.ok(outsideSlopeMax < 15, `gentle slope does not affect terrain far outside (max=${outsideSlopeMax.toFixed(2)})`);
+ok('gentle slope zone does not affect terrain far outside its bounds');
+
 console.log(`\nAll ${passed} terrain-elevation-zone checks passed.`);

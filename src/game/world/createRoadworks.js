@@ -249,7 +249,7 @@ function buildDenseRibbonGeometry({ frame, roadY, n, half, arc, roadIndex, inter
   return geom;
 }
 
-export function createRoadworks({ profile, sampleHeight, mudField = null }) {
+export function createRoadworks({ profile, sampleHeight, mudField = null, riverCorridorAt = null }) {
   const group = new THREE.Group();
   group.name = 'Roadworks';
   group.userData.noCollision = true;
@@ -302,6 +302,7 @@ export function createRoadworks({ profile, sampleHeight, mudField = null }) {
 
   profile.roads.forEach((b, roadIndex) => {
     const { samples, n, half, roadY, terrainY, grounded } = b;
+    const corridorAt = profile.corridorAt ?? null;
     const forceDeckCollider = b.road?.trackStyle === 'tunnel';
     const surf = surfaceForRoad(b.road);
     const isMud = surf === 'mud';
@@ -461,7 +462,8 @@ export function createRoadworks({ profile, sampleHeight, mudField = null }) {
       // against the final shaped surface so roads over water still get deck boxes.
       if (!forceDeckCollider && grounded[i] && grounded[i + 1]
         && (b.fixed || !segmentNeedsDeckCollider({
-          samples, roadY, i, sampleHeight, bridgeThresh: BRIDGE_THRESH,
+          samples, roadY, i, sampleHeight, bridgeThresh: BRIDGE_THRESH, corridorAt, riverCorridorAt,
+          fixed: b.fixed,
         }))) continue;
 
       const a = samples[i];
@@ -770,13 +772,34 @@ function createPaintQuad({ cx, cz, y, axisX, axisZ, length, depth }) {
   return geometry;
 }
 
-function segmentNeedsDeckCollider({ samples, roadY, i, sampleHeight, bridgeThresh }) {
+function segmentCrossesRiver({ samples, roadY, i, corridorAt, riverCorridorAt }) {
+  if (!corridorAt || !riverCorridorAt) return false;
+  const a = samples[i];
+  const c = samples[i + 1];
+  const mx = (a.x + c.x) * 0.5;
+  const mz = (a.z + c.z) * 0.5;
+  for (const p of [a, c, { x: mx, z: mz }]) {
+    const road = corridorAt(p.x, p.z);
+    const river = riverCorridorAt(p.x, p.z);
+    if (road?.weight > 0.5 && river?.weight > 0.5) return true;
+  }
+  return false;
+}
+
+function segmentNeedsDeckCollider({
+  samples, roadY, i, sampleHeight, bridgeThresh, corridorAt, riverCorridorAt, fixed,
+}) {
+  if (!fixed && segmentCrossesRiver({ samples, roadY, i, corridorAt, riverCorridorAt })) return true;
   const a = samples[i];
   const c = samples[i + 1];
   const y0 = roadY[i] + RIBBON_LIFT;
   const y1 = roadY[i + 1] + RIBBON_LIFT;
   const mx = (a.x + c.x) * 0.5;
   const mz = (a.z + c.z) * 0.5;
+  if (corridorAt) {
+    const corridor = corridorAt(mx, mz);
+    if (corridor?.weight > 0.5 && !corridor.grounded && !corridor.tunnel) return true;
+  }
   const roadTop = Math.max(y0, y1);
   const terrainMin = Math.min(
     sampleHeight(a.x, a.z),

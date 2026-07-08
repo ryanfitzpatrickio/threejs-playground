@@ -24,6 +24,7 @@ import { resolveEngineSounds, isElectricEngineProfile, resolveExteriorIdleUrl } 
 import { ExteriorIdleAudio } from './ExteriorIdleAudio.js';
 import { VehicleCrashAudio } from './VehicleCrashAudio.js';
 import { TireEffects } from './TireEffects.js';
+import { attachAuthoredVehicleRig, setAuthoredDoorOpen } from './authoredVehicleRig.js';
 import {
   computeMudGripScales,
   computeMudWheelIntensity,
@@ -323,6 +324,10 @@ export class BaseVehicle {
     this.groundSurfaceSampler = null;
     this.wheelSpinAngle = 0;
     this.steerWheelMesh = null;
+    this.doorRig = null;
+    this.authoredVehicleRig = null;
+    this.doorOpenAmount = 0;
+    this.doorOpenTarget = 0;
     // Current steering-wheel spin angle (rad). Shared by the wheel mesh and the
     // hand IK targets so the hands ride the rim as it turns.
     this.steerWheelAngle = 0;
@@ -343,17 +348,32 @@ export class BaseVehicle {
     this.engineRpm = 920; // current simulated RPM
     this._engineIdle = 920;
     this._engineRedline = 7800;
-    if (isElectricEngineProfile(this.config.engineProfile)) {
+
+    const prof = this.config.engineProfile;
+    if (prof === 'quad') {
+      // Quad/ATV: lower revving, torquey, often CVT-like feel. Fewer "steps" to avoid muscle-car RPM drops.
+      this._engineIdle = 1050;
+      this.engineRpm = 1050;
+      this._engineRedline = 6200;
+      this.currentGear = 1;
+      this.maxGear = 3;
+      this.gearRatios = [0, 3.4, 1.95, 1.2]; // shorter overall for trail torque
+      this.finalDriveRatio = 5.5;
+    } else if (isElectricEngineProfile(prof)) {
       this._engineIdle = 0;
       this.engineRpm = 0;
       this._engineRedline = 12000;
+      this.currentGear = 1;
+      this.maxGear = 5;
+      this.gearRatios = [0, 3.82, 2.32, 1.52, 1.12, 0.86];
+      this.finalDriveRatio = 3.6;
+    } else {
+      // muscle car defaults
+      this.currentGear = 1;
+      this.maxGear = 5;
+      this.gearRatios = [0, 3.82, 2.32, 1.52, 1.12, 0.86]; // realistic-ish for muscle car
+      this.finalDriveRatio = 3.6;
     }
-
-    // Simple automatic transmission for audio feel (multiple gears = RPM drops on shifts)
-    this.currentGear = 1;
-    this.maxGear = 5;
-    this.gearRatios = [0, 3.82, 2.32, 1.52, 1.12, 0.86]; // realistic-ish for muscle car
-    this.finalDriveRatio = 3.6;
     this._shiftCooldown = 0;
 
     // Pooled suspension ray (lazily created) to avoid per-frame allocations.
@@ -851,6 +871,7 @@ export class BaseVehicle {
     //     smoothed steering input. Runs before the hand IK targets are refreshed
     //     so they share the same spin angle.
     this._articulate(this._smoothed.steer);
+    this._updateDoorAnimation(dt);
 
     this._updateTailLights(dt);
     if (this.damage?.brokenLights?.front && this.headlightRig) this.headlightRig.visible = false;
@@ -1263,6 +1284,19 @@ export class BaseVehicle {
     }
   }
 
+  setDoorOpenAmount(amount = 0) {
+    this.doorOpenAmount = THREE.MathUtils.clamp(amount, 0, 1);
+    setAuthoredDoorOpen(this, this.doorOpenAmount);
+  }
+
+  _updateDoorAnimation(dt) {
+    if (!this.doorRig) return;
+    const target = THREE.MathUtils.clamp(this.doorOpenTarget ?? 0, 0, 1);
+    const next = THREE.MathUtils.damp(this.doorOpenAmount, target, 8, dt);
+    if (Math.abs(next - this.doorOpenAmount) < 0.001) return;
+    this.setDoorOpenAmount(next);
+  }
+
   // Per-wheel visual suspension travel. `gap` is the measured anchor->contact
   // distance (metres); the wheel centre rides `radius` above the contact, so the
   // suspension length L = gap - radius and the wheel mesh node sits L below its rest
@@ -1406,7 +1440,8 @@ export class BaseVehicle {
         await this.engineAudio.init(resolveEngineSounds(this.config.engineProfile));
       } else {
         this.engineAudio = new EngineAudio();
-        await this.engineAudio.init(resolveEngineSounds(this.config.engineProfile));
+        const prof = this.config.engineProfile;
+        await this.engineAudio.init(resolveEngineSounds(prof), prof);
       }
     } catch (e) {
       console.warn('[EngineAudio] Failed to initialize:', e);
@@ -1468,15 +1503,18 @@ export class BaseVehicle {
       target = lockedRpm * 0.9 + idle * 0.1;
     }
 
-    // Auto shifting
+    // Auto shifting — for quad use lower points relative to its redline so it doesn't feel like a high-rev muscle car.
+    const isQuad = this.config?.engineProfile === 'quad';
+    const upshiftPoint = isQuad ? (redline * 0.68) : 5450;
+    const downshiftPoint = isQuad ? (idle + 1100) : 2350;
     if (this._shiftCooldown <= 0) {
       if (this.currentGear < this.maxGear &&
-          this.engineRpm > 5450 &&
+          this.engineRpm > upshiftPoint &&
           throttle > 0.45 &&
           speed > 11) {
         this._changeGear(this.currentGear + 1);
       } else if (this.currentGear > 1 &&
-                 this.engineRpm < 2350 &&
+                 this.engineRpm < downshiftPoint &&
                  throttle < 0.25) {
         this._changeGear(this.currentGear - 1);
       }
@@ -1512,8 +1550,9 @@ export class BaseVehicle {
       this.engineRpm += (Math.random() - 0.5) * 180 * engineDamage;
     }
 
-    // Lazy init audio
-    if (!this.engineAudio && throttle > 0.04) {
+    // Lazy init audio. Initialize even at zero throttle so dedicated idle layers
+    // (e.g. quad 'idle') are ready immediately when the vehicle is driven or idling.
+    if (!this.engineAudio) {
       this._ensureEngineAudio();
     }
 
@@ -2555,6 +2594,7 @@ export class BaseVehicle {
       this.chassisSocket.add(overlay);
       this.chassisOverlay = overlay;
       this.resetChassisOverlayTransform();
+      attachAuthoredVehicleRig(this, overlay);
       return overlay;
     } catch (error) {
       console.warn(`Unable to load vehicle chassis overlay: ${options.url}`, error);
