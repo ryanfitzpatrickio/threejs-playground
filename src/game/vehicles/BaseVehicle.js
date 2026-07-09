@@ -30,6 +30,21 @@ import {
   computeMudWheelIntensity,
   resolveMudWheelDynamics,
 } from './mudWheelDynamics.js';
+import {
+  computeContactSlip,
+  resolveTyreConfig,
+  resolveTyreGrip,
+} from './TyreModel.js';
+import {
+  computeAxleGeometry,
+  computeBodyAccel,
+  computeRollResistTorque,
+  computeWheelLoads,
+} from './LoadTransfer.js';
+import { resolveWheelSuspension } from './SuspensionModel.js';
+import { computeDriftAssist } from './DriftAssist.js';
+import { stepPowertrain } from './Powertrain.js';
+import { distributeDriveForce } from './Differential.js';
 import { rainWetness } from '../systems/weatherUniforms.js';
 
 // ---------------------------------------------------------------------------
@@ -97,6 +112,11 @@ const _glassLocal = new THREE.Vector3();
 const _damageDirection = new THREE.Vector3();
 const _damageLocalDirection = new THREE.Vector3();
 const _damageBodyQuat = new THREE.Quaternion();
+const _contactVel = new THREE.Vector3();
+const _wheelForward = new THREE.Vector3();
+const _wheelLateral = new THREE.Vector3();
+const _prevLinvelScratch = new THREE.Vector3();
+const _rollAxis = new THREE.Vector3();
 
 // Scratch + helper for the IK-solved wheel axle struts (orient a unit-height
 // cylinder so it spans points a -> b: midpoint, length via scale.y, axis via
@@ -315,6 +335,14 @@ export class BaseVehicle {
     // Populated from Rapier's vehicle controller after each update: authoritative
     // wheel rotation, contact geometry, impulses, suspension load, and slip.
     this.wheelTelemetry = [];
+    // Advanced handling telemetry (controller-slip model).
+    this.handlingTelemetry = null;
+    this.driftAssistTelemetry = null;
+    this.powertrainTelemetry = null;
+    this._prevLinvel = null;
+    this._axleGeometry = null;
+    this._powertrainShiftTimer = 0;
+    this._powertrainGear = this.currentGear ?? 1;
     // Rally mud deform field (docs/rally-mud-tread-plan.md), set per frame by
     // VehicleSystem from the level. Null in every non-rally mode / mud-less map,
     // so the mud stamp + visual-sink paths are inert. See setGroundSurface.
@@ -393,13 +421,23 @@ export class BaseVehicle {
     // have no LevelSystem. VehicleSystem replaces this on the first live frame.
     this.groundSurface = 'asphalt';
     const asphaltSurface = this.config.ground?.surfaces?.asphalt ?? {};
+    const tyreDefaults = this.config.ground?.tyre ?? {};
     this.surfaceTuning = {
       frictionSlip: asphaltSurface.frictionSlip ?? this.config.ground?.rayCast?.frictionSlip ?? 2,
       sideFrictionStiffness: asphaltSurface.sideFrictionStiffness ?? this.config.ground?.rayCast?.sideFrictionStiffness ?? 1,
       powerOversteerScale: asphaltSurface.powerOversteerScale ?? 1,
       handbrakeRearGripScale: asphaltSurface.handbrakeRearGripScale ?? this.config.ground?.handbrakeRearGripScale ?? 0.1,
       rollingResistanceScale: asphaltSurface.rollingResistanceScale ?? 1,
+      mu0Long: asphaltSurface.mu0Long ?? tyreDefaults.mu0Long ?? 1.6,
+      mu0Lat: asphaltSurface.mu0Lat ?? tyreDefaults.mu0Lat ?? 1.7,
+      Klat: asphaltSurface.Klat ?? tyreDefaults.lat?.K ?? 10,
+      Klong: asphaltSurface.Klong ?? tyreDefaults.long?.K ?? 9,
+      alphaPeakDeg: asphaltSurface.alphaPeakDeg ?? tyreDefaults.lat?.alphaPeakDeg ?? 14,
     };
+    // Scratch buffers for controller-slip hot path (no per-step object alloc).
+    this._wheelDescScratch = [];
+    this._perWheelForceScratch = [];
+    this._audioEngineRpm = this.engineRpm;
     this.speed = 0;
     // World-space linear velocity, refreshed each frame from the body. Used by the
     // run-over test (which direction / how fast the chassis is travelling).
@@ -574,12 +612,15 @@ export class BaseVehicle {
       this._captureParkedPose(body);
     }
     const p = this._parkedPose;
-    body.setTranslation({ x: p.x, y: p.y, z: p.z }, true);
-    body.setRotation({ x: p.qx, y: p.qy, z: p.qz, w: p.qw }, true);
-    body.setLinvel({ x: 0, y: 0, z: 0 }, true);
-    body.setAngvel({ x: 0, y: 0, z: 0 }, true);
-    body.resetForces(true);
-    body.resetTorques(true);
+    // wake=false so a settled park can sleep (verify:vehicle-first-drive).
+    // Pose/vel are already zero; re-asserting without wake avoids a perpetual
+    // re-awaken that blocks the sleep assertion and wastes solver work.
+    body.setTranslation({ x: p.x, y: p.y, z: p.z }, false);
+    body.setRotation({ x: p.qx, y: p.qy, z: p.qz, w: p.qw }, false);
+    body.setLinvel({ x: 0, y: 0, z: 0 }, false);
+    body.setAngvel({ x: 0, y: 0, z: 0 }, false);
+    body.resetForces(false);
+    body.resetTorques(false);
     this.linearVelocity.set(0, 0, 0);
     this.speed = 0;
   }
@@ -861,7 +902,9 @@ export class BaseVehicle {
     this.controls = controls ?? makeNeutralControls();
     if (integrate) this._applyControlSmoothing(this.controls, dt);
 
-    // 2c. Subtle chassis idle vibration + stronger engine shake + piston motion on accel.
+    // 2c. Engine RPM / gear / audio. Under controller-slip + powertrain, RPM/gear
+    // are owned by stepPowertrain in the integrate path (deterministic); this
+    // only drives audio + display jitter from that RPM.
     if (!this.parkedMode) {
       this._updateEngineSimulation(dt, this._smoothed);
     }
@@ -904,12 +947,20 @@ export class BaseVehicle {
     const body = physics.getFreshBody(this.bodyHandle);
     if (!body) return;
     try {
-      if (this.parkedMode && this.domain === VEHICLE_DOMAINS.GROUND) {
-        this._holdParkedPose(body);
-        this._syncParkedWheelVisuals();
-        return;
-      }
       if (physics.fixedStepPlanning) this._applyControlSmoothing(this.controls, dt);
+      // Parked hold is only for undriven vehicles that have an explicit park pose
+      // (park() / settleParked()). Unpark only on throttle/steer/boost — not
+      // brake/handbrake (parked controls keep brake=1 + handbrake).
+      if (this.parkedMode && this.domain === VEHICLE_DOMAINS.GROUND) {
+        if (vehicleControlsRequestUnpark(this._smoothed)) {
+          this.parkedMode = false;
+          this._parkedPose = null;
+        } else if (this._parkedPose) {
+          this._holdParkedPose(body);
+          this._syncParkedWheelVisuals();
+          return;
+        }
+      }
       // A parked vehicle is allowed to sleep. Rapier's raycast controller can
       // update its internal wheel/velocity state without waking that rigid body,
       // leaving first forward throttle apparently ignored until a brake/reverse
@@ -1466,12 +1517,40 @@ export class BaseVehicle {
     this.exteriorIdleAudio.update(proximity);
   }
 
+  _usesPowertrainOwner() {
+    const g = this.config.ground;
+    return (g?.handlingModel ?? 'controller-slip') === 'controller-slip'
+      && g?.powertrain?.enabled !== false
+      && g?.powertrain != null;
+  }
+
   _updateEngineSimulation(dt, controls) {
     if (this.domain !== VEHICLE_DOMAINS.GROUND) return;
 
     const hasDriver = this.hasDriver?.() ?? false;
     const rawThrottle = controls?.throttle ?? 0;
     const throttle = Math.abs(rawThrottle);
+
+    // controller-slip + powertrain: stepPowertrain is sole RPM/gear owner.
+    // Only feed audio from that RPM (+ display-only jitter; never write engineRpm).
+    if (this._usesPowertrainOwner()) {
+      const baseRpm = this.engineRpm || this._engineIdle;
+      let audioRpm = baseRpm;
+      if (throttle > 0.06) {
+        audioRpm += (Math.random() - 0.5) * 11;
+      }
+      this._audioEngineRpm = audioRpm;
+      // Lazy init + resume — same as the legacy sim path so default
+      // controller-slip is not silent after the dual-owner split.
+      if (!this.engineAudio) {
+        this._ensureEngineAudio();
+      }
+      if (this.engineAudio) {
+        this.engineAudio.resume();
+        this.engineAudio.update(audioRpm, throttle, this.currentGear, dt);
+      }
+      return;
+    }
 
     // Only run full engine audio + strong sim for the player-driven car
     if (!hasDriver && throttle < 0.01) {
@@ -1640,66 +1719,324 @@ export class BaseVehicle {
   // steering, raycast + integrate the suspension (updateVehicle modifies the
   // chassis velocity directly), then read contact state. Downforce (capped) is the
   // only body force layered on top.
+  //
+  // handlingModel:
+  //   'controller'      — original friction scalars + body-level helpers
+  //   'controller-slip' — M1–M5 slip-modulated tyre / load / ARB / assist / powertrain
   _integrateGroundRayCast(body, controls, dt, physics) {
     const ctrl = this.vehicleController;
     if (!ctrl) return;
     const cfg = this.config.ground;
     const rc = cfg.rayCast ?? {};
+    const slipModel = (cfg.handlingModel ?? 'controller-slip') === 'controller-slip';
     const mass = bodyMass(body, this.config);
     const surface = this._updateSurfaceTuning(dt);
     readBodyFrame(body);
     const speedFwd = _linvel.dot(_forward);
     this.controllerSpeed = ctrl.currentVehicleSpeed();
-    const layout = cfg.driveLayout ?? 'awd';
+    const ptCfg = cfg.powertrain;
+    const powertrainOn = slipModel && ptCfg != null && ptCfg.enabled !== false;
+    const layout = ptCfg?.driveLayout ?? cfg.driveLayout ?? 'rwd';
+    const wheelCount = ctrl.numWheels();
 
-    // Engine force (N), reusing the mass-normalised enginePower + speed-cap taper.
-    let drive = 0;
-    if (controls.throttle !== 0) {
-      const forward = controls.throttle > 0;
-      const cap = forward ? cfg.maxSpeed * this.maxSpeedScale : cfg.maxReverseSpeed;
-      const scale = forward ? 1 : cfg.reverseScale;
-      // Flat power until near the cap, then a short taper that only reaches 0 just
-      // PAST the cap — a plain (1 - v/cap) taper chokes the top third and the car
-      // can never actually reach its top speed. taperBand = fraction of the cap over
-      // which power fades.
-      const band = cfg.engineTaperBand ?? 0.22;
-      const taperEnd = cap * (cfg.engineTaperEndScale ?? 1.04);
-      const taperStart = cap * (1 - band);
-      const headroom = THREE.MathUtils.clamp((taperEnd - Math.abs(speedFwd)) / (taperEnd - taperStart), 0, 1);
-      drive = controls.throttle * cfg.enginePower * this.enginePowerScale * scale * headroom * mass;
+    // Body accel for load transfer (controller-slip).
+    let ax = 0;
+    let ay = 0;
+    if (slipModel && this._prevLinvel) {
+      const accel = computeBodyAccel(this._prevLinvel, _linvel, dt, _forward, _right);
+      ax = accel.ax;
+      ay = accel.ay;
     }
-    let driveWheels = 0;
-    for (const a of this.wheelAnchors) if (wheelReceivesDrive(a, layout)) driveWheels += 1;
-    const perWheelDrive = driveWheels ? drive / driveWheels : 0;
+    if (!this._prevLinvel) this._prevLinvel = new THREE.Vector3();
+    this._prevLinvel.copy(_linvel);
+
+    if (!this._axleGeometry || this._axleGeometry.wheelCount !== this.wheelAnchors.length) {
+      this._axleGeometry = {
+        ...computeAxleGeometry(this.wheelAnchors),
+        wheelCount: this.wheelAnchors.length,
+      };
+    }
+
+    // Pre-pass: reuse scratch descriptors for load / diff (no per-step alloc).
+    const wheelDescs = this._wheelDescScratch;
+    while (wheelDescs.length < wheelCount) {
+      wheelDescs.push({
+        isFront: false, isLeft: false, load: 0, slip: 0, inContact: true, suspForce: 0,
+      });
+    }
+    wheelDescs.length = wheelCount;
+    for (let i = 0; i < wheelCount; i += 1) {
+      const a = this.wheelAnchors[i];
+      const prev = this.wheelTelemetry[i];
+      const d = wheelDescs[i];
+      d.isFront = wheelIsFront(a);
+      d.isLeft = a.x < 0;
+      d.load = prev?.Fz ?? prev?.suspensionForce ?? 0;
+      d.slip = prev?.kappa ?? prev?.slipRatio ?? 0;
+      d.inContact = prev?.inContact !== false;
+      d.suspForce = prev?.suspensionForce ?? 0;
+    }
+
+    let loadInfo = null;
+    if (slipModel) {
+      loadInfo = computeWheelLoads({
+        mass,
+        ax,
+        ay,
+        geometry: this._axleGeometry,
+        loadTransfer: cfg.loadTransfer,
+        antiRoll: cfg.antiRoll,
+        wheels: wheelDescs,
+      });
+      for (let i = 0; i < wheelDescs.length; i += 1) {
+        wheelDescs[i].load = loadInfo.loads[i] ?? wheelDescs[i].load;
+      }
+    }
+
+    // Drift assist from previous rear α (stabilises the loop).
+    let drift = null;
+    let effectiveThrottle = controls.throttle;
+    if (slipModel && cfg.driftAssist?.enabled !== false) {
+      let rearAlphaSum = 0;
+      let rearN = 0;
+      let frontAlphaSum = 0;
+      let frontN = 0;
+      for (let i = 0; i < wheelCount; i += 1) {
+        const t = this.wheelTelemetry[i];
+        if (!t || !Number.isFinite(t.alpha)) continue;
+        if (wheelIsFront(this.wheelAnchors[i])) {
+          frontAlphaSum += t.alpha;
+          frontN += 1;
+        } else {
+          rearAlphaSum += t.alpha;
+          rearN += 1;
+        }
+      }
+      const rearAlpha = rearN ? rearAlphaSum / rearN : 0;
+      const frontAlpha = frontN ? frontAlphaSum / frontN : 0;
+      drift = computeDriftAssist({
+        rearAlpha,
+        frontAlpha,
+        yawRate: _angvel.dot(_up),
+        steer: controls.steer,
+        speed: Math.abs(speedFwd),
+        throttle: controls.throttle,
+        config: cfg.driftAssist,
+      });
+      this.driftAssistTelemetry = drift;
+      if (drift.active) {
+        effectiveThrottle = THREE.MathUtils.clamp(
+          controls.throttle + (drift.throttleBias ?? 0),
+          -1,
+          1,
+        );
+      }
+    } else {
+      this.driftAssistTelemetry = null;
+    }
+
+    // Engine force (N).
+    let drive = 0;
+    const perWheelForces = this._perWheelForceScratch;
+    while (perWheelForces.length < wheelCount) perWheelForces.push(0);
+    perWheelForces.length = wheelCount;
+    if (powertrainOn) {
+      // Drive-wheel speed estimate from chassis + previous wheel slip.
+      let driveSpeed = speedFwd;
+      let driveN = 0;
+      let speedSum = 0;
+      for (let i = 0; i < wheelCount; i += 1) {
+        if (!wheelReceivesDrive(this.wheelAnchors[i], layout)) continue;
+        driveN += 1;
+        const t = this.wheelTelemetry[i];
+        if (t && Number.isFinite(t.vLong)) speedSum += t.vLong;
+        else speedSum += speedFwd;
+      }
+      if (driveN > 0) driveSpeed = speedSum / driveN;
+
+      const pt = stepPowertrain({
+        rpm: this.engineRpm,
+        gear: this._powertrainGear ?? this.currentGear ?? 1,
+        throttle: effectiveThrottle * this.enginePowerScale,
+        driveWheelSpeed: driveSpeed,
+        brake: Math.max(controls.brake ?? 0, controls.handbrake ? 1 : 0),
+        dt,
+        shiftTimer: this._powertrainShiftTimer,
+        config: {
+          ...ptCfg,
+          wheelRadius: ptCfg.wheelRadius ?? rc.wheelRadius ?? cfg.wheelRadius ?? 0.38,
+        },
+        mass,
+        enginePower: cfg.enginePower,
+      });
+      // Speed-cap taper (same shape as flat model).
+      if (effectiveThrottle !== 0) {
+        const forward = effectiveThrottle > 0;
+        const cap = forward ? cfg.maxSpeed * this.maxSpeedScale : cfg.maxReverseSpeed;
+        const scale = forward ? 1 : cfg.reverseScale;
+        const band = cfg.engineTaperBand ?? 0.22;
+        const taperEnd = cap * (cfg.engineTaperEndScale ?? 1.04);
+        const taperStart = cap * (1 - band);
+        const headroom = THREE.MathUtils.clamp(
+          (taperEnd - Math.abs(speedFwd)) / Math.max(1e-4, taperEnd - taperStart),
+          0,
+          1,
+        );
+        drive = pt.totalDriveForce * scale * headroom;
+      }
+      this.engineRpm = pt.rpm;
+      this._powertrainGear = pt.gear;
+      this.currentGear = pt.gear;
+      this._powertrainShiftTimer = pt.shiftTimer;
+      this.powertrainTelemetry = {
+        rpm: pt.rpm,
+        gear: pt.gear,
+        clutchLock: pt.clutchLock,
+        shifting: pt.shifting,
+        wheelTorque: pt.wheelTorque,
+        totalDriveForce: drive,
+        softCapActive: Boolean(pt.softCapActive),
+      };
+      const distributed = distributeDriveForce({
+        totalForce: drive,
+        driveLayout: layout,
+        wheels: wheelDescs,
+        differentials: cfg.differentials,
+      });
+      for (let i = 0; i < wheelCount; i += 1) perWheelForces[i] = distributed[i] ?? 0;
+    } else {
+      this.powertrainTelemetry = null;
+      if (controls.throttle !== 0) {
+        const forward = controls.throttle > 0;
+        const cap = forward ? cfg.maxSpeed * this.maxSpeedScale : cfg.maxReverseSpeed;
+        const scale = forward ? 1 : cfg.reverseScale;
+        const band = cfg.engineTaperBand ?? 0.22;
+        const taperEnd = cap * (cfg.engineTaperEndScale ?? 1.04);
+        const taperStart = cap * (1 - band);
+        const headroom = THREE.MathUtils.clamp(
+          (taperEnd - Math.abs(speedFwd)) / (taperEnd - taperStart),
+          0,
+          1,
+        );
+        drive = controls.throttle * cfg.enginePower * this.enginePowerScale * scale * headroom * mass;
+      }
+      let driveWheels = 0;
+      for (const a of this.wheelAnchors) if (wheelReceivesDrive(a, layout)) driveWheels += 1;
+      const perWheelDrive = driveWheels ? drive / driveWheels : 0;
+      for (let i = 0; i < wheelCount; i += 1) {
+        perWheelForces[i] = wheelReceivesDrive(this.wheelAnchors[i], layout) ? perWheelDrive : 0;
+      }
+    }
 
     // Brake impulse (N·s ≈ force * dt): service brake or handbrake (rear-biased).
     const braking = controls.brake > 0 || controls.handbrake;
     const brakeImpulse = braking ? cfg.brakeForce * mass * dt : 0;
-    const steerAngle = computeRayCastSteerAngle(speedFwd, controls.steer, rc);
+    let steerAngle = computeRayCastSteerAngle(speedFwd, controls.steer, rc);
+    if (drift?.countersteerActive) {
+      steerAngle += drift.steerAdd;
+      const maxA = (rc.maxSteerAngle ?? 0.4) * 1.35;
+      steerAngle = THREE.MathUtils.clamp(steerAngle, -maxA, maxA);
+    }
 
     const restLen = rc.suspensionRestLength ?? 0.3;
-    for (let i = 0; i < ctrl.numWheels(); i += 1) {
+    const tyreCfg = slipModel ? resolveTyreConfig(cfg.tyre) : null;
+    const weight = mass * 9.81;
+
+    // Suspension / engine / brake / steer / friction BEFORE updateVehicle.
+    // Friction uses previous-step α/κ/Fz so the controller sees current grip
+    // this step (no one-frame lag on tyre scalars).
+    for (let i = 0; i < wheelCount; i += 1) {
       const a = this.wheelAnchors[i];
-      // Engine force is applied along the wheel forward (−Z); negate so throttle>0
-      // drives the car forward (−Z).
       const previous = this.wheelTelemetry[i];
-      const tractionControl = rc.tractionControl !== false && controls.throttle !== 0;
+      const slipMetric = Math.abs(previous?.kappa ?? previous?.slipRatio ?? 0);
+      const tractionControl = rc.tractionControl !== false && effectiveThrottle !== 0;
       const absActive = rc.abs !== false && braking && Math.abs(speedFwd) > (rc.absMinSpeed ?? 4);
-      const tractionScale = tractionControl && previous?.slipRatio > (rc.tractionSlipThreshold ?? 0.32)
-        ? THREE.MathUtils.clamp((rc.tractionSlipThreshold ?? 0.32) / previous.slipRatio, 0.2, 1)
+      const tractionScale = tractionControl && slipMetric > (rc.tractionSlipThreshold ?? 0.32)
+        ? THREE.MathUtils.clamp((rc.tractionSlipThreshold ?? 0.32) / Math.max(1e-4, slipMetric), 0.2, 1)
         : 1;
-      const absScale = absActive && previous?.slipRatio > (rc.absSlipThreshold ?? 0.48)
+      const absScale = absActive && slipMetric > (rc.absSlipThreshold ?? 0.48)
         ? (rc.absReleaseScale ?? 0.25)
         : 1;
-      ctrl.setWheelEngineForce(
-        i,
-        wheelReceivesDrive(a, layout) ? -perWheelDrive * tractionScale : 0,
-      );
+
+      // M3: modulate suspension setters each step (before the controller integrates).
+      if (slipModel && cfg.suspensionDynamics?.enabled !== false) {
+        const susp = resolveWheelSuspension({
+          suspensionLength: previous?.suspensionLength ?? restLen,
+          prevSuspensionLength: previous?.prevSuspensionLength ?? previous?.suspensionLength,
+          dt,
+          restLength: restLen,
+          maxTravel: rc.maxSuspensionTravel ?? 0.42,
+          baseStiffness: rc.suspensionStiffness ?? 24,
+          baseCompression: rc.suspensionCompression ?? 12,
+          baseRelaxation: rc.suspensionRelaxation ?? 12,
+          baseMaxForce: rc.maxSuspensionForce ?? 4000,
+          dynamics: cfg.suspensionDynamics,
+        });
+        ctrl.setWheelSuspensionStiffness(i, susp.stiffness);
+        ctrl.setWheelSuspensionCompression(i, susp.compression);
+        ctrl.setWheelSuspensionRelaxation(i, susp.relaxation);
+        ctrl.setWheelMaxSuspensionTravel(i, susp.maxTravel);
+        ctrl.setWheelMaxSuspensionForce(i, susp.maxForce);
+      }
+
+      // Engine force along wheel forward (−Z); negate so throttle>0 drives forward.
+      const wheelForce = perWheelForces[i] ?? 0;
+      ctrl.setWheelEngineForce(i, -wheelForce * tractionScale);
       ctrl.setWheelBrake(
         i,
         (controls.handbrake && !wheelIsFront(a) ? brakeImpulse * 1.5 : brakeImpulse) * absScale,
       );
       ctrl.setWheelSteering(i, wheelIsFront(a) ? steerAngle : 0);
+
+      // Apply tyre friction from previous contact state (Tier A lag-free path).
+      if (slipModel && tyreCfg) {
+        const isFront = wheelIsFront(a);
+        const prevSurface = previous?.surface ?? this.groundSurface;
+        const wheelTuning = this._surfaceProfileFor(prevSurface);
+        const handbrakeGrip = controls.handbrake && !isFront
+          ? (wheelTuning.handbrakeRearGripScale ?? cfg.handbrakeRearGripScale ?? 0.1)
+          : 1;
+        const latRecovery = (drift?.recoveryActive && !isFront)
+          ? (drift.recoveryGripScale ?? 1)
+          : 1;
+        const FzUse = Math.max(
+          previous?.Fz ?? 0,
+          (previous?.suspensionForce ?? 0) * 0.5,
+          previous?.inContact ? weight * 0.05 : 0,
+        );
+        const tyreOverride = Number.isFinite(wheelTuning.alphaPeakDeg)
+          ? { ...tyreCfg, lat: { ...tyreCfg.lat, alphaPeakDeg: wheelTuning.alphaPeakDeg } }
+          : tyreCfg;
+        // Fixed asphalt/rayCast controller base × mu/muRef (surface tables are
+        // NOT also applied — that double-counted dirt/mud grip).
+        const preGrip = resolveTyreGrip({
+          alpha: previous?.alpha ?? 0,
+          kappa: previous?.kappa ?? 0,
+          Fz: FzUse,
+          weight,
+          tyre: tyreOverride,
+          mu0Long: wheelTuning.mu0Long ?? tyreCfg.mu0Long,
+          mu0Lat: wheelTuning.mu0Lat ?? tyreCfg.mu0Lat,
+          Klat: wheelTuning.Klat,
+          Klong: wheelTuning.Klong,
+          baseFrictionSlip: rc.frictionSlip ?? 2,
+          baseSideFriction: rc.sideFrictionStiffness ?? 0.9,
+          handbrakeScale: handbrakeGrip,
+          latScale: latRecovery,
+        });
+        const mudGrip = previous?.surface === 'mud'
+          ? { longitudinal: previous.longitudinalGripScale ?? 1, lateral: previous.lateralGripScale ?? 1 }
+          : { longitudinal: 1, lateral: 1 };
+        // Collider friction only (not the authored surface table again).
+        const surfaceGrip = THREE.MathUtils.clamp((previous?.surfaceFriction ?? 0.8) / 0.8, 0.45, 1.3);
+        ctrl.setWheelFrictionSlip(i, preGrip.frictionSlip * surfaceGrip * mudGrip.longitudinal);
+        if (ctrl.setWheelSideFrictionStiffness) {
+          ctrl.setWheelSideFrictionStiffness(
+            i,
+            preGrip.sideFrictionStiffness * surfaceGrip * mudGrip.lateral,
+          );
+        }
+      }
     }
 
     // Wheel rays must ignore the car's own chassis collider.
@@ -1708,10 +2045,12 @@ export class BaseVehicle {
     ctrl.updateVehicle(dt, filterFlags, undefined, (c) => c?.handle !== selfHandle);
 
     let grounded = 0;
-    const wheels = ctrl.numWheels();
     const mudDynamics = resolveMudWheelDynamics(cfg.mudWheelDynamics);
     let mudContactCount = 0;
-    for (let i = 0; i < wheels; i += 1) {
+    let rearAlphaSum = 0;
+    let rearAlphaN = 0;
+
+    for (let i = 0; i < wheelCount; i += 1) {
       const inContact = ctrl.wheelIsInContact(i);
       if (inContact) grounded += 1;
       const wheel = this.wheelMeshes[i];
@@ -1743,15 +2082,12 @@ export class BaseVehicle {
       if (inContact && wheelSurface === 'mud') mudContactCount += 1;
       const surfaceFriction = groundObject?.friction?.() ?? 0.8;
       const surfaceGrip = THREE.MathUtils.clamp(surfaceFriction / 0.8, 0.45, 1.3);
-      const handbrakeGrip = controls.handbrake && !wheelIsFront(this.wheelAnchors[i])
-        ? (surface.handbrakeRearGripScale ?? cfg.handbrakeRearGripScale ?? 0.1)
-        : 1;
-      // Keep every established non-mud tune untouched away from mud. At a mud
-      // boundary, however, resolve each contact directly so one wheel can enter
-      // or leave the soft corridor without switching the whole chassis early.
-      const wheelTuning = wheelSurface === 'mud' || this.groundSurface === 'mud'
-        ? this._surfaceProfileFor(wheelSurface)
-        : surface;
+      const isFront = wheelIsFront(this.wheelAnchors[i]);
+      const isLeft = this.wheelAnchors[i].x < 0;
+
+      // Always resolve the contact surface profile so dirt/mud mu0/K reach the
+      // tyre model (surfaceTuning alone used to drop those keys).
+      const wheelTuning = this._surfaceProfileFor(wheelSurface);
       const suspensionForce = ctrl.wheelSuspensionForce(i) ?? 0;
       const normalizedLoad = THREE.MathUtils.clamp(suspensionForce / mudDynamics.loadForce, 0, 1.5);
       const mudSample = wheelSurface === 'mud' && contactPoint && this.mudField?.sampleAt
@@ -1766,18 +2102,100 @@ export class BaseVehicle {
       const grip = wheelSurface === 'mud'
         ? computeMudGripScales(rutDepth, slipRatio, mudDynamics)
         : { longitudinal: 1, lateral: 1 };
-      ctrl.setWheelFrictionSlip(
-        i,
-        (wheelTuning.frictionSlip ?? rc.frictionSlip ?? 2) * surfaceGrip * handbrakeGrip * grip.longitudinal,
-      );
-      if (ctrl.setWheelSideFrictionStiffness) {
-        ctrl.setWheelSideFrictionStiffness(
+
+      // ---- M1 slip-state + tyre grip (controller-slip) ----------------------
+      let alpha = 0;
+      let kappa = slipRatio;
+      let vLong = speedFwd;
+      let vLat = 0;
+      let Fz = loadInfo?.loads?.[i] ?? suspensionForce;
+      let tyreResult = null;
+      let handbrakeGrip = 1;
+
+      if (slipModel) {
+        // Wheel heading matches setWheelSteering: +steerAngle is already the
+        // controller wheel angle (computeRayCastSteerAngle returns −input*angle).
+        const wheelSteer = isFront ? steerAngle : 0;
+        _wheelForward.copy(_forward).applyAxisAngle(_up, wheelSteer);
+        _wheelLateral.copy(_right).applyAxisAngle(_up, wheelSteer);
+        // Contact-point velocity = linvel + angvel × r.
+        if (contactPoint) {
+          _r.set(contactPoint.x - _pos.x, contactPoint.y - _pos.y, contactPoint.z - _pos.z);
+        } else {
+          _wheelLocal.copy(this.wheelAnchors[i]);
+          _r.copy(_wheelLocal).applyQuaternion(_quat);
+        }
+        _contactVel.copy(_angvel).cross(_r).add(_linvel);
+        // Sign angular velocity so positive spin drives forward (−Z travel).
+        const signedOmega = -angularVelocity;
+        const slipState = computeContactSlip({
+          contactVel: _contactVel,
+          wheelForward: _wheelForward,
+          wheelLateral: _wheelLateral,
+          angularVelocity: signedOmega,
+          wheelRadius,
+          vFloor: tyreCfg.vFloor,
+          blendBelow: tyreCfg.blendBelow,
+        });
+        alpha = slipState.alpha;
+        kappa = slipState.kappa;
+        vLong = slipState.vLong;
+        vLat = slipState.vLat;
+        if (!isFront) {
+          rearAlphaSum += alpha;
+          rearAlphaN += 1;
+        }
+
+        // Handbrake scales both axes; recovery is lateral-only (applied next step
+        // via latScale in the pre-update friction pass).
+        handbrakeGrip = controls.handbrake && !isFront
+          ? (wheelTuning.handbrakeRearGripScale ?? cfg.handbrakeRearGripScale ?? 0.1)
+          : 1;
+        const latRecovery = (drift?.recoveryActive && !isFront)
+          ? (drift.recoveryGripScale ?? 1)
+          : 1;
+
+        const FzUse = Math.max(Fz, suspensionForce * 0.5, inContact ? weight * 0.05 : 0);
+        const tyreOverride = Number.isFinite(wheelTuning.alphaPeakDeg)
+          ? {
+              ...tyreCfg,
+              lat: { ...tyreCfg.lat, alphaPeakDeg: wheelTuning.alphaPeakDeg },
+            }
+          : tyreCfg;
+        // Resolve for telemetry / next-step pre-pass (friction already set above).
+        tyreResult = resolveTyreGrip({
+          alpha,
+          kappa,
+          Fz: FzUse,
+          weight,
+          tyre: tyreOverride,
+          mu0Long: wheelTuning.mu0Long ?? tyreCfg.mu0Long,
+          mu0Lat: wheelTuning.mu0Lat ?? tyreCfg.mu0Lat,
+          Klat: wheelTuning.Klat,
+          Klong: wheelTuning.Klong,
+          // Asphalt/rayCast base only — surface grip via mu0/muRef (no double-count).
+          baseFrictionSlip: rc.frictionSlip ?? 2,
+          baseSideFriction: rc.sideFrictionStiffness ?? 0.9,
+          handbrakeScale: handbrakeGrip,
+          latScale: latRecovery,
+        });
+      } else {
+        handbrakeGrip = controls.handbrake && !isFront
+          ? (wheelTuning.handbrakeRearGripScale ?? cfg.handbrakeRearGripScale ?? 0.1)
+          : 1;
+        ctrl.setWheelFrictionSlip(
           i,
-          (wheelTuning.sideFrictionStiffness ?? rc.sideFrictionStiffness ?? 1)
-            * surfaceGrip * handbrakeGrip * grip.lateral,
+          (wheelTuning.frictionSlip ?? rc.frictionSlip ?? 2) * surfaceGrip * handbrakeGrip * grip.longitudinal,
         );
+        if (ctrl.setWheelSideFrictionStiffness) {
+          ctrl.setWheelSideFrictionStiffness(
+            i,
+            (wheelTuning.sideFrictionStiffness ?? rc.sideFrictionStiffness ?? 1)
+              * surfaceGrip * handbrakeGrip * grip.lateral,
+          );
+        }
       }
-      const isFront = wheelIsFront(this.wheelAnchors[i]);
+
       const contactStarted = Boolean(inContact && old && !old.inContact);
       const airborneTime = inContact ? 0 : (old?.airborneTime ?? 0) + dt;
       const landedAfterAir = contactStarted && (old?.airborneTime ?? 0) >= mudDynamics.landing.minAirTime;
@@ -1799,10 +2217,10 @@ export class BaseVehicle {
         : 0;
       const torqueInput = braking
         ? Math.max(controls.brake ?? 0, controls.handbrake ? 1 : 0)
-        : (wheelReceivesDrive(this.wheelAnchors[i], layout) ? Math.abs(controls.throttle ?? 0) : 0);
+        : (wheelReceivesDrive(this.wheelAnchors[i], layout) ? Math.abs(effectiveThrottle ?? 0) : 0);
       const mudDigEnergy = wheelSurface === 'mud' && inContact
         ? computeMudWheelIntensity({
-          slip: slipRatio,
+          slip: Math.max(slipRatio, Math.abs(kappa)),
           torque: torqueInput,
           braking,
           isFront,
@@ -1825,11 +2243,27 @@ export class BaseVehicle {
         rotation,
         angularVelocity,
         slipRatio,
+        // M1 / M6 tyre telemetry
+        alpha,
+        alphaDeg: alpha * (180 / Math.PI),
+        kappa,
+        vLong,
+        vLat,
+        Fz: tyreResult?.Fz ?? Fz ?? 0,
+        muLong: tyreResult?.muLong ?? 0,
+        muLat: tyreResult?.muLat ?? 0,
+        ellipseUsage: tyreResult?.ellipseUsage ?? 0,
+        longFactor: tyreResult?.longFactor ?? 0,
+        latFactor: tyreResult?.latFactor ?? 0,
+        frictionSlip: tyreResult?.frictionSlip ?? 0,
+        sideFrictionStiffness: tyreResult?.sideFrictionStiffness ?? 0,
+        engineForce: perWheelForces[i] ?? 0,
         forwardImpulse: ctrl.wheelForwardImpulse(i) ?? 0,
         sideImpulse: ctrl.wheelSideImpulse(i) ?? 0,
         suspensionForce,
         normalizedLoad,
         suspensionLength,
+        prevSuspensionLength: old?.suspensionLength ?? suspensionLength,
         contactPoint,
         contactNormal,
         hardPoint,
@@ -1842,16 +2276,46 @@ export class BaseVehicle {
         mudDigEnergy,
         braking,
         isFront,
+        isLeft,
         torqueInput,
         longitudinalGripScale: grip.longitudinal,
         lateralGripScale: grip.lateral,
-        tractionControl: controls.throttle !== 0 && old?.slipRatio > (rc.tractionSlipThreshold ?? 0.32),
-        abs: braking && old?.slipRatio > (rc.absSlipThreshold ?? 0.48),
+        tractionControl: effectiveThrottle !== 0
+          && Math.abs(old?.kappa ?? old?.slipRatio ?? 0) > (rc.tractionSlipThreshold ?? 0.32),
+        abs: braking
+          && Math.abs(old?.kappa ?? old?.slipRatio ?? 0) > (rc.absSlipThreshold ?? 0.48),
+        driftAssistActive: Boolean(drift?.active),
+        recoveryActive: Boolean(drift?.recoveryActive && !isFront),
       };
-
     }
     this.grounded = grounded > 0;
-    this.groundedFraction = wheels ? grounded / wheels : 0;
+    this.groundedFraction = wheelCount ? grounded / wheelCount : 0;
+
+    // Body heave / pitch / roll for camera (M3.5 readout).
+    const heaveVel = _linvel.dot(_up);
+    const pitch = Math.asin(THREE.MathUtils.clamp(-_forward.y, -1, 1));
+    const roll = Math.asin(THREE.MathUtils.clamp(_right.y, -1, 1));
+
+    this.handlingTelemetry = slipModel
+      ? {
+          handlingModel: 'controller-slip',
+          ax,
+          ay,
+          dLong: loadInfo?.dLong ?? 0,
+          dLatFront: loadInfo?.dLatFront ?? 0,
+          dLatRear: loadInfo?.dLatRear ?? 0,
+          staticFront: loadInfo?.staticFront ?? 0,
+          staticRear: loadInfo?.staticRear ?? 0,
+          rearAlphaDeg: rearAlphaN
+            ? (rearAlphaSum / rearAlphaN) * (180 / Math.PI)
+            : 0,
+          driftAssist: drift?.active ?? false,
+          layout,
+          heaveVel,
+          pitch,
+          roll,
+        }
+      : { handlingModel: 'controller', heaveVel, pitch, roll };
 
     if (this.groundedFraction > 0) {
       // The raycast controller already has baseline contact drag. Add only the
@@ -1862,29 +2326,89 @@ export class BaseVehicle {
         _force.copy(_forward).multiplyScalar(-speedFwd * rolling * mass * this.groundedFraction);
         body.addForce(toRapier(_force), false);
       }
-      if (mudContactCount === 0 && controls.throttle > 0 && Math.abs(controls.steer) > 0.04 && (cfg.powerOversteer ?? 0) > 0) {
+      // Body-level power-oversteer is retired under controller-slip (tyre model
+      // + throttle-steer via load transfer / rear κ own that feel). Keep for
+      // original 'controller' path.
+      if (
+        !slipModel
+        && mudContactCount === 0
+        && controls.throttle > 0
+        && Math.abs(controls.steer) > 0.04
+        && (cfg.powerOversteer ?? 0) > 0
+      ) {
         const yawAccel = -controls.steer * controls.throttle * cfg.powerOversteer
           * (surface.powerOversteerScale ?? 1) * this.groundedFraction;
         _force.copy(_up).multiplyScalar(yawAccel * mass);
         body.addTorque(toRapier(_force), true);
       }
+      // M2: optional roll-resist torque (ARB feel on the body).
+      if (slipModel && cfg.antiRoll) {
+        const rollRate = _angvel.dot(_forward);
+        const rollAngle = roll;
+        const rollT = computeRollResistTorque({
+          rollRate,
+          rollAngle,
+          antiRoll: cfg.antiRoll,
+          groundedFraction: this.groundedFraction,
+        });
+        if (Math.abs(rollT) > 1e-5) {
+          _rollAxis.copy(_forward).multiplyScalar(rollT * mass * 0.15);
+          body.addTorque(toRapier(_rollAxis), false);
+        }
+      }
+      // M4 yaw-target: controlled slide holds target slip; recovery drives to 0.
+      // Also apply a pure yaw-rate damper when recovery is active even if the
+      // assist activation ramp is still building (seeded-spin catch).
+      if (slipModel && (drift?.active || drift?.recoveryActive)) {
+        const actualYawRate = _angvel.dot(_up);
+        const target = drift.recoveryActive ? 0 : (drift.yawTargetRate ?? 0);
+        const baseGain = (cfg.driftAssist?.strength ?? 1) * (drift.recoveryActive ? 1.6 : 0.35);
+        const yawAccel = (target - actualYawRate) * baseGain * this.groundedFraction;
+        if (Math.abs(yawAccel) > 1e-5) {
+          _force.copy(_up).multiplyScalar(yawAccel * mass);
+          body.addTorque(toRapier(_force), false);
+        }
+      }
     }
 
-    // Low-speed yaw assist: wheel steering needs forward motion to rotate the car,
-    // so add a fading closed-loop yaw torque below yawAssistMaxSpeed for arcade
-    // responsiveness (and pivoting in place). Fades to 0 as the wheel steering gains
-    // authority with speed. Only while grounded.
+    // Low-speed yaw assist: wheel steering needs forward motion to rotate the car.
+    // Gated off while drift assist is actively countersteering so body torque
+    // does not fight the wheel countersteer (4–10 m/s overlap).
     const assistFade = THREE.MathUtils.clamp(1 - Math.abs(speedFwd) / (rc.yawAssistMaxSpeed ?? 9), 0, 1);
-    if (assistFade > 0 && Math.abs(controls.steer) > 0.01 && this.groundedFraction > 0) {
+    const driftBlocksYawAssist = Boolean(drift?.active || drift?.countersteerActive);
+    if (
+      assistFade > 0
+      && Math.abs(controls.steer) > 0.01
+      && this.groundedFraction > 0
+      && !driftBlocksYawAssist
+    ) {
       const targetYawRate = -controls.steer * (cfg.maxYawRate ?? 1) * assistFade;
       const actualYawRate = _angvel.dot(_up);
       const yawAccel = (targetYawRate - actualYawRate) * (cfg.yawStiffness ?? 10)
         * (rc.yawAssistStrength ?? 1) * this.groundedFraction;
       _force.copy(_up).multiplyScalar(yawAccel * mass);
       body.addTorque(toRapier(_force), true);
-      this.steerTelemetry = { steer: controls.steer, speedFwd: Math.abs(speedFwd), authority: assistFade, targetYawRate, actualYawRate, yawAccel };
+      this.steerTelemetry = {
+        steer: controls.steer,
+        speedFwd: Math.abs(speedFwd),
+        authority: assistFade,
+        targetYawRate,
+        actualYawRate,
+        yawAccel,
+        steerAngle,
+        countersteer: drift?.steerAdd ?? 0,
+      };
     } else {
-      this.steerTelemetry = { steer: controls.steer, speedFwd: Math.abs(speedFwd), authority: 1 - assistFade, targetYawRate: 0, actualYawRate: _angvel.dot(_up), yawAccel: 0 };
+      this.steerTelemetry = {
+        steer: controls.steer,
+        speedFwd: Math.abs(speedFwd),
+        authority: driftBlocksYawAssist ? 0 : 1 - assistFade,
+        targetYawRate: 0,
+        actualYawRate: _angvel.dot(_up),
+        yawAccel: 0,
+        steerAngle,
+        countersteer: drift?.steerAdd ?? 0,
+      };
     }
 
     // Downforce (capped) for high-speed grip, while grounded.
@@ -2384,7 +2908,8 @@ export class BaseVehicle {
   }
 
   setGroundSurface(surface) {
-    this.groundSurface = surface === 'asphalt' || surface === 'dirt' || surface === 'mud'
+    this.groundSurface = surface === 'asphalt' || surface === 'dirt'
+      || surface === 'wet' || surface === 'mud'
       ? surface
       : 'offroad';
   }
@@ -2399,7 +2924,8 @@ export class BaseVehicle {
     const sampled = typeof sampler === 'function'
       ? sampler(x, z)
       : sampler?.getRoadSurfaceAt?.(x, z);
-    return sampled === 'asphalt' || sampled === 'dirt' || sampled === 'mud'
+    return sampled === 'asphalt' || sampled === 'dirt'
+      || sampled === 'wet' || sampled === 'mud'
       ? sampled
       : 'offroad';
   }
@@ -2417,12 +2943,11 @@ export class BaseVehicle {
     return profile;
   }
 
-  // Rally mud: stamp tyre ruts into the shared deform field from this frame's
-  // wheel telemetry. All four wheels cut the rut (front carves, rear follows in).
-  // A rolling wheel lays a shallow continuous rut; a SPINNING/bogged wheel bores
-  // progressively deeper each frame (the `add` accumulation) — so bad throttle
-  // control digs you a hole. Parked cars (speed < 0.5, no spin) don't bore.
-  // (docs/rally-mud-tread-plan.md §6)
+  // Rally mud/wet: stamp tyre ruts into the shared deform field from this frame's
+  // wheel telemetry. Mud can dig deep (add accumulation); wet is shallow tread
+  // only (no bog). Parked cars (speed < 0.35, no spin) don't bore.
+  // Call AFTER physics integrate so contactPoint / surface are current.
+  // (docs/rally-mud-tread-plan.md §6, docs/advanced-wet-roads-plan.md wet+tread)
   stampMudRuts(mudField, dt = 1 / 60) {
     if (!mudField) return;
     const speed = Math.abs(this.controllerSpeed ?? this.speed ?? 0);
@@ -2440,25 +2965,39 @@ export class BaseVehicle {
         rutDirectionZ = _forward.z;
       }
     }
+    // Chassis surface is the fallback only when the wheel sample is missing /
+    // offroad (corridor feather — getRoadSurfaceAt requires weight ≥ 0.999 and
+    // can null out a contact a few cm past the deck edge). An explicit dirt
+    // sample on a dual-surface car must still win (asymmetric wheel stamps).
+    const chassisMudOrWet = this.groundSurface === 'mud' || this.groundSurface === 'wet';
     for (const t of this.wheelTelemetry) {
-      if (!t?.inContact || !t.contactPoint || (t.surface ?? this.groundSurface) !== 'mud') continue;
+      let surface = t?.surface ?? this.groundSurface;
+      if (chassisMudOrWet && (surface == null || surface === 'offroad')) {
+        surface = this.groundSurface;
+      }
+      const onMud = surface === 'mud';
+      const onWet = surface === 'wet';
+      if (!t?.inContact || !t.contactPoint || (!onMud && !onWet)) continue;
       const load = THREE.MathUtils.clamp(t.normalizedLoad ?? (t.suspensionForce ?? 0) / 3000, 0, 1.5);
       const slip = THREE.MathUtils.clamp(t.slipRatio ?? 0, 0, 1);
       const digEnergy = THREE.MathUtils.clamp(t.mudDigEnergy ?? t.mudIntensity ?? (slip * load), 0, 1);
-      // Base rut only when actually moving; wheelspin digs even standing still.
-      const base = speed >= 0.5 ? 0.035 + 0.08 * speedFactor * (0.5 + 0.5 * load) : 0;
-      const dig = digEnergy * 0.2 * step; // ~0.2 m/s at full loaded wheelspin
+      // Moving lays a continuous trough; wheelspin digs even when nearly stopped.
+      // Depths sized so after brush falloff they still clear the material's
+      // imprint/sink thresholds (~0.2+ of field maxDepth).
+      const base = speed >= 0.35
+        ? (onWet ? 0.04 : 0.06) + (onWet ? 0.05 : 0.1) * speedFactor * (0.5 + 0.5 * load)
+        : 0;
+      const dig = onMud ? digEnergy * 0.22 * step : digEnergy * 0.07 * step;
       if (base <= 0 && dig <= 0) continue;
-      // A ~0.22 m brush (spans ~2 of the field's 0.15 m cells) so the rut is a
-      // TIGHT tyre-width trough — one wheel, not a wide merged wallow — while
-      // still having a cell of falloff for a smooth wall instead of a spike.
-      mudField.stampBrush(t.contactPoint.x, t.contactPoint.z, 0.22, {
+      // ~0.24 m brush → ~2 cells of falloff on the 0.15 m grid (crisp channel).
+      mudField.stampBrush(t.contactPoint.x, t.contactPoint.z, onWet ? 0.22 : 0.24, {
         depth: base,
         add: dig,
-        wetness: wet,
+        wetness: onWet ? Math.min(1, wet + 0.4) : wet,
         tread: 1,
         directionX: rutDirectionX,
         directionZ: rutDirectionZ,
+        kind: 'vehicle',
       });
     }
   }
@@ -2474,13 +3013,44 @@ export class BaseVehicle {
         this.config.ground?.traction,
       );
     }
+    // Wet road: baseline slick profile, then further slick when raining (same
+    // worsen levers as low garage traction — docs/advanced-wet-roads-plan.md M1).
+    if (this.groundSurface === 'wet') {
+      const rain = THREE.MathUtils.clamp(rainWetness.value ?? 0, 0, 1);
+      // Stage floor ~0.55 so Clear weather still feels wet; rain adds on top.
+      const stageWet = 0.55 + rain * 0.45;
+      if (stageWet > 0.02) {
+        target = {
+          ...target,
+          frictionSlip: target.frictionSlip * (1 - stageWet * 0.18),
+          sideFrictionStiffness: target.sideFrictionStiffness * (1 - stageWet * 0.14),
+          mu0Long: (target.mu0Long ?? target.frictionSlip * 0.8) * (1 - stageWet * 0.18),
+          mu0Lat: (target.mu0Lat ?? target.sideFrictionStiffness * 1.8) * (1 - stageWet * 0.14),
+          rollingResistanceScale: target.rollingResistanceScale * (1 + stageWet * 0.12),
+        };
+      }
+    }
+    const tyre = this.config.ground?.tyre ?? {};
     const alpha = 1 - Math.exp(-Math.max(0, target.gripLerp ?? 4) * Math.max(0, dt));
-    for (const key of [
+    const keys = [
       'frictionSlip', 'sideFrictionStiffness', 'powerOversteerScale',
       'handbrakeRearGripScale', 'rollingResistanceScale',
-    ]) {
-      const fallback = key.endsWith('Scale') ? 1 : 0;
-      const next = Number.isFinite(target[key]) ? target[key] : fallback;
+      'mu0Long', 'mu0Lat', 'Klat', 'Klong', 'alphaPeakDeg',
+    ];
+    const fallbacks = {
+      frictionSlip: this.config.ground?.rayCast?.frictionSlip ?? 2,
+      sideFrictionStiffness: this.config.ground?.rayCast?.sideFrictionStiffness ?? 1,
+      powerOversteerScale: 1,
+      handbrakeRearGripScale: this.config.ground?.handbrakeRearGripScale ?? 0.1,
+      rollingResistanceScale: 1,
+      mu0Long: tyre.mu0Long ?? 1.6,
+      mu0Lat: tyre.mu0Lat ?? 1.7,
+      Klat: tyre.lat?.K ?? 10,
+      Klong: tyre.long?.K ?? 9,
+      alphaPeakDeg: tyre.lat?.alphaPeakDeg ?? 14,
+    };
+    for (const key of keys) {
+      const next = Number.isFinite(target[key]) ? target[key] : fallbacks[key];
       this.surfaceTuning[key] = THREE.MathUtils.lerp(this.surfaceTuning[key] ?? next, next, alpha);
     }
     return this.surfaceTuning;
@@ -3391,6 +3961,56 @@ export class BaseVehicle {
       controllerSpeed: Number((this.controllerSpeed ?? 0).toFixed(2)),
       maxWheelSlip: Number(Math.max(0, ...this.wheelTelemetry.map((wheel) => wheel?.slipRatio ?? 0)).toFixed(3)),
       mudIntensity: Number(Math.max(0, ...this.wheelTelemetry.map((wheel) => wheel?.mudIntensity ?? 0)).toFixed(3)),
+      handlingModel: this.config.ground?.handlingModel ?? 'controller-slip',
+      handling: this.handlingTelemetry
+        ? {
+            model: this.handlingTelemetry.handlingModel,
+            ax: Number((this.handlingTelemetry.ax ?? 0).toFixed(2)),
+            ay: Number((this.handlingTelemetry.ay ?? 0).toFixed(2)),
+            dLong: Number((this.handlingTelemetry.dLong ?? 0).toFixed(1)),
+            dLatFront: Number((this.handlingTelemetry.dLatFront ?? 0).toFixed(1)),
+            dLatRear: Number((this.handlingTelemetry.dLatRear ?? 0).toFixed(1)),
+            rearAlphaDeg: Number((this.handlingTelemetry.rearAlphaDeg ?? 0).toFixed(1)),
+            driftAssist: Boolean(this.handlingTelemetry.driftAssist),
+            layout: this.handlingTelemetry.layout ?? this.config.ground?.driveLayout,
+            heaveVel: Number((this.handlingTelemetry.heaveVel ?? 0).toFixed(3)),
+            pitch: Number((this.handlingTelemetry.pitch ?? 0).toFixed(3)),
+            roll: Number((this.handlingTelemetry.roll ?? 0).toFixed(3)),
+          }
+        : null,
+      driftAssist: this.driftAssistTelemetry
+        ? {
+            active: Boolean(this.driftAssistTelemetry.active),
+            countersteer: Boolean(this.driftAssistTelemetry.countersteerActive),
+            recovery: Boolean(this.driftAssistTelemetry.recoveryActive),
+            slipDeg: Number((this.driftAssistTelemetry.slipDeg ?? 0).toFixed(1)),
+            steerAdd: Number((this.driftAssistTelemetry.steerAdd ?? 0).toFixed(3)),
+          }
+        : null,
+      powertrain: this.powertrainTelemetry
+        ? {
+            rpm: Number((this.powertrainTelemetry.rpm ?? 0).toFixed(0)),
+            gear: this.powertrainTelemetry.gear,
+            clutchLock: Number((this.powertrainTelemetry.clutchLock ?? 1).toFixed(2)),
+            shifting: Boolean(this.powertrainTelemetry.shifting),
+            force: Number((this.powertrainTelemetry.totalDriveForce ?? 0).toFixed(0)),
+          }
+        : null,
+      wheels: this.wheelTelemetry.map((wheel, index) => ({
+        index,
+        inContact: Boolean(wheel?.inContact),
+        isFront: Boolean(wheel?.isFront),
+        surface: wheel?.surface ?? this.groundSurface,
+        alphaDeg: Number((wheel?.alphaDeg ?? 0).toFixed(1)),
+        kappa: Number((wheel?.kappa ?? wheel?.slipRatio ?? 0).toFixed(3)),
+        Fz: Number((wheel?.Fz ?? 0).toFixed(0)),
+        ellipse: Number((wheel?.ellipseUsage ?? 0).toFixed(2)),
+        slip: Number((wheel?.slipRatio ?? 0).toFixed(3)),
+        load: Number((wheel?.normalizedLoad ?? 0).toFixed(3)),
+        engineForce: Number((wheel?.engineForce ?? 0).toFixed(0)),
+        driftAssist: Boolean(wheel?.driftAssistActive),
+        recovery: Boolean(wheel?.recoveryActive),
+      })),
       wheelMud: this.wheelTelemetry.map((wheel, index) => ({
         index,
         surface: wheel?.surface ?? this.groundSurface,
@@ -3421,6 +4041,7 @@ export class BaseVehicle {
             authority: Number(this.steerTelemetry.authority.toFixed(2)),
             targetYawRate: Number(this.steerTelemetry.targetYawRate.toFixed(2)),
             actualYawRate: Number(this.steerTelemetry.actualYawRate.toFixed(2)),
+            countersteer: Number((this.steerTelemetry.countersteer ?? 0).toFixed(3)),
           }
         : null,
       occupied: this.occupants.some((o) => o != null),
@@ -3580,6 +4201,7 @@ export function makeParkedControls() {
   };
 }
 
+/** Any deliberate control that should wake a sleeping chassis (includes brake). */
 export function vehicleControlsRequestWake(controls) {
   if (!controls) return false;
   return Math.abs(controls.throttle ?? 0) > 0.001
@@ -3590,6 +4212,21 @@ export function vehicleControlsRequestWake(controls) {
     || Math.abs(controls.yaw ?? 0) > 0.001
     || Math.abs(controls.vertical ?? 0) > 0.001
     || controls.handbrake === true
+    || controls.boost === true;
+}
+
+/**
+ * Controls that exit hard park (park()/settleParked). Brake/handbrake alone
+ * must NOT unpark — parked controls are makeParkedControls() with brake+handbrake.
+ */
+export function vehicleControlsRequestUnpark(controls) {
+  if (!controls) return false;
+  return Math.abs(controls.throttle ?? 0) > 0.001
+    || Math.abs(controls.steer ?? 0) > 0.001
+    || Math.abs(controls.pitch ?? 0) > 0.001
+    || Math.abs(controls.roll ?? 0) > 0.001
+    || Math.abs(controls.yaw ?? 0) > 0.001
+    || Math.abs(controls.vertical ?? 0) > 0.001
     || controls.boost === true;
 }
 

@@ -6,6 +6,7 @@ import solidPlugin from 'vite-plugin-solid';
 import { WebSocketServer } from 'ws';
 import { dreamfallStorePlugin } from './vite/dreamfall-store-plugin.mjs';
 import { bodyshopPlugin } from './vite/bodyshopPlugin.mjs';
+import { deployAssetsPlugin } from './vite/deployAssetsPlugin.mjs';
 import { forestLeavesPlugin } from './vite/forest-leaves-plugin.mjs';
 import { grokBridgePlugin } from './vite/grokBridge.mjs';
 
@@ -17,6 +18,11 @@ const devToolsModule = fileURLToPath(new URL('./src/dev/devTools.jsx', import.me
 const bodyshopModule = fileURLToPath(new URL('./src/dev/BodyshopScene.jsx', import.meta.url));
 const devToolsPublicId = 'virtual:dreamfall-dev-tools';
 const devToolsResolvedId = `\0${devToolsPublicId}`;
+
+const shaderDebugPaneModule = fileURLToPath(new URL('./src/game/debug/shaderDebugPane.js', import.meta.url));
+const shaderDebugRegisterModule = fileURLToPath(new URL('./src/game/debug/registerBuiltinShaderDebug.js', import.meta.url));
+const shaderDebugPublicId = 'virtual:dreamfall-shader-debug';
+const shaderDebugResolvedId = `\0${shaderDebugPublicId}`;
 
 function devToolsPlugin(enabled) {
   return {
@@ -42,6 +48,29 @@ function devToolsPlugin(enabled) {
           };
         }
         export function BodyshopScene() { return null; }
+      `;
+    },
+  };
+}
+
+/** Sibling of dreamfall-dev-tools: DEV exports real pane/register; PROD inert stubs (no tweakpane). */
+function shaderDebugPlugin(enabled) {
+  return {
+    name: 'dreamfall-shader-debug',
+    resolveId(id) {
+      return id === shaderDebugPublicId ? shaderDebugResolvedId : null;
+    },
+    load(id) {
+      if (id !== shaderDebugResolvedId) return null;
+      if (enabled) {
+        return `
+          export { mountShaderDebugPane } from ${JSON.stringify(shaderDebugPaneModule)};
+          export { registerBuiltinShaderDebug } from ${JSON.stringify(shaderDebugRegisterModule)};
+        `;
+      }
+      return `
+        export async function mountShaderDebugPane() { return null; }
+        export function registerBuiltinShaderDebug() {}
       `;
     },
   };
@@ -306,8 +335,10 @@ export default defineConfig(({ command, isPreview }) => {
     plugins: [
       solidPlugin(),
       devToolsPlugin(isDevServer),
+      shaderDebugPlugin(isDevServer),
       dreamfallStorePlugin(),
       forestLeavesPlugin(),
+      deployAssetsPlugin(),
       ...(isDevServer ? [codexBridgePlugin(), grokBridgePlugin(), bodyshopPlugin()] : []),
     ],
     resolve: {

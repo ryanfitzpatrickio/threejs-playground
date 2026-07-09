@@ -73,11 +73,12 @@ export const DEFAULT_VEHICLE_CONFIG = {
   controls: {
     // Keyboard steering is binary, so a slower ramp prevents a tap from producing
     // an immediate chassis rotation while still reaching full lock when held.
-    steerSmoothing: 4.0,
-    throttleSmoothing: 6,
-    pitchSmoothing: 7,
-    rollSmoothing: 7,
-    yawSmoothing: 7,
+    // Slightly softer than a pure digital snap so chassis yaw eases through corners.
+    steerSmoothing: 3.1,
+    throttleSmoothing: 5,
+    pitchSmoothing: 6,
+    rollSmoothing: 6,
+    yawSmoothing: 6,
   },
 
   // Seats: the first `isDriver` seat receives control input. Offsets are local-space
@@ -209,14 +210,14 @@ export const DEFAULT_VEHICLE_CONFIG = {
       maxTravel: 0.32, // compression allowed below restLength (also the droop range)
       rayUpOffset: 0.3, // cast starts this far above the wheel anchor
       stiffness: 34, // spring accel per meter of compression (x mass)
-      // Raised 8 -> 11 to settle terrain-following bounce faster while driving over
+      // Raised 8 -> 12 to settle terrain-following bounce faster while driving over
       // rolling procedural terrain (the residual "tiny jump" once the streaming
-      // frame-hitch was fixed). The heave mode is already overdamped (zeta~1.37);
+      // frame-hitch was fixed). The heave mode is already overdamped;
       // the extra damping mainly kills the rebound velocity when a launched wheel
       // lands, without changing the compression spring / maxForceScale that provide
       // the deliberate per-wheel travel + peak-launch behaviour. Still well clear of
-      // numerical trouble even at the 0.05s dt ceiling (damping*dt = 0.55 < 1).
-      damping: 11, // damper accel per (m/s) of compression velocity (x mass)
+      // numerical trouble even at the 0.05s dt ceiling (damping*dt = 0.6 < 1).
+      damping: 12, // damper accel per (m/s) of compression velocity (x mass)
       maxForceScale: 14, // clamp suspension accel to this * mass
     },
 
@@ -227,6 +228,115 @@ export const DEFAULT_VEHICLE_CONFIG = {
     // force-spring + wheel balls + the world substep on the ground path. The legacy
     // model is kept (useRayCastController:false) for comparison/regression.
     useRayCastController: true,
+    // Handling model for the raycast controller path:
+    //   'controller'      — original friction scalars + body-level helpers
+    //   'controller-slip' — slip-modulated tyre model + load/ARB + drift assist +
+    //                       powertrain/diff (docs/vehicle-advanced-suspension-plan.md)
+    handlingModel: 'controller-slip',
+    // Slip-angle tyre model (M1). Surfaces scale mu0* / K*; controller path maps
+    // the envelope onto setWheelFrictionSlip / setWheelSideFrictionStiffness.
+    // British spelling `tyre` matches the plan doc (TireEffects keeps US `tire`).
+    // alphaPeakDeg 14° (vs plan ~8°): intentional Tier-A tradeoff so mid-speed
+    // closed-loop steer keeps geometric yaw on asphalt; dirt/mud peak later.
+    tyre: {
+      vFloor: 2.0,
+      blendBelow: 1.5,
+      mu0Long: 1.6,
+      mu0Lat: 1.7,
+      muRefLong: 1.6,
+      muRefLat: 1.7,
+      kLoad: 0.15,
+      Fz0: 0.25,
+      long: { K: 9.0, scale: 8.0, kappaPeak: 0.18 },
+      lat: { K: 10.0, alphaPeakDeg: 14 },
+      combinedEllipse: true,
+      residualMin: 0.38,
+      controllerLongGain: 1.0,
+      // Slightly under 1 keeps highway yaw under the steer-verify ceiling while
+      // mid-speed closed-loop still clears the floor.
+      controllerLatGain: 0.95,
+    },
+    // Named handling presets (merge onto ground). 'sim' = assist off, steeper falloff.
+    handlingPresets: {
+      simcade: {},
+      sim: {
+        driftAssist: { enabled: false, strength: 0 },
+        tyre: { residualMin: 0.22, kLoad: 0.18, lat: { alphaPeakDeg: 10, K: 12 } },
+      },
+    },
+    // Geometric load transfer + ARB balance (M2).
+    loadTransfer: {
+      useGeometric: true,
+      hCG: 0.55,
+      blendSusp: 0.5,
+    },
+    antiRoll: {
+      front: 0.6, // stiffer front → understeer-safe default
+      rear: 0.45,
+      rollDamp: 2.5,
+      rollStiffness: 18,
+    },
+    // Progressive spring + slow/fast damper via per-step controller setters (M3).
+    suspensionDynamics: {
+      enabled: true,
+      spring: {
+        k: 24,
+        progressiveStart: 0.7,
+        progressiveRate: 1.6,
+        bumpStopStart: 0.85,
+        bumpStopK: 6,
+        bumpStopDamp: 0.4,
+      },
+      damper: {
+        vKnee: 0.5,
+        cLowBump: 5,
+        cHighBump: 14,
+        cLowRebound: 7,
+        cHighRebound: 10,
+      },
+      maxForceCap: 4000,
+    },
+    // Arcade drift assist (M4) — ON by default (sim-cade / V-Rally target).
+    driftAssist: {
+      enabled: true,
+      strength: 1.0,
+      countersteerMax: 0.35,
+      slipTriggerDeg: 12,
+      yawTargetGain: 1.2,
+      recoveryEnvelopeDeg: 45,
+      recoveryGripBoost: 0.45,
+      throttleBiasGain: 0.15,
+      targetSlipDeg: 22,
+      minSpeed: 4,
+    },
+    // Engine curve + gears + clutch (M5). Replaces flat enginePower when
+    // handlingModel is controller-slip and powertrain.enabled.
+    powertrain: {
+      enabled: true,
+      // driveLayout lives on ground.driveLayout; powertrain may override.
+      engine: {
+        idleRPM: 900,
+        peakRPM: 6000,
+        redline: 7200,
+        peakTorque: 220,
+        idleTorqueFrac: 0.55,
+        redlineTorqueFrac: 0.72,
+      },
+      gears: [3.5, 2.1, 1.45, 1.05, 0.82],
+      finalDrive: 3.9,
+      shiftTime: 0.18,
+      autoShift: true,
+      upshiftRPM: 6400,
+      downshiftRPM: 2200,
+      clutch: { slipGain: 4.0, maxLock: 1.0 },
+      forceScale: 1.0,
+      wheelRadius: 0.38,
+    },
+    differentials: {
+      centre: { type: 'lsd', bias: 0.55 },
+      front: { type: 'lsd', bias: 0.4 },
+      rear: { type: 'lsd', bias: 0.5 },
+    },
     rayCast: {
       // The rigid chassis is an obstacle/crash envelope, not a road-contact skid
       // plate. Keep its floor above the road through the ENTIRE suspension stroke
@@ -243,11 +353,14 @@ export const DEFAULT_VEHICLE_CONFIG = {
       // Extra ride height/travel keeps the chassis box off short terrain peaks.
       // Strong bump/rebound damping prevents a short high-speed compression from
       // becoming upward launch velocity, while the lower spring rate keeps travel.
+      // Slightly softer spring + firmer dampers settle rolling terrain faster so
+      // the visual chassis tracks the world more smoothly at speed.
       suspensionRestLength: 0.4,
-      suspensionStiffness: 24,
-      suspensionCompression: 12.0,
-      suspensionRelaxation: 12.0,
-      maxSuspensionTravel: 0.42,
+      suspensionStiffness: 22,
+      suspensionCompression: 13.5,
+      suspensionRelaxation: 13.5,
+      // ≤ restLength − 0.02 (SuspensionModel clamps travel so rest stays positive).
+      maxSuspensionTravel: 0.38,
       // N cap on a wheel's suspension force. This is the launch limiter: when a
       // wheel ray suddenly reads deep compression (heightfield pops in under the
       // car, seam lip at a chunk boundary, hard landing) the controller applies
@@ -317,6 +430,13 @@ export const DEFAULT_VEHICLE_CONFIG = {
       asphalt: {
         frictionSlip: 2.0,
         sideFrictionStiffness: 0.9,
+        // Tyre-model peaks (controller-slip). Dirt/mud lower μ and soften K so
+        // slides start earlier and last longer past the limit (rally).
+        mu0Long: 1.6,
+        mu0Lat: 1.7,
+        Klat: 10,
+        Klong: 9,
+        alphaPeakDeg: 14,
         powerOversteerScale: 1,
         handbrakeRearGripScale: 0.1,
         rollingResistanceScale: 1,
@@ -325,14 +445,39 @@ export const DEFAULT_VEHICLE_CONFIG = {
       dirt: {
         frictionSlip: 1.15,
         sideFrictionStiffness: 0.5,
+        mu0Long: 1.05,
+        mu0Lat: 1.0,
+        Klat: 7.5,
+        Klong: 7,
+        alphaPeakDeg: 16,
         powerOversteerScale: 1.6,
         handbrakeRearGripScale: 0.05,
         rollingResistanceScale: 1.4,
         gripLerp: 4,
       },
+      // Rally wet (docs/advanced-wet-roads-plan.md): between dirt and mud —
+      // slicker than dirt, grippier than mud, NO bog/dig-in (fast gripLerp like dirt).
+      wet: {
+        frictionSlip: 0.85,
+        sideFrictionStiffness: 0.38,
+        mu0Long: 0.78,
+        mu0Lat: 0.72,
+        Klat: 6.5,
+        Klong: 6,
+        alphaPeakDeg: 18,
+        powerOversteerScale: 1.7,
+        handbrakeRearGripScale: 0.08,
+        rollingResistanceScale: 1.6,
+        gripLerp: 4,
+      },
       offroad: {
         frictionSlip: 0.9,
         sideFrictionStiffness: 0.4,
+        mu0Long: 0.85,
+        mu0Lat: 0.8,
+        Klat: 7,
+        Klong: 6.5,
+        alphaPeakDeg: 18,
         powerOversteerScale: 1.35,
         handbrakeRearGripScale: 0.04,
         rollingResistanceScale: 1.7,
@@ -346,6 +491,11 @@ export const DEFAULT_VEHICLE_CONFIG = {
       mud: {
         frictionSlip: 0.55,
         sideFrictionStiffness: 0.22,
+        mu0Long: 0.5,
+        mu0Lat: 0.42,
+        Klat: 5.5,
+        Klong: 5,
+        alphaPeakDeg: 22,
         powerOversteerScale: 2.4,
         handbrakeRearGripScale: 0.02,
         rollingResistanceScale: 2.5,
@@ -470,6 +620,29 @@ export const DEFAULT_VEHICLE_CONFIG = {
       // dark specks that arc and fall (heavy gravity, no buoyancy, no age-grow),
       // and FEW of them so they never haze over the ruts. DirtDustSystem also
       // swaps to a hard clod texture on mud so nothing reads as smoke.
+      // Wet-road water spray (docs/advanced-wet-roads-plan.md M4): lighter colour,
+      // fine droplets, higher buoyancy, shorter life — the roost a wet stage throws.
+      // Same pool as dirt; DirtDustSystem swaps the profile on surface === 'wet'.
+      water: {
+        clod: false,
+        life: { min: 0.45, max: 0.95 },
+        buoyancy: 1.4,
+        gravity: 1.8,
+        drag: 0.9,
+        turbulence: 0.35,
+        emitRate: {
+          base: 12, perSpeed: 1.4, speedCap: 36, perIntensity: 48,
+          driftBoost: 22, driftThreshold: 3, maxPerFrame: 16,
+          burstAtIntensity: 0.65, burstParticles: 3,
+        },
+        size: { baseMin: 0.28, baseMax: 0.55, ageGrow: 1.1 },
+        color: {
+          fresh: [0.72, 0.78, 0.82], // cool water spray
+          mid: [0.82, 0.86, 0.88],
+          old: [0.9, 0.92, 0.94],
+        },
+        opacity: { peak: 0.72, fadePow: 1.5 },
+      },
       mud: {
         clod: true, // render with the hard clod texture, not the soft puff
         life: { min: 0.35, max: 0.7 }, // short — flick up and splat back down
@@ -563,7 +736,7 @@ export function createVehicleConfig(overrides = {}) {
 /** Neutral garage traction — authored dirt/mud surface tables apply as-is. */
 export const LOOSE_SURFACE_TRACTION_BASELINE = 0.55;
 
-const LOOSE_GROUND_SURFACES = new Set(['dirt', 'mud', 'offroad']);
+const LOOSE_GROUND_SURFACES = new Set(['dirt', 'wet', 'mud', 'offroad']);
 
 /**
  * Scale a loose-surface profile (dirt/mud/offroad) by the garage traction stat.
@@ -585,6 +758,11 @@ export function applyLooseSurfaceTraction(profile, asphaltProfile, traction = LO
       ...profile,
       frictionSlip: lerp(profile.frictionSlip, asphalt.frictionSlip, blend * 0.72),
       sideFrictionStiffness: lerp(profile.sideFrictionStiffness, asphalt.sideFrictionStiffness, blend * 0.5),
+      mu0Long: lerp(profile.mu0Long ?? profile.frictionSlip * 0.8, asphalt.mu0Long ?? asphalt.frictionSlip * 0.8, blend * 0.72),
+      mu0Lat: lerp(profile.mu0Lat ?? profile.sideFrictionStiffness * 1.8, asphalt.mu0Lat ?? asphalt.sideFrictionStiffness * 1.8, blend * 0.5),
+      Klat: lerp(profile.Klat ?? 7, asphalt.Klat ?? 10, blend * 0.5),
+      Klong: lerp(profile.Klong ?? 6.5, asphalt.Klong ?? 9, blend * 0.5),
+      alphaPeakDeg: lerp(profile.alphaPeakDeg ?? 16, asphalt.alphaPeakDeg ?? 14, blend * 0.5),
       rollingResistanceScale: lerp(profile.rollingResistanceScale, 1, blend * 0.58),
       powerOversteerScale: lerp(profile.powerOversteerScale, 1, blend * 0.22),
     };
@@ -594,9 +772,26 @@ export function applyLooseSurfaceTraction(profile, asphaltProfile, traction = LO
     ...profile,
     frictionSlip: profile.frictionSlip * (1 - worsen * 0.32),
     sideFrictionStiffness: profile.sideFrictionStiffness * (1 - worsen * 0.28),
+    mu0Long: (profile.mu0Long ?? profile.frictionSlip * 0.8) * (1 - worsen * 0.32),
+    mu0Lat: (profile.mu0Lat ?? profile.sideFrictionStiffness * 1.8) * (1 - worsen * 0.28),
+    Klat: (profile.Klat ?? 7) * (1 - worsen * 0.15),
+    Klong: (profile.Klong ?? 6.5) * (1 - worsen * 0.15),
+    alphaPeakDeg: (profile.alphaPeakDeg ?? 16) * (1 + worsen * 0.12),
     rollingResistanceScale: profile.rollingResistanceScale * (1 + worsen * 0.38),
     powerOversteerScale: profile.powerOversteerScale * (1 + worsen * 0.18),
   };
+}
+
+/**
+ * Apply a named handling preset ('simcade' | 'sim') onto a vehicle config override.
+ * Sim: drift assist off + steeper μ fall-off.
+ */
+export function applyHandlingPreset(config = {}, presetName = 'simcade') {
+  const base = config ?? {};
+  const presets = DEFAULT_VEHICLE_CONFIG.ground.handlingPresets ?? {};
+  const preset = presets[presetName];
+  if (!preset || presetName === 'simcade') return base;
+  return mergeConfig(base, { ground: preset });
 }
 
 export function isLooseGroundSurface(surface) {

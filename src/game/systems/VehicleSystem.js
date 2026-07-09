@@ -311,23 +311,13 @@ export class VehicleSystem {
       });
     }
 
-    // Rally mud deform field: decay once per frame, then stamp fresh tyre ruts
-    // from each ground vehicle's telemetry. Null (no work) in every other mode.
+    // Mud field decay only here — stamping + texture upload run in
+    // syncMudFieldAfterPhysics() AFTER integrateStep so wheel contact points
+    // are current (fixed-step path previously stamped 1-frame-stale telemetry,
+    // and often empty before the first physics step).
     const mudField = this.level?.mudField;
     if (mudField) {
       mudField.decay(delta);
-      for (const vehicle of this.vehicles) {
-        vehicle.stampMudRuts?.(mudField, delta);
-      }
-      // Follow the active car (or any ground vehicle) so the material can fade the
-      // wrapping deform texture to zero beyond the footprint around it.
-      const focus = this.activeVehicle?.group?.position
-        ?? character?.group?.position
-        ?? this.vehicles.find((v) => v.domain === VEHICLE_DOMAINS.GROUND)?.group?.position;
-      if (focus) mudField.setCenter(focus.x, focus.z);
-      // Re-upload the packed deform texture for the mud road material (no-op until
-      // the material has lazily created it). Same texture object every frame.
-      mudField.syncTexture();
     }
 
     if (consumedMount && outputInput.mountPressed) {
@@ -337,6 +327,37 @@ export class VehicleSystem {
     this._updateExteriorIdleAudio(character);
 
     return { input: outputInput };
+  }
+
+  /**
+   * Stamp live tyre ruts + re-seed pre-worn + upload deform texture.
+   * Must run AFTER physics integrate (wheel telemetry contact points).
+   * Called from GameRuntime after stepPlanned / syncVisualPoses.
+   */
+  syncMudFieldAfterPhysics(character = null, dt = 1 / 60) {
+    const mudField = this.level?.mudField;
+    if (!mudField) return;
+
+    const step = Number.isFinite(dt) && dt > 0 ? Math.min(dt, 0.05) : 1 / 60;
+    for (const vehicle of this.vehicles) {
+      // Keep vehicle.mudField pointer fresh (used by grip sampling too).
+      vehicle.mudField = mudField;
+      vehicle.stampMudRuts?.(mudField, step);
+    }
+
+    // Follow the active car (or character / any ground vehicle) so the material
+    // fade around centerUniform tracks the driver. Without this, ruts outside
+    // ~70 m of the last center are fully faded.
+    const focus = this.activeVehicle?.group?.position
+      ?? character?.group?.position
+      ?? this.vehicles.find((v) => v.domain === VEHICLE_DOMAINS.GROUND)?.group?.position;
+    if (focus) {
+      mudField.setCenter(focus.x, focus.z);
+      mudField.refreshPreWorn?.(focus.x, focus.z);
+    }
+
+    mudField.ensureTexture?.();
+    mudField.syncTexture();
   }
 
   _updateVehicleSurface(vehicle) {

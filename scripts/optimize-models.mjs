@@ -51,6 +51,9 @@ const MODELS = {
   musclechassis: 'muscle-chasis.glb',
   musclechassis2: 'muscle-chasis-2.glb',
   tirecenter: 'tire-center.glb',
+  // Bodyshop-published chassis (raw exports often exceed Cloudflare's 25 MiB limit).
+  mustang67: 'mustang67.glb',
+  rally2: 'rally2.glb',
 };
 
 const TARGET_SIZES = {
@@ -69,6 +72,9 @@ const TARGET_SIZES = {
   // Four instances are visible at once and share GPU resources. One-kilopixel
   // PBR maps retain close garage detail without shipping three 4K PNGs (32MB).
   tirecenter: [1024, 1024],
+  // Garage close-ups + body panels — 2K is enough after Draco mesh compress.
+  mustang67: [2048, 2048],
+  rally2: [2048, 2048],
 };
 
 const MERGE_MESH_MODELS = new Set([]);

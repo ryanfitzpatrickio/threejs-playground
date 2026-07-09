@@ -434,7 +434,7 @@ export function applyRallyGroundTuning(options) {
         ...options.config?.ground,
         driveLayout: 'awd',
         maxSpeed: 61,
-        powerOversteer: 0.56,
+        // powerOversteer is inert under controller-slip (tyre/load/diff own OS).
         rollingResistance: 0.56,
         rayCast: {
           ...options.config?.ground?.rayCast,

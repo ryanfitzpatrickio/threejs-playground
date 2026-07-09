@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { SkyMesh } from 'three/examples/jsm/objects/SkyMesh.js';
 import { CloudSkyProvider } from '../render/cloud/cloudSkyProvider.js';
 import { DEFAULT_CLOUD_TYPE, resolveCloudMode } from '../render/cloud/cloudConfig.js';
+import { hasAnyUserOverrideInFolder } from '../debug/shaderDebugRegistry.js';
 
 const DEFAULT_TIME_OF_DAY = 0.72;
 const DEFAULT_SKY_SCALE = 450000;
@@ -202,11 +203,21 @@ export class SkySystem {
     this.weather = normalized;
 
     if (this.provider) {
-      if (normalized === 'rain' || normalized === 'overcast') {
-        this.provider.setCloudPreset('stratus');
-      } else if (normalized === 'clear') {
-        this.provider.setCloudPreset(DEFAULT_CLOUD_TYPE);
+      // K4a: skip auto cloud-type remap when shape/lighting/wind are user-pinned.
+      // Always setWeather + applySunDirection so fog (no remap) and nested preset
+      // weather commit still apply coverage/density (respecting per-id pins).
+      const shapePinned = hasAnyUserOverrideInFolder('Clouds Shape')
+        || hasAnyUserOverrideInFolder('Clouds Lighting')
+        || hasAnyUserOverrideInFolder('Clouds Wind');
+
+      if (!shapePinned) {
+        if (normalized === 'rain' || normalized === 'overcast') {
+          this.provider.setCloudPreset('stratus');
+        } else if (normalized === 'clear') {
+          this.provider.setCloudPreset(DEFAULT_CLOUD_TYPE);
+        }
       }
+
       this.provider.setWeather(normalized);
       this.provider.applySunDirection(this.sunDirection, this.timeOfDay);
       return normalized;

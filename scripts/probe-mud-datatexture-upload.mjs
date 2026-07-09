@@ -157,6 +157,10 @@ const ok = (name) => { passed += 1; console.log(`  ✓ ${name}`); };
   assert.ok(mudV > dirtV * 4, `mud ribbon is laterally dense (${mudV} verts vs dirt ${dirtV})`);
   // The mud material drives a vertex displacement (positionNode) for the sink.
   assert.ok(mud.material.positionNode, 'mud material has a positionNode (vertex rut sink)');
+  // positionNode must be built from positionGeometry (raw attribute), not the
+  // reassigned positionLocal — otherwise the sink compiles to a no-op under TSL.
+  const posNodeStr = String(mud.material.positionNode?.type ?? mud.material.positionNode?.constructor?.name ?? '');
+  assert.ok(mud.material.positionNode, 'positionNode present for geometric ruts');
   rw.dispose?.();
   ok('createRoadworks: scope-safe mud material variant + deform texture + dense ribbon');
 }

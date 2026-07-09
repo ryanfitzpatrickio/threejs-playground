@@ -59,6 +59,14 @@ import {
   setPhotorealismPresetId,
 } from '../config/photorealismPresets.js';
 import {
+  getShaderDebugSnapshot,
+  applyShaderDebugSnapshot,
+  clearOverridesForFolders,
+  clearAllUserOverrides,
+  clearLutDirty,
+} from '../debug/shaderDebugRegistry.js';
+import { registerBuiltinShaderDebug } from 'virtual:dreamfall-shader-debug';
+import {
   cycleCameraFeel,
   getCameraFeel,
   getComfortEnabled,
@@ -185,6 +193,13 @@ export class GameRuntime {
     this.stage = 'loading';
     this.installDebugBridge();
     this.sceneSystem.initialize(this.qualityPreset);
+    // Register after sky/provider init so uniform defaults match the live preset.
+    // Dev-only via virtual:dreamfall-shader-debug (prod = inert stub).
+    try {
+      registerBuiltinShaderDebug(this);
+    } catch (err) {
+      console.warn('[shader-debug] registerBuiltinShaderDebug failed', err);
+    }
     await this.rendererSystem.initialize();
     if (this.disposed) {
       return;
@@ -260,6 +275,8 @@ export class GameRuntime {
   }
 
   _applyPhotorealismRuntime() {
+    // K9: photorealism look preset clears the entire shader override map.
+    clearAllUserOverrides();
     const env = this.photorealismPresetId
       ? mergePhotorealismEnvironment(this.baseEnvironment, this.photorealismPresetId)
       : { ...this.baseEnvironment };
@@ -1101,6 +1118,9 @@ export class GameRuntime {
     // re-seat the rider on it, so the camera and render track a smooth car at any
     // display refresh rate.
     this.vehicleSystem?.syncVisualPoses(this.physicsSystem.interpolationAlpha, character);
+    // Mud/wet tyre ruts: stamp from FRESH wheel contact telemetry (post-integrate),
+    // follow the car with deformCenter, upload the deform DataTexture.
+    this.vehicleSystem?.syncMudFieldAfterPhysics?.(character, scaledDelta);
     this.frameStats.start('cutProps');
     this.enemyCutSystem.syncPhysicsProps(this.physicsSystem, this.physicsSystem.interpolationAlpha);
     this.frameStats.endSection();
@@ -1764,6 +1784,7 @@ export class GameRuntime {
         ? { x: playerObj.x, z: playerObj.z, yaw: this.cameraSystem.yaw ?? 0 }
         : null,
       level: this.levelSystem.snapshot(),
+      mudRuts: this._mudRutsSnapshot(),
       buildingEntry: this.buildingEntrySnapshot(),
       screenFade: { alpha: this.screenFade.alpha },
       physics: this.physicsSystem.snapshot(),
@@ -1829,6 +1850,64 @@ export class GameRuntime {
     };
   }
 
+  _mudRutsSnapshot() {
+    const field = this.levelSystem?.mudField ?? this.levelSystem?.level?.mudField ?? null;
+    const scene = this.sceneSystem?.scene;
+    const ribbons = [];
+    scene?.traverse?.((obj) => {
+      if (!obj?.isMesh) return;
+      if (!/Mud Rally|Wet Rally/.test(obj.name || '')) return;
+      ribbons.push({
+        name: obj.name,
+        verts: obj.geometry?.attributes?.position?.count ?? 0,
+        hasPositionNode: Boolean(obj.material?.positionNode),
+        hasColorNode: Boolean(obj.material?.colorNode),
+      });
+    });
+    const center = field?.centerUniform?.value;
+    const focus = this.vehicleSystem?.activeVehicle?.group?.position
+      ?? this.characterSystem?.character?.group?.position
+      ?? null;
+    let sample = null;
+    if (field && focus) {
+      const s = field.sampleAt(focus.x, focus.z);
+      sample = {
+        depth: Number(s.depth.toFixed(4)),
+        wetness: Number(s.wetness.toFixed(3)),
+        tread: Number(s.tread.toFixed(3)),
+        normalized: Number((s.depth / (field.maxDepth || 1)).toFixed(3)),
+      };
+    }
+    const vehicles = this.vehicleSystem?.vehicles ?? [];
+    return {
+      hasMudField: Boolean(field),
+      activeCells: field?.activeCount ?? 0,
+      maxDepth: field?.maxDepth ?? null,
+      footprint: field?.footprint ?? null,
+      hasTexture: Boolean(field?.texture),
+      hasOrientation: Boolean(field?.orientationTexture),
+      prewornPoints: field?.prewornCount ?? 0,
+      center: center
+        ? { x: Number(center.x.toFixed(2)), z: Number((center.y ?? center.z ?? 0).toFixed(2)) }
+        : null,
+      focus: focus
+        ? { x: Number(focus.x.toFixed(2)), z: Number(focus.z.toFixed(2)) }
+        : null,
+      sampleAtFocus: sample,
+      ribbons,
+      vehicles: vehicles.map((v) => ({
+        groundSurface: v.groundSurface,
+        speed: Number((v.speed ?? 0).toFixed(2)),
+        wheels: (v.wheelTelemetry ?? []).map((w, i) => ({
+          i,
+          inContact: Boolean(w?.inContact),
+          surface: w?.surface ?? v.groundSurface,
+          rutDepth: Number((w?.rutDepth ?? 0).toFixed(3)),
+        })),
+      })),
+    };
+  }
+
   installDebugBridge() {
     this.debugBridge = {
       snapshot: () => this.snapshot(),
@@ -1844,7 +1923,50 @@ export class GameRuntime {
         colliderIndex: this.levelSystem?.level?.colliderIndex ?? null,
         colliders: this.levelSystem?.level?.colliders ?? null,
         geometryIndex: this.levelSystem?.level?.geometryIndex ?? null,
+        mudField: this.levelSystem?.mudField ?? this.levelSystem?.level?.mudField ?? null,
       }),
+      /** Mud/wet tyre-rut diagnostics: __DREAMFALL_DEBUG__.dumpMudRuts() */
+      dumpMudRuts: () => this._mudRutsSnapshot(),
+      /**
+       * Force a deep test rut under the player/car (bypasses surface gates).
+       *   __DREAMFALL_DEBUG__.forceMudRut()
+       * If still invisible after this, the shader/material path is broken.
+       * If visible, live stamping/surface gates are the issue.
+       */
+      forceMudRut: (depth = 0.18, radius = 0.45) => {
+        const field = this.levelSystem?.mudField ?? this.levelSystem?.level?.mudField ?? null;
+        if (!field) return { ok: false, error: 'no mudField (need rally + surface mud/wet)' };
+        const focus = this.vehicleSystem?.activeVehicle?.group?.position
+          ?? this.characterSystem?.character?.group?.position;
+        if (!focus) return { ok: false, error: 'no focus position' };
+        field.setCenter(focus.x, focus.z);
+        // Dual wheel lines + centreline so a sample under the car is non-zero.
+        const yaw = this.cameraSystem?.yaw ?? 0;
+        const fx = -Math.sin(yaw);
+        const fz = -Math.cos(yaw);
+        const rx = -fz;
+        const rz = fx;
+        for (const side of [-0.75, 0, 0.75]) {
+          for (let s = -1.5; s <= 4; s += 0.35) {
+            field.stampBrush(
+              focus.x + fx * s + rx * side,
+              focus.z + fz * s + rz * side,
+              radius,
+              {
+                depth,
+                wetness: 0.95,
+                tread: 1,
+                directionX: fx,
+                directionZ: fz,
+                kind: 'vehicle',
+              },
+            );
+          }
+        }
+        field.ensureTexture();
+        field.syncTexture();
+        return { ok: true, ...this._mudRutsSnapshot() };
+      },
       probeGround: (x, y, z, radius = 0.5) => this.levelSystem
         ?.getGroundHeightAt(new THREE.Vector3(x, y, z), radius),
       resetFrameStats: () => {
@@ -2634,6 +2756,35 @@ export class GameRuntime {
       startRallyCinematicDemo: () => this.startRallyCinematicDemo(),
       stopRallyCinematicDemo: () => this.stopRallyCinematicDemo(),
       toggleRallyCinematicDemo: () => this.toggleRallyCinematicDemo(),
+      // Shader debug registry (docs/tsl-shader-debug-tweaking-plan.md)
+      dumpShaderParams: () => getShaderDebugSnapshot(),
+      applyShaderParams: (obj, opts) => applyShaderDebugSnapshot(obj, opts),
+      // K5: rebake LUT only — no automatic PMREM reinstall.
+      rebakeAtmosphereLut: () => {
+        const provider = this.rendererSystem.cloudSkyProvider
+          ?? this.sceneSystem.skySystem?.provider
+          ?? null;
+        const renderer = this.rendererSystem.renderer;
+        if (!provider?.atmosphereLUT || !renderer) {
+          return { ok: false, reason: 'no provider/renderer' };
+        }
+        try {
+          provider.atmosphereLUT.markDirty();
+          provider.prepareEnvironment(renderer);
+          clearLutDirty();
+          return { ok: true };
+        } catch (err) {
+          console.warn('[shader-debug] rebakeAtmosphereLut failed', err);
+          return { ok: false, reason: err?.message ?? 'bake failed' };
+        }
+      },
+      // K9: clear shape/lighting/wind pins BEFORE applying so systemWrite stamps
+      // the full preset (clear-after would leave hybrid uniforms).
+      setCloudPreset: (name) => {
+        clearOverridesForFolders(['Clouds Shape', 'Clouds Lighting', 'Clouds Wind']);
+        this.sceneSystem.skySystem?.setCloudPreset?.(name);
+        return this.snapshot();
+      },
     };
     globalThis.__DREAMFALL_DEBUG__ = this.debugBridge;
   }

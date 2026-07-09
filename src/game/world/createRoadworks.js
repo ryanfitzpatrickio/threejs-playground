@@ -18,20 +18,28 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { disposeObject3D } from '../utils/disposeObject3D.js';
 import { createRibbonRoadMaterial } from '../../three-addons/generators/CityGenerator.js';
-import { createRallySurfaceMaterial, loadRallyRutAtlas, loadRallySurfaceSet } from '../materials/rallySurfaceTextures.js';
+import {
+  createRallySurfaceMaterial,
+  loadRallyRutAtlas,
+  loadRallySurfaceSet,
+  DEFAULT_WET_ROAD_WETNESS,
+} from '../materials/rallySurfaceTextures.js';
 import { disablePbrEnvironment } from '../materials/disablePbrEnvironment.js';
 import { rainWetness, rainWind } from '../systems/weatherUniforms.js';
 import { BRIDGE_THRESH } from '../../world/worldMap/roadProfile.js';
 import { buildRibbonFrame, offsetPoint } from '../../world/worldMap/trackFrame.js';
 import { chunkGeometriesByGrid } from '../utils/chunkGeometryByGrid.js';
-import { surfaceForRoad } from '../../world/worldMap/roadSurface.js';
+import { roadWantsTread, surfaceForRoad } from '../../world/worldMap/roadSurface.js';
 import { getQualityPreset, getQualityLevel } from '../config/qualityPresets.js';
 
 // Parallax occlusion mapping for rally surfaces is quality-gated (ultra-only).
 // Read once at module load — the dirt material below is a build-once singleton,
 // matching the existing pattern for the other module-level road materials.
-const rallyParallaxOcclusion = getQualityPreset(getQualityLevel()).parallaxOcclusion ?? null;
-const rallyHextile = getQualityPreset(getQualityLevel()).terrainHextile ?? null;
+const qualityPreset = getQualityPreset(getQualityLevel());
+const rallyParallaxOcclusion = qualityPreset.parallaxOcclusion ?? null;
+const rallyHextile = qualityPreset.terrainHextile ?? null;
+// Wet-road quality block (docs/advanced-wet-roads-plan.md M5). Off on low.
+const wetRoadsPreset = qualityPreset.wetRoads ?? { enabled: true };
 
 // Chunk size (metres) the merged ribbon geometry is split into so Three.js's
 // default per-mesh frustum culling can skip whole chunks that are off-screen —
@@ -115,7 +123,11 @@ const ROAD_UV_LENGTH = 3.2;
 const MUD_RIBBON_LIFT_EXTRA = 0.08;
 // Metres a full-depth (normalized 1.0) rut displaces the ribbon down. Sized to the
 // available headroom (base lift + extra) so rut bottoms land at ~terrain height.
-export const MUD_VISUAL_SINK = RIBBON_LIFT + MUD_RIBBON_LIFT_EXTRA;
+// Slightly proud of the lift so a full-depth stamp is an unmistakable trough.
+export const MUD_VISUAL_SINK = RIBBON_LIFT + MUD_RIBBON_LIFT_EXTRA + 0.06;
+// Wet tread is a shallow groove (puddles pool in it) — not a bog wallow.
+// ~half mud lift so the groove still reads in silhouette, not just albedo.
+export const WET_VISUAL_SINK = MUD_VISUAL_SINK * 0.55;
 
 // Soft mud shoulders. Other roads drop a VERTICAL side skirt (SIDE_DEPTH), which on
 // a mud road leaves a hard step where the proud ribbon (lifted the amounts above)
@@ -257,6 +269,7 @@ export function createRoadworks({ profile, sampleHeight, mudField = null, riverC
   const colliders = [];
   const ribbonGeoms = [];
   const dirtRibbonGeoms = [];
+  const wetRibbonGeoms = [];
   const mudRibbonGeoms = [];
   const pierMatrices = [];
   const paintGeoms = [];
@@ -284,13 +297,59 @@ export function createRoadworks({ profile, sampleHeight, mudField = null, riverC
       // Real geometric ruts: displace the dense ribbon down by the deform depth,
       // faded to zero beyond the (torus-wrapped) footprint around the car. Sized
       // to the ribbon's lift headroom so ruts bottom out at ~terrain height.
+      // Fade keeps full strength over most of the footprint so trails behind the
+      // car stay deep (only the outer ~15% eases out to kill torus ghosts).
       deformSinkScale: MUD_VISUAL_SINK,
       deformCenter: mudField?.centerUniform ?? null,
-      deformFadeNear: footprint * 0.35,
-      deformFadeFar: footprint * 0.47,
+      deformFadeNear: footprint * 0.42,
+      deformFadeFar: footprint * 0.48,
     });
     mudRoadMaterial.side = THREE.DoubleSide;
     return mudRoadMaterial;
+  };
+
+  // Wet roads: own lazy material (never mutates dirtRoadMaterial). Persistent
+  // wetness floor + sky-reflecting puddles + optional shallow deform tread
+  // (docs/advanced-wet-roads-plan.md). No mud bog / dig-in.
+  let wetRoadMaterial = null;
+  const getWetRoadMaterial = () => {
+    if (wetRoadMaterial) return wetRoadMaterial;
+    const wr = wetRoadsPreset;
+    const reflections = wr.reflections ?? { envIntensity: 1.0, fresnel: true };
+    const puddles = wr.puddles ?? { coverage: 0.34, lowSpotBias: 0.25 };
+    const treadOn = wr.tread?.enabled !== false;
+    const tex = treadOn && mudField ? (mudField.ensureTexture?.() ?? null) : null;
+    const footprint = mudField?.footprint ?? 0;
+    const sinkScale = treadOn && tex
+      ? (wr.tread?.sinkScale ?? 0.55) * MUD_VISUAL_SINK
+      : 0;
+    wetRoadMaterial = createRallySurfaceMaterial(loadRallySurfaceSet('dirt'), {
+      rainWetness,
+      rainWind,
+      wetness: wr.wetness ?? DEFAULT_WET_ROAD_WETNESS,
+      wetSurface: true,
+      envReflections: wr.enabled === false
+        ? null
+        : { enabled: true, envIntensity: reflections.envIntensity ?? 1, fresnel: reflections.fresnel !== false },
+      puddleCoverageScale: (puddles.coverage ?? 0.34) / 0.32,
+      lowSpotBias: puddles.lowSpotBias ?? 0.25,
+      tireTracks: true,
+      // Shallow deform tread + puddles concentrating in grooves (same puddleBias
+      // seam as mud). No bogGrip / accumulating dig — field stamps are light.
+      deformTexture: tex,
+      orientationTexture: treadOn ? (mudField?.orientationTexture ?? null) : null,
+      deformTilesPerMetre: treadOn ? (mudField?.deformTilesPerMetre ?? null) : null,
+      rutAtlas: treadOn && tex ? loadRallyRutAtlas('rut') : null,
+      heavyRutAtlas: treadOn && tex ? loadRallyRutAtlas('rut-heavy') : null,
+      deformSinkScale: sinkScale,
+      deformCenter: treadOn ? (mudField?.centerUniform ?? null) : null,
+      deformFadeNear: footprint * 0.42,
+      deformFadeFar: footprint * 0.48,
+      parallaxOcclusion: rallyParallaxOcclusion,
+      hextile: rallyHextile,
+    });
+    wetRoadMaterial.side = THREE.DoubleSide;
+    return wetRoadMaterial;
   };
 
   // Scratch for building the pitched-deck orientation (avoids per-segment allocs).
@@ -306,10 +365,15 @@ export function createRoadworks({ profile, sampleHeight, mudField = null, riverC
     const forceDeckCollider = b.road?.trackStyle === 'tunnel';
     const surf = surfaceForRoad(b.road);
     const isMud = surf === 'mud';
-    // Mud is a loose surface like dirt (edge jitter, matte PBR); it just also
-    // routes to the deform-textured mud material.
-    const isLoose = surf === 'dirt' || isMud;
-    const targetRibbonGeoms = isMud ? mudRibbonGeoms : (isLoose ? dirtRibbonGeoms : ribbonGeoms);
+    const isWet = surf === 'wet';
+    // Dense ribbon when the road needs geometric tread (mud always; wet default on).
+    const wantsTread = roadWantsTread(b.road);
+    // Mud/wet are loose surfaces like dirt (edge jitter, matte PBR); mud also
+    // routes to the deform-textured material, wet to its own reflective variant.
+    const isLoose = surf === 'dirt' || isMud || isWet;
+    const targetRibbonGeoms = isMud
+      ? mudRibbonGeoms
+      : (isWet ? wetRibbonGeoms : (isLoose ? dirtRibbonGeoms : ribbonGeoms));
 
     // Per-sample ribbon edge points (left/right of centerline). Cached so both the
     // ribbon mesh and the deck colliders fit the *actual* rotated road footprint —
@@ -328,9 +392,9 @@ export function createRoadworks({ profile, sampleHeight, mudField = null, riverC
 
     // Ribbon: a strip of left/right verts per sample. `roadMark` carries the
     // marking coordinate per vertex: (signed lateral metres, arc length, half-width).
-    // Mud roads instead build a laterally DENSE ribbon so the mud material can
+    // Mud/wet-with-tread build a laterally DENSE ribbon so the material can
     // displace real ruts; edgeL/edgeR still come from its outer columns.
-    if (isMud) {
+    if (isMud || (isWet && wantsTread)) {
       const geom = buildDenseRibbonGeometry({
         frame, roadY, n, half, arc, roadIndex,
         intersectionMask: b.intersectionMask, edgeL, edgeR,
@@ -587,6 +651,21 @@ export function createRoadworks({ profile, sampleHeight, mudField = null, riverC
       if (rallyParallaxOcclusion?.enabled) ensureRibbonTangents(geom);
       const mesh = new THREE.Mesh(geom, dirtRoadMaterial);
       mesh.name = `Dirt Rally Road Ribbon ${key}`;
+      mesh.receiveShadow = true;
+      mesh.castShadow = false;
+      group.add(mesh);
+    }
+  }
+
+  if (wetRibbonGeoms.length > 0) {
+    const material = getWetRoadMaterial();
+    const chunks = chunkGeometriesByGrid(wetRibbonGeoms, RIBBON_CHUNK_SIZE);
+    for (const g of wetRibbonGeoms) g.dispose();
+    for (const [key, geom] of chunks) {
+      geom.computeBoundingSphere();
+      if (rallyParallaxOcclusion?.enabled) ensureRibbonTangents(geom);
+      const mesh = new THREE.Mesh(geom, material);
+      mesh.name = `Wet Rally Road Ribbon ${key}`;
       mesh.receiveShadow = true;
       mesh.castShadow = false;
       group.add(mesh);

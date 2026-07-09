@@ -1,12 +1,21 @@
+import { execFile } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+
+const execFileAsync = promisify(execFile);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const MODELS_DIR = path.join(ROOT, 'public', 'assets', 'models');
 const MANIFEST_PATH = path.join(MODELS_DIR, 'bodyshop-chassis-manifest.json');
 const DRAFT_PATH = path.join(MODELS_DIR, '_bodyshop-draft.glb');
+const CLEANED_PATH = path.join(MODELS_DIR, '_bodyshop-cleaned.glb');
+const CLEAN_SCRIPT = path.join(ROOT, 'scripts', 'clean-bodyshop-glb.py');
+const BLENDER_BIN = process.env.BLENDER_BIN
+  || '/Applications/Blender.app/Contents/MacOS/blender';
 
 const MAX_GLB_BYTES = 48 * 1024 * 1024;
 
@@ -151,6 +160,104 @@ function bodyshopMiddleware() {
         sendJson(res, 200, { ok: true, entry, manifest });
       } catch (error) {
         sendJson(res, 500, { error: error.message || 'Failed to publish chassis.' });
+      }
+      return;
+    }
+
+    // Blender planar-dissolve cleanup (dust-and-bullets cut cleanup pipeline).
+    if (url.pathname === '/__editor/bodyshop/clean' && req.method === 'POST') {
+      try {
+        if (!fs.existsSync(BLENDER_BIN)) {
+          sendJson(res, 500, {
+            error: `Blender not found at ${BLENDER_BIN}. Set BLENDER_BIN or install Blender.`,
+          });
+          return;
+        }
+        if (!fs.existsSync(CLEAN_SCRIPT)) {
+          sendJson(res, 500, { error: 'Missing scripts/clean-bodyshop-glb.py' });
+          return;
+        }
+
+        const body = await readJsonBody(req);
+        const glbBase64 = String(body.glbBase64 || '');
+        if (!glbBase64) {
+          sendJson(res, 400, { error: 'Missing glbBase64 payload.' });
+          return;
+        }
+        const glbBytes = Buffer.from(glbBase64, 'base64');
+        if (!glbBytes.length || glbBytes.length > MAX_GLB_BYTES) {
+          sendJson(res, 400, { error: 'GLB payload is empty or too large.' });
+          return;
+        }
+
+        const ratio = Number.isFinite(Number(body.ratio)) ? Number(body.ratio) : 1;
+        const planarAngle = Number.isFinite(Number(body.planarAngle))
+          ? Number(body.planarAngle)
+          : 5;
+        const mergeDistance = Number.isFinite(Number(body.mergeDistance))
+          ? Number(body.mergeDistance)
+          : 0.00005;
+
+        const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dreamfall-bodyshop-clean-'));
+        const inputPath = path.join(workDir, 'input.glb');
+        const outputPath = path.join(workDir, 'output.glb');
+        fs.writeFileSync(inputPath, glbBytes);
+
+        const args = [
+          '--background',
+          '--python',
+          CLEAN_SCRIPT,
+          '--',
+          inputPath,
+          outputPath,
+          '--ratio',
+          String(ratio),
+          '--planar-angle',
+          String(planarAngle),
+          '--merge-distance',
+          String(mergeDistance),
+        ];
+
+        const result = await execFileAsync(BLENDER_BIN, args, {
+          cwd: ROOT,
+          maxBuffer: 32 * 1024 * 1024,
+          timeout: 10 * 60 * 1000,
+        });
+
+        if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
+          sendJson(res, 500, {
+            error: 'Blender clean produced no output.',
+            stderr: String(result.stderr || '').slice(-2000),
+            stdout: String(result.stdout || '').slice(-2000),
+          });
+          return;
+        }
+
+        fs.mkdirSync(MODELS_DIR, { recursive: true });
+        fs.copyFileSync(outputPath, CLEANED_PATH);
+
+        const summaryMatch = String(result.stdout || '').match(/vertices[\s\S]*?faces[\s\S]*$/m);
+        const summary = summaryMatch
+          ? summaryMatch[0].trim().split('\n').pop()
+          : 'cleaned';
+
+        try {
+          fs.rmSync(workDir, { recursive: true, force: true });
+        } catch {
+          // ignore temp cleanup failures
+        }
+
+        sendJson(res, 200, {
+          ok: true,
+          url: `/assets/models/_bodyshop-cleaned.glb?v=${Date.now()}`,
+          summary,
+          stdout: String(result.stdout || '').slice(-4000),
+        });
+      } catch (error) {
+        sendJson(res, 500, {
+          error: error.message || 'Failed to clean GLB.',
+          stderr: String(error.stderr || '').slice(-2000),
+        });
       }
       return;
     }

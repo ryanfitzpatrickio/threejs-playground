@@ -24,6 +24,30 @@
         ]
       },
       "devOnly": true
+    },
+    {
+      "id": "rally2",
+      "name": "Rally 2.0",
+      "description": "Rally B",
+      "url": "/assets/models/rally2.glb",
+      "defaultTransform": {
+        "position": [
+          0,
+          -0.1,
+          0.05
+        ],
+        "rotationDegrees": [
+          0,
+          180,
+          0
+        ],
+        "scale": [
+          6.3,
+          6.3,
+          6.3
+        ]
+      },
+      "devOnly": false
     }
   ]
 }

@@ -24,14 +24,19 @@ const PRESETS = {
     ssao: {
       enabled: true,
       // AO is a low-frequency effect; it renders below full res to save fill.
-      // 0.4 (inherited by medium + ultra) trades a little AO sharpness for GPU
-      // headroom. Lower further (0.33/0.25) if more perf is needed; below ~0.33
-      // with blur:false + 8 samples starts to read as dithered noise.
-      resolutionScale: 0.4,
-      samples: 8,
-      radius: 1.5,
-      intensity: 4,
-      blur: false,
+      // 0.5 + depth-aware blur keeps large outdoor planes free of sample grid.
+      // Half-float normal pre-pass (see RendererSystem) avoids U8 contour bands.
+      resolutionScale: 0.5,
+      samples: 12,
+      radius: 1.25,
+      // Keep contact AO readable without washing open ground with residual noise.
+      intensity: 1.9,
+      // Suppress heightfield / near-flat self-occlusion that reads as mesh grid.
+      bias: 0.055,
+      blur: true,
+      // Lower than SSAONode default (2) so the bilateral blur bleeds more on
+      // continuous ground and hides remaining half-res sample structure.
+      blurSharpness: 0.9,
       // The normal/depth pre-pass is a full CPU-side scene traversal. Reuse AO
       // for one frame on High as well as Ultra; the low-frequency result is
       // visually stable while halving the dominant office-interior pre-pass cost.
@@ -49,6 +54,17 @@ const PRESETS = {
     // road surfaces. Off on low/high — it is ultra-only fragment work, gated like
     // SSAO. See docs/silhouette-pom-plan.md.
     parallaxOcclusion: { enabled: false },
+    // Rally wet roads (docs/advanced-wet-roads-plan.md). Persistent puddles + sky
+    // PMREM reflections inside standing water. Off on low.
+    wetRoads: {
+      enabled: true,
+      wetness: 0.6,
+      reflections: { envIntensity: 1.0, fresnel: true },
+      puddles: { coverage: 0.34, edge: 0.06, lowSpotBias: 0.25 },
+      // Geometric tread + puddles pooling in grooves (default on).
+      // sinkScale multiplies MUD_VISUAL_SINK (~0.18 m) → ~10 cm wet groove.
+      tread: { enabled: true, sinkScale: 0.55 },
+    },
     terrainHextile: {
       enabled: true,
       falloffContrast: 0.6,
@@ -77,10 +93,13 @@ const PRESETS = {
       aerialStart: 550,
       aerialEnd: 1700,
       aerialMaxOpacity: 0.24,
-      aerialHazeColor: [0.62, 0.72, 0.78],
+      // Neutral cool-grey path haze (not zenith blue) so distant ground greys out.
+      aerialHazeColor: [0.58, 0.60, 0.62],
       terrainAerial: {
-        desat: 0.74,
-        contrast: 0.5,
+        // Late fade (start/end fractions live in syncTerrainViewDistance).
+        desat: 0.55,
+        contrast: 0.35,
+        strength: 0.85,
       },
       // Default sky is the simple SkyMesh dome-cloud layer on low/high. Ultra
       // uses volumetric LUT sky + raymarched clouds unless overridden in Settings
@@ -120,6 +139,21 @@ const PRESETS = {
     exteriorDistanceFog: true,
     terrainHorizon: true,
     terrainHorizonLayers: 1,
+    // Infinite-terrain faux forest: layered tree-break silhouettes + streaming
+    // low-poly blobs that fill the ground↔sky grey band and hold up when driving out.
+    // Infinite terrain: SeedThree prairie shelterbelts (linear field-edge breaks).
+    distantForest: true,
+    distantForestNearCount: 48,
+    distantForestNearRadius: 110,
+    distantForestFarRadius: 420,
+    distantForestHeroCount: 10,
+    distantForestHeroRadius: 45,
+    distantForestPoolSize: 300,
+    // Fraction of field edges that get a tree break (higher = more belts).
+    distantForestDensity: 0.75,
+    distantForestFieldSpacing: 150,
+    distantForestTreeSpacing: 7.5,
+    distantForestSpecies: 'pine',
 
     // SceneSystem
     shadows: false,
@@ -195,6 +229,7 @@ const PRESETS = {
     ssr: { enabled: false },
     ssao: { enabled: false },
     parallaxOcclusion: { enabled: false },
+    wetRoads: { enabled: false },
     terrainHextile: { enabled: false },
     environment: {
       toneMapping: 'ACESFilmic',
@@ -214,7 +249,7 @@ const PRESETS = {
       aerialStart: 420,
       aerialEnd: 820,
       aerialMaxOpacity: 0.2,
-      aerialHazeColor: [0.55, 0.65, 0.72],
+      aerialHazeColor: [0.56, 0.58, 0.60],
       terrainAerial: {
         desat: 0.58,
         contrast: 0.36,
@@ -233,6 +268,7 @@ const PRESETS = {
     terrainHorizon: false,
     terrainHorizonLayers: 0,
     terrainMacroDetail: { enabled: false },
+    distantForest: false,
 
     // SceneSystem
     shadows: false,
@@ -313,9 +349,11 @@ PRESETS.ultra = {
   },
   ssao: {
     ...PRESETS.high.ssao,
-    resolutionScale: 0.33,
-    samples: 8,
+    resolutionScale: 0.5,
+    samples: 12,
+    intensity: 2.2,
     blur: true,
+    blurSharpness: 1.0,
     // Every other frame when the view is static; camera motion forces a refresh
     // (see RendererSystem AO gate) so screen-space AO does not ghost while moving.
     updateInterval: 2,
@@ -334,6 +372,17 @@ PRESETS.ultra = {
   },
   terrainMacroDetail: { enabled: true, colorStrength: 0.14, frequency: 0.0045 },
   terrainHorizonLayers: 2,
+  distantForest: true,
+  distantForestNearCount: 64,
+  distantForestNearRadius: 130,
+  distantForestFarRadius: 520,
+  distantForestHeroCount: 14,
+  distantForestHeroRadius: 55,
+  distantForestPoolSize: 400,
+  distantForestDensity: 0.82,
+  distantForestFieldSpacing: 140,
+  distantForestTreeSpacing: 7,
+  distantForestSpecies: 'pine',
   terrainCloudShadow: true,
   environment: {
     ...PRESETS.high.environment,
@@ -343,7 +392,7 @@ PRESETS.ultra = {
     environmentMapSize: 256,
     aerialEnd: 1900,
     aerialMaxOpacity: 0.26,
-    aerialHazeColor: [0.48, 0.64, 0.94],
+    aerialHazeColor: [0.56, 0.58, 0.62],
     cloudAtmosphere: {
       rayleigh: 1.9,
       turbidity: 1.45,
@@ -358,8 +407,9 @@ PRESETS.ultra = {
     },
     cloudType: 'fair',
     terrainAerial: {
-      desat: 0.78,
-      contrast: 0.52,
+      desat: 0.58,
+      contrast: 0.38,
+      strength: 0.85,
     },
     cloudCoverage: 0.5,
     cloudDensity: 0.88,

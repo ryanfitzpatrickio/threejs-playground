@@ -6,12 +6,16 @@
  * automatically every frame (already used by RendererSystem's fog node), so the
  * ripples animate with zero per-frame wiring.
  *
+ * Look params live in waterUniforms.js (module-scope) so shader-debug can tweak
+ * all rivers at once without rebuilding materials.
+ *
  * First transparent animated material in the project: transparent + depthWrite =
  * false so the carved channel bed stays visible through the surface (and the water
  * never occludes itself), DoubleSide so it reads from any bank angle.
  *
  * A fresh material is built per river level (not module-cached) so level disposal
- * frees it cleanly — matching the terrain material pattern.
+ * frees it cleanly — matching the terrain material pattern. Opacity is driven by
+ * opacityNode (uWaterOpacity) with material.opacity = 1 so one uniform owns alpha.
  */
 
 import * as THREE from 'three';
@@ -26,6 +30,13 @@ import {
   float,
   vec3,
 } from 'three/tsl';
+import {
+  uWaterRippleAmp,
+  uWaterShallow,
+  uWaterDeep,
+  uWaterRoughness,
+  uWaterOpacity,
+} from './waterUniforms.js';
 
 export function createWaterMaterial() {
   const x = positionWorld.x;
@@ -39,7 +50,7 @@ export function createWaterMaterial() {
     .add(sin(x.mul(1.0).sub(z.mul(0.5)).add(t.mul(0.7))));
 
   // Perturb the (mostly +Y) geometry normal so specular glints shift with the swell.
-  const amp = float(0.07);
+  const amp = uWaterRippleAmp;
   const perturbed = normalize(vec3(
     rippleX.mul(amp),
     float(1),
@@ -47,18 +58,20 @@ export function createWaterMaterial() {
   ));
 
   // Subtle teal↔deep-blue shimmer driven by the ripple peaks.
-  const shallow = vec3(0.18, 0.42, 0.50);
-  const deep = vec3(0.03, 0.10, 0.20);
+  const shallow = uWaterShallow;
+  const deep = uWaterDeep;
   const shimmer = clamp(rippleX.add(rippleZ).mul(0.25).add(0.5), float(0.15), float(0.85));
   const color = mix(deep, shallow, shimmer);
 
   const material = new MeshStandardNodeMaterial();
   material.colorNode = color;
   material.normalNode = perturbed;
-  material.roughnessNode = float(0.08); // glossy → sharp sun specular
+  material.roughnessNode = uWaterRoughness;
   material.metalnessNode = float(0.0);
   material.transparent = true;
-  material.opacity = 0.82;
+  // Single-source opacity: node uniform drives the look; property held at 1.
+  material.opacity = 1;
+  material.opacityNode = uWaterOpacity;
   material.depthWrite = false;
   material.side = THREE.DoubleSide;
   material.shadowSide = THREE.DoubleSide;

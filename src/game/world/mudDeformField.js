@@ -23,6 +23,17 @@ import { uniform } from 'three/tsl';
 
 const EPSILON = 1e-4;
 
+// stampKind values: foot 0.5, preworn 0.75, vehicle 1.0
+const KIND_FOOT = 0.5;
+const KIND_PREWORN = 0.75;
+const KIND_VEHICLE = 1.0;
+
+function kindValue(kind) {
+  if (kind === 'foot') return KIND_FOOT;
+  if (kind === 'preworn') return KIND_PREWORN;
+  return KIND_VEHICLE;
+}
+
 export function createMudDeformField({
   cellSize = 0.5, // metres per cell
   resolution = 256, // cells across (footprint = resolution * cellSize metres)
@@ -32,6 +43,11 @@ export function createMudDeformField({
   depthTau = 9,
   treadTau = 4,
   wetnessTau = 3,
+  // Pre-worn demo tracks (another car's prior laps) linger much longer than live
+  // tyre stamps so the stage still reads used after a full run.
+  prewornDepthTau = 160,
+  prewornTreadTau = 90,
+  prewornWetnessTau = 70,
   maxFootprints = 48,
   footprintFadeTau = 0.18,
 } = {}) {
@@ -136,6 +152,10 @@ export function createMudDeformField({
     pendingClear.clear();
     texture.needsUpdate = true;
     orientationTexture.needsUpdate = true;
+    // WebGPU node materials can miss a bare needsUpdate on DataTextures that were
+    // bound empty at first compile; bumping version forces a re-upload.
+    texture.version = (texture.version | 0) + 1;
+    orientationTexture.version = (orientationTexture.version | 0) + 1;
   }
   function disposeTexture() {
     texture?.dispose?.();
@@ -235,12 +255,12 @@ export function createMudDeformField({
     const directionLength = Math.hypot(dx, dz) || 1;
     dx /= directionLength;
     dz /= directionLength;
-    const kindValue = kind === 'foot' ? 0.5 : 1;
-    if (kindValue >= stampKind[i]) {
+    const kv = kindValue(kind);
+    if (kv >= stampKind[i]) {
       directionX[i] = dx;
       directionZ[i] = dz;
       lateralPhase[i] = _lateralPhase ?? fract01((x * -dz + z * dx) / 1.4);
-      stampKind[i] = kindValue;
+      stampKind[i] = kv;
       footprintId[i] = kind === 'foot' ? _footprintId : 0;
     }
     depth[i] = Math.min(maxDepth, Math.max(depth[i], d) + add);
@@ -353,16 +373,25 @@ export function createMudDeformField({
   }
 
   // CPU decay sweep over live cells only. Two timescales melt tread before the
-  // rut fills back in. Cells that fall below EPSILON on every channel are cleared.
+  // rut fills back in. Pre-worn cells use much longer taus so demo "prior laps"
+  // linger after live tyre marks have melted. Cells that fall below EPSILON on
+  // every channel are cleared.
   function decay(dt) {
     if (!(dt > 0) || active.size === 0) return;
-    const kd = Math.exp(-dt / depthTau);
-    const kt = Math.exp(-dt / treadTau);
-    const kw = Math.exp(-dt / wetnessTau);
+    const kdVehicle = Math.exp(-dt / depthTau);
+    const ktVehicle = Math.exp(-dt / treadTau);
+    const kwVehicle = Math.exp(-dt / wetnessTau);
+    const kdPre = Math.exp(-dt / prewornDepthTau);
+    const ktPre = Math.exp(-dt / prewornTreadTau);
+    const kwPre = Math.exp(-dt / prewornWetnessTau);
     for (const i of active) {
       // Footprints are retired atomically by the FIFO pass below. Holding newer
       // prints stable is what guarantees that despawning cannot eat into them.
       if (footprintId[i] !== 0) continue;
+      const preworn = stampKind[i] > KIND_FOOT + 0.05 && stampKind[i] < KIND_VEHICLE - 0.05;
+      const kd = preworn ? kdPre : kdVehicle;
+      const kt = preworn ? ktPre : ktVehicle;
+      const kw = preworn ? kwPre : kwVehicle;
       const nd = depth[i] * kd;
       const nt = tread[i] * kt;
       const nw = wetness[i] * kw;
@@ -370,6 +399,7 @@ export function createMudDeformField({
         depth[i] = 0;
         wetness[i] = 0;
         tread[i] = 0;
+        stampKind[i] = 0;
         ownerX[i] = NaN;
         ownerZ[i] = NaN;
         active.delete(i);
@@ -416,6 +446,77 @@ export function createMudDeformField({
     pendingClear.add(i);
   }
 
+  // Pre-worn seed points (world XZ + heading). Installed once from road profiles;
+  // refreshPreWorn seeds empty cells as the field scrolls so the whole stage can
+  // show prior-lap tracks despite the torus footprint. A Set tracks which world
+  // cells already received a pre-worn stamp this visit so marks can slowly fade
+  // instead of instantly re-seeding every frame.
+  let prewornPoints = null;
+  const prewornSeeded = new Set();
+
+  function installPreWornPoints(points) {
+    prewornPoints = Array.isArray(points) && points.length > 0 ? points : null;
+    prewornSeeded.clear();
+  }
+
+  function prewornCellKey(x, z) {
+    const wx = Math.round(x * invCell - 0.5);
+    const wz = Math.round(z * invCell - 0.5);
+    return `${wx},${wz}`;
+  }
+
+  /**
+   * Seed pre-worn dual-wheel tracks inside the active footprint. Only stamps
+   * virgin cells (and only once per visit) so slow-fade preworn marks aren't
+   * refreshed every frame, and live vehicle ruts are never overwritten.
+   */
+  function refreshPreWorn(centerX, centerZ) {
+    if (!prewornPoints) return 0;
+    const half = footprint * 0.47;
+    const halfSq = half * half;
+    const pruneR = half * 1.2;
+    const pruneRSq = pruneR * pruneR;
+    // Drop keys that scrolled out so re-entering a fully-faded stretch re-seeds.
+    if (prewornSeeded.size > 0) {
+      for (const key of prewornSeeded) {
+        const comma = key.indexOf(',');
+        const wx = Number(key.slice(0, comma));
+        const wz = Number(key.slice(comma + 1));
+        const px = (wx + 0.5) * cellSize;
+        const pz = (wz + 0.5) * cellSize;
+        const ddx = px - centerX;
+        const ddz = pz - centerZ;
+        if (ddx * ddx + ddz * ddz > pruneRSq) prewornSeeded.delete(key);
+      }
+    }
+    let stamped = 0;
+    for (let i = 0; i < prewornPoints.length; i += 1) {
+      const p = prewornPoints[i];
+      const dx = p.x - centerX;
+      const dz = p.z - centerZ;
+      if (dx * dx + dz * dz > halfSq) continue;
+      const key = prewornCellKey(p.x, p.z);
+      if (prewornSeeded.has(key)) continue;
+      const s = sampleAt(p.x, p.z);
+      // Only seed virgin cells — don't fight live vehicle ruts or in-progress fade.
+      if (s.depth > 0.008 || s.tread > 0.06) {
+        prewornSeeded.add(key); // occupied; don't try again until pruned
+        continue;
+      }
+      stampBrush(p.x, p.z, p.radius ?? 0.2, {
+        depth: p.depth ?? 0.04,
+        wetness: p.wetness ?? 0.55,
+        tread: p.tread ?? 0.85,
+        directionX: p.directionX ?? 0,
+        directionZ: p.directionZ ?? -1,
+        kind: 'preworn',
+      });
+      prewornSeeded.add(key);
+      stamped += 1;
+    }
+    return stamped;
+  }
+
   return {
     cellSize,
     resolution: R,
@@ -433,6 +534,10 @@ export function createMudDeformField({
     ensureTexture,
     syncTexture,
     disposeTexture,
+    installPreWornPoints,
+    refreshPreWorn,
+    get hasPreWorn() { return Boolean(prewornPoints?.length); },
+    get prewornCount() { return prewornPoints?.length ?? 0; },
     get texture() { return texture; },
     get orientationTexture() { return orientationTexture; },
     // Introspection for verify scripts / texture upload (M2).
@@ -473,11 +578,14 @@ function createFieldTexture(data, resolution) {
     THREE.RGBAFormat,
     THREE.UnsignedByteType,
   );
+  // Explicit linear data — never sRGB-decode depth/wetness/tread channels.
+  texture.colorSpace = THREE.NoColorSpace;
   texture.wrapS = THREE.RepeatWrapping;
   texture.wrapT = THREE.RepeatWrapping;
   texture.magFilter = THREE.LinearFilter;
   texture.minFilter = THREE.LinearFilter;
   texture.generateMipmaps = false;
+  texture.flipY = false;
   texture.needsUpdate = true;
   return texture;
 }

@@ -1,8 +1,7 @@
-import { createSignal, createMemo, onCleanup, onMount, Show } from 'solid-js';
+import { createSignal, createMemo, createEffect, onCleanup, onMount, Show } from 'solid-js';
 import { GameCanvas } from './components/GameCanvas.jsx';
 import { Hud } from './components/Hud.jsx';
 import { StatsPanel } from './components/StatsPanel.jsx';
-import { DebugPanel } from './components/DebugPanel.jsx';
 import { ControlsGuide, ControlsHelpButton } from './components/ControlsGuide.jsx';
 import { CutTestCanvas } from './components/CutTestCanvas.jsx';
 import { Minimap } from './components/Minimap.jsx';
@@ -33,6 +32,7 @@ import {
   setCloudModeOverride,
 } from '../game/render/cloud/cloudConfig.js';
 import { createDevTools, BodyshopScene } from 'virtual:dreamfall-dev-tools';
+import { mountShaderDebugPane } from 'virtual:dreamfall-shader-debug';
 import { loadGarageChassisOptions } from '../game/vehicles/bodyshopChassisRegistry.js';
 
 function readStoredLevel() {
@@ -74,6 +74,32 @@ export function App() {
       // localStorage may be unavailable; show once
       setTimeout(() => setShowControls(true), 620);
     }
+  });
+
+  // Unified render/shader debug Tweakpane (dev-only virtual module; prod stub).
+  // P key toggles; includes former Solid DebugPanel discrete controls.
+  /** @type {{ setVisible: (v: boolean) => void, dispose: () => void } | null} */
+  let shaderPaneHandle = null;
+  onMount(() => {
+    let cancelled = false;
+    void mountShaderDebugPane({ parent: document.body, visible: false }).then((handle) => {
+      if (cancelled) {
+        handle?.dispose?.();
+        return;
+      }
+      shaderPaneHandle = handle;
+      const open = showDebugPanel() && viewMode() === 'game' && hudVisible();
+      handle?.setVisible?.(open);
+    });
+    onCleanup(() => {
+      cancelled = true;
+      shaderPaneHandle?.dispose?.();
+      shaderPaneHandle = null;
+    });
+  });
+  createEffect(() => {
+    const open = showDebugPanel() && viewMode() === 'game' && hudVisible();
+    shaderPaneHandle?.setVisible?.(open);
   });
 
   const handleQualityChange = (level) => {
@@ -308,7 +334,6 @@ export function App() {
             )}
           </Show>
           {hudVisible() && <StatsPanel snapshot={gameSnapshot()} />}
-          {hudVisible() && <DebugPanel snapshot={gameSnapshot()} open={showDebugPanel()} />}
           {hudVisible() && <Hud snapshot={gameSnapshot()} />}
           <Show when={hudVisible() && isJacketClothUiEnabled() && showClothEditor()}>
             <ClothColliderEditor

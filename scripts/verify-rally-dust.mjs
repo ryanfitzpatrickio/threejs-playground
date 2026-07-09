@@ -255,6 +255,31 @@ const emittedTotal = (system) => system.snapshot().emittedByWheel.reduce((sum, v
   ok(`mud swaps to darker/heavier/shorter clods (${live.activeParticles} active) and reverts on dirt`);
 }
 
+// --- wet water-spray profile (docs/advanced-wet-roads-plan.md M4) -----------
+{
+  const dust = new DirtDustSystem(new THREE.Group(), makeVehicle());
+  const vehicle = makeVehicle();
+  const cam = { quaternion: new THREE.Quaternion() };
+  vehicle.wheelTelemetry.forEach((wheel) => { wheel.surface = 'wet'; });
+
+  assert.ok(dust.waterCfg, 'a water dust profile is configured');
+  assert.ok(dust.waterCfg.buoyancy > dust.mudCfg.buoyancy, 'water spray is more buoyant than mud clods');
+  assert.ok(dust.waterCfg.color.fresh[2] > dust.mudCfg.color.fresh[2], 'water spray is cooler/lighter than mud');
+  assert.equal(dust.waterCfg.clod, false, 'water spray uses soft puff texture, not hard clods');
+
+  for (let i = 0; i < 60; i += 1) {
+    dust.update({ dt: DT, surface: 'wet', speed: 22, intensity: 0.8, vehicle, camera: cam });
+  }
+  assert.equal(dust.cfg, dust.waterCfg, 'on wet, the system runs the water profile');
+  const live = dust.snapshot();
+  assert.ok(live.activeParticles > 0, 'wet emits water spray (loose-surface gate includes wet)');
+  vehicle.wheelTelemetry.forEach((wheel) => { wheel.surface = 'dirt'; });
+  dust.update({ dt: DT, surface: 'dirt', speed: 22, intensity: 0.8, vehicle, camera: cam });
+  assert.equal(dust.cfg, dust.baseCfg, 'off wet, the system restores the dirt profile');
+  dust.dispose();
+  ok(`wet swaps to water spray (${live.activeParticles} active) and reverts on dirt`);
+}
+
 // --- authored slip bands + high-speed taper --------------------------------
 {
   assert.equal(mudSlipBandIntensity(0.049), 0, 'slip below 0.05 is clean');

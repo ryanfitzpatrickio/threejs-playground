@@ -6,14 +6,17 @@
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import {
+  adoptBodyshopImport,
   applySequentialCylinderCuts,
   bakeGeometryToSceneRoot,
+  collapseNestedBodyshopWrappers,
   createResolvedMesh,
   createResolvedMeshesFromCut,
   disposeMeshResource,
   finalizeBodyshopGeometry,
   joinBodyshopMeshes,
   replaceMeshWithSplit,
+  withBodyshopExportRoot,
 } from '../src/dev/bodyshopMeshOps.js';
 
 function worldBBox(mesh) {
@@ -132,24 +135,40 @@ assert.equal(split.bodyMesh.position.x, 0);
 assert.equal(split.cutoutMesh.position.x, 0);
 assert.equal(shell.parent, null);
 
+const shellForWheels = new THREE.Mesh(
+  new THREE.BoxGeometry(4, 1.2, 2),
+  new THREE.MeshStandardMaterial({ color: 0x3366aa }),
+);
+// Non-identity local transform: the 4-wheel resolve path used to wipe this
+// when baking via an orphan stub (matrixWorld only, matrix left identity).
+shellForWheels.position.set(0.5, 0.15, -0.25);
+shellForWheels.rotation.y = THREE.MathUtils.degToRad(30);
+shellForWheels.scale.set(1.15, 0.95, 1.05);
+sceneRoot.add(shellForWheels);
+shellForWheels.updateMatrixWorld(true);
+const shellWorldBox = worldBBox(shellForWheels);
+const shellWorldCenter = shellWorldBox.getCenter(new THREE.Vector3());
+const shellWorldSize = shellWorldBox.getSize(new THREE.Vector3());
+
+// Parent cutters under the shell so they track its transform (same as cutting
+// wheel wells on a moved/rotated car mesh).
 const wheelCylinders = [];
 for (const x of [-1.6, 1.6]) {
   const cutter = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 1.6, 16, 1, true));
   cutter.rotation.z = Math.PI / 2;
   cutter.position.set(x, 0, 0);
-  sceneRoot.add(cutter);
+  shellForWheels.add(cutter);
   cutter.updateMatrixWorld(true);
   wheelCylinders.push(cutter);
 }
 
-const shellForWheels = new THREE.Mesh(
-  new THREE.BoxGeometry(4, 1.2, 2),
-  new THREE.MeshStandardMaterial({ color: 0x3366aa }),
-);
-sceneRoot.add(shellForWheels);
-shellForWheels.updateMatrixWorld(true);
-
 const cutResult = applySequentialCylinderCuts(wheelCylinders, shellForWheels);
+// Detach cutters before dispose so they don't leave the scene graph dirty.
+for (const cutter of wheelCylinders) {
+  shellForWheels.remove(cutter);
+  cutter.geometry.dispose();
+  cutter.material.dispose();
+}
 const wheelCutMeshes = createResolvedMeshesFromCut({
   sceneRoot,
   bodyGeometry: cutResult.bodyGeometry,
@@ -162,11 +181,53 @@ const wheelCutMeshes = createResolvedMeshesFromCut({
 sceneRoot.add(wheelCutMeshes.bodyMesh, ...wheelCutMeshes.cutoutMeshes);
 assert.equal(wheelCutMeshes.cutoutMeshes.length, 2);
 assert.ok(wheelCutMeshes.bodyMesh.geometry.getAttribute('position').count > 0);
+assert.equal(wheelCutMeshes.bodyMesh.position.x, 0);
+assert.equal(wheelCutMeshes.bodyMesh.scale.x, 1);
+// Body + cutouts should still occupy the same world footprint as the source shell.
+const combinedBox = worldBBox(wheelCutMeshes.bodyMesh);
+for (const mesh of wheelCutMeshes.cutoutMeshes) {
+  combinedBox.union(worldBBox(mesh));
+}
+const combinedCenter = combinedBox.getCenter(new THREE.Vector3());
+const combinedSize = combinedBox.getSize(new THREE.Vector3());
+assert.ok(combinedCenter.distanceTo(shellWorldCenter) < 0.05, '4-wheel cut must preserve world center');
+assert.ok(Math.abs(combinedSize.x - shellWorldSize.x) < 0.08, '4-wheel cut must preserve world size X');
+assert.ok(Math.abs(combinedSize.y - shellWorldSize.y) < 0.08, '4-wheel cut must preserve world size Y');
+assert.ok(Math.abs(combinedSize.z - shellWorldSize.z) < 0.08, '4-wheel cut must preserve world size Z');
 disposeMeshResource(shellForWheels);
-for (const cutter of wheelCylinders) {
-  sceneRoot.remove(cutter);
-  cutter.geometry.dispose();
-  cutter.material.dispose();
+
+// Nested GLTF/bodyshop wrapper collapse (export → reimport nesting).
+{
+  const nestedRoot = new THREE.Group();
+  nestedRoot.name = '__builder_root__';
+  let cursor = nestedRoot;
+  for (let depth = 0; depth < 8; depth += 1) {
+    const wrapper = new THREE.Group();
+    wrapper.name = depth % 2 === 0 ? `AuxScene_${depth}` : `__builder_root___${depth}`;
+    cursor.add(wrapper);
+    cursor = wrapper;
+  }
+  const shell = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1));
+  shell.name = 'chasis';
+  cursor.add(shell);
+  const emptyCutout = new THREE.Object3D();
+  emptyCutout.name = 'wheel-cutout';
+  cursor.add(emptyCutout);
+
+  const target = new THREE.Group();
+  target.name = '__builder_root__';
+  adoptBodyshopImport(target, nestedRoot);
+  assert.equal(target.children.length, 1, 'wrappers collapse to mesh content');
+  assert.equal(target.children[0].name, 'chasis');
+  assert.equal(collapseNestedBodyshopWrappers(target), 0);
+
+  const exportNames = [];
+  withBodyshopExportRoot(target, (exportRoot, restore) => {
+    exportNames.push(exportRoot.name, ...exportRoot.children.map((c) => c.name));
+    restore();
+  });
+  assert.deepEqual(exportNames, ['chassis', 'chasis']);
+  assert.equal(target.children[0].parent, target);
 }
 
 console.log('Bodyshop mesh resolution checks passed.');

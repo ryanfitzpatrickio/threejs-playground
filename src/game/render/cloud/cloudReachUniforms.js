@@ -5,6 +5,7 @@
  */
 
 import { uniform } from 'three/tsl';
+import { systemWrite } from '../../debug/shaderDebugRegistry.js';
 
 /** Max ray distance (m) for the cloud march + hit pass. */
 export const uCloudMaxMarchDist = uniform(16000);
@@ -35,8 +36,8 @@ export function syncCloudReach({
   const fadeEndFrac = vc.fadeEnd ?? 0.94;
   const marchCap = vc.maxMarchDist ?? Math.min(Math.ceil(vd * reachScale), 22000);
 
-  uCloudMaxMarchDist.value = marchCap;
-  uCloudFadeStart.value = marchCap * fadeStartFrac;
-  uCloudFadeEnd.value = marchCap * fadeEndFrac;
-  uCloudFogMaxDistance.value = fogMax;
+  systemWrite('clouds.reach.maxMarch', () => { uCloudMaxMarchDist.value = marchCap; });
+  systemWrite('clouds.reach.fadeStart', () => { uCloudFadeStart.value = marchCap * fadeStartFrac; });
+  systemWrite('clouds.reach.fadeEnd', () => { uCloudFadeEnd.value = marchCap * fadeEndFrac; });
+  systemWrite('clouds.reach.fogMax', () => { uCloudFogMaxDistance.value = fogMax; });
 }

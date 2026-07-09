@@ -30,7 +30,7 @@ export const PHOTOREALISM_PRESETS = Object.freeze({
       aerialStart: 600,
       aerialEnd: 3000,
       aerialMaxOpacity: 0.2,
-      aerialHazeColor: [0.55, 0.65, 0.75],
+      aerialHazeColor: [0.58, 0.60, 0.63],
       bloom: true,
       bloomStrength: 0.03,
       bloomThreshold: 2.6,
@@ -55,7 +55,7 @@ export const PHOTOREALISM_PRESETS = Object.freeze({
       aerialStart: 500,
       aerialEnd: 2200,
       aerialMaxOpacity: 0.26,
-      aerialHazeColor: [0.62, 0.66, 0.72],
+      aerialHazeColor: [0.60, 0.61, 0.63],
       bloom: true,
       bloomStrength: 0.07,
       bloomRadius: 0.18,
@@ -126,7 +126,7 @@ export function mergePhotorealismEnvironment(baseEnvironment, presetId) {
   return { ...baseEnvironment, ...preset.environment };
 }
 
-export function normalizeAerialHazeColor(value, fallback = [0.32, 0.42, 0.48]) {
+export function normalizeAerialHazeColor(value, fallback = [0.58, 0.60, 0.62]) {
   if (!Array.isArray(value) || value.length < 3) return fallback;
   return [
     Number(value[0]) || fallback[0],

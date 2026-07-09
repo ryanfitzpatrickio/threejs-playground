@@ -2,7 +2,6 @@ import { For, Show, createEffect, createSignal, onCleanup, onMount } from 'solid
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { createCutToolState, handleCutClick, undoLastPoint, clearCutPoints, applyCut, applyCylinderCut, disposeCutVisuals, createSliceState, handleSliceClick, updateSlicePreview, clearSlice, disposeSlice, applySlice } from '../game/geometry/bodyshopCutTool.js';
 import { publishBodyshopChassis } from '../game/vehicles/bodyshopChassisRegistry.js';
@@ -20,6 +19,7 @@ import {
   readBodyshopSession,
   scheduleBodyshopAutosave,
 } from '../game/vehicles/bodyshopSession.js';
+import { createGltfLoader } from '../game/utils/createGltfLoader.js';
 import { createBodyshopVehiclePreview } from './bodyshopVehiclePreview.js';
 import { createBodyshopFrameReference } from './bodyshopFrameReference.js';
 import {
@@ -27,12 +27,15 @@ import {
   BODYSHOP_FLOOR_Y,
 } from './bodyshopVehicleConfig.js';
 import {
+  adoptBodyshopImport,
   applySequentialCylinderCuts,
+  collapseNestedBodyshopWrappers,
   createResolvedMeshesFromCut,
   disposeMeshResource,
   joinBodyshopMeshes,
   replaceMeshWithGeometry,
   replaceMeshWithSplit,
+  withBodyshopExportRoot,
 } from './bodyshopMeshOps.js';
 import {
   configureBodyshopRenderer,
@@ -42,7 +45,8 @@ import {
 } from './bodyshopViewport.js';
 import { ensureFileStore } from '../store/fileStore.js';
 
-const loader = new GLTFLoader();
+// Draco-aware loader so optimized chassis (e.g. post optimize-models) reopen in bodyshop.
+const loader = createGltfLoader();
 const exporter = new GLTFExporter();
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
@@ -69,22 +73,26 @@ function stripHelperMeshes(root) {
 function exportSceneToGlb(root) {
   return new Promise((resolve, reject) => {
     stripHelperMeshes(root);
-    exporter.parse(
-      root,
-      (result) => {
-        ensureLocatorHelpers(root);
-        if (result instanceof ArrayBuffer) {
-          resolve(result);
-          return;
-        }
-        reject(new Error('Expected binary GLB export.'));
-      },
-      (error) => {
-        ensureLocatorHelpers(root);
-        reject(error);
-      },
-      { binary: true, onlyVisible: false }
-    );
+    withBodyshopExportRoot(root, (exportRoot, restore) => {
+      exporter.parse(
+        exportRoot,
+        (result) => {
+          restore();
+          ensureLocatorHelpers(root);
+          if (result instanceof ArrayBuffer) {
+            resolve(result);
+            return;
+          }
+          reject(new Error('Expected binary GLB export.'));
+        },
+        (error) => {
+          restore();
+          ensureLocatorHelpers(root);
+          reject(error);
+        },
+        { binary: true, onlyVisible: false },
+      );
+    });
   });
 }
 
@@ -373,9 +381,8 @@ export function BodyshopScene(props) {
           setBusy(true);
           const gltf = await loader.loadAsync(`${session.draftUrl}?v=${session.updatedAt || 0}`);
           sceneRoot.clear();
-          const model = gltf.scene;
-          sceneRoot.add(model);
-          prepareBodyshopGltfMaterials(model);
+          adoptBodyshopImport(sceneRoot, gltf.scene);
+          prepareBodyshopGltfMaterials(sceneRoot);
 
           syncHierarchy();
           frameCamera();
@@ -777,9 +784,8 @@ export function BodyshopScene(props) {
         sceneRoot.clear();
       }
 
-      const model = gltf.scene;
-      sceneRoot.add(model);
-      prepareBodyshopGltfMaterials(model);
+      adoptBodyshopImport(sceneRoot, gltf.scene);
+      prepareBodyshopGltfMaterials(sceneRoot);
 
       syncHierarchy();
       frameCamera();
@@ -807,15 +813,11 @@ export function BodyshopScene(props) {
       const model = gltf.scene;
       model.name = file.name.replace(/\.glb$/i, '');
       prepareBodyshopGltfMaterials(model);
+      adoptBodyshopImport(sceneRoot, model);
+      collapseNestedBodyshopWrappers(sceneRoot);
 
-      sceneRoot.add(model);
       syncHierarchy();
       applyBodyWireframeMode();
-
-      const id = model.userData._builderId;
-      if (id) {
-        selectObject(id);
-      }
 
       setStatus(`Imported ${file.name}`);
       queueAutosave();
@@ -886,6 +888,66 @@ export function BodyshopScene(props) {
       setStatus('Exported car-build.glb');
     } catch (error) {
       setStatus(`Export failed: ${error.message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function arrayBufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    const chunkSize = 0x8000;
+    let binary = '';
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+      const slice = bytes.subarray(offset, offset + chunkSize);
+      binary += String.fromCharCode(...slice);
+    }
+    return btoa(binary);
+  }
+
+  /**
+   * Blender planar-dissolve cleanup (from dust-and-bullets asset manager).
+   * Weld + dissolve flat cut faces left by cylinder/CSG splits.
+   */
+  async function cleanCutGeometry() {
+    if (!sceneRoot || sceneItems().length === 0) {
+      setStatus('Load or build a body before cleaning.');
+      return;
+    }
+
+    snapshotScene();
+    setBusy(true);
+    setStatus('Cleaning cut geometry with Blender (planar dissolve)...');
+
+    try {
+      const buffer = await exportSceneToGlb(sceneRoot);
+      const response = await fetch('/__editor/bodyshop/clean', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          glbBase64: arrayBufferToBase64(buffer),
+          // Planar dissolve only by default — keeps shell detail.
+          ratio: 1,
+          planarAngle: 5,
+          mergeDistance: 0.00005,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.error || `Clean failed (${response.status})`);
+      }
+
+      const gltf = await loader.loadAsync(payload.url || '/assets/models/_bodyshop-cleaned.glb');
+      sceneRoot.clear();
+      adoptBodyshopImport(sceneRoot, gltf.scene);
+      prepareBodyshopGltfMaterials(sceneRoot);
+      clearSelection();
+      syncHierarchy();
+      frameCamera();
+      applyBodyWireframeMode();
+      setStatus(payload.summary ? `Cleaned cuts: ${payload.summary}` : 'Cleaned cut geometry.');
+      queueAutosave();
+    } catch (error) {
+      setStatus(`Clean failed: ${error.message}`);
     } finally {
       setBusy(false);
     }
@@ -2026,6 +2088,9 @@ export function BodyshopScene(props) {
           <button type="button" class={`ghost-button${previewMode() ? ' is-active' : ''}`} onClick={toggleVehiclePreview} disabled={busy() || sceneItems().length === 0}>
             {previewMode() ? 'Back to edit' : 'Preview vehicle'}
           </button>
+          <button type="button" class="ghost-button" onClick={cleanCutGeometry} disabled={busy() || previewMode() || sceneItems().length === 0}>
+            Clean cuts
+          </button>
           <button type="button" class="solid-button" onClick={exportGlb} disabled={busy() || previewMode() || sceneItems().length === 0}>
             Download GLB
           </button>
@@ -2358,10 +2423,15 @@ export function BodyshopScene(props) {
                   disabled={!cylinderHelper}>
                   Align 4 Wheels
                 </button>
+                <button type="button" class="ghost-button" onClick={cleanCutGeometry}
+                  disabled={busy() || sceneItems().length === 0}>
+                  Clean cuts (Blender)
+                </button>
                 <button type="button" class="ghost-button" onClick={removeCylinder}>
                   Remove Cylinder
                 </button>
               </div>
+              <p class="bodyshop-hint">After wheel cuts, run Clean cuts to weld + planar-dissolve CSG sludge (needs Blender).</p>
             </div>
           </Show>
 

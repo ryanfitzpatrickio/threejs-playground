@@ -15,6 +15,7 @@ public/assets/textures/forest/*/
 !public/assets/textures/forest/douglas-fir/
 !public/assets/textures/forest/loblolly/
 public/assets/models/_bodyshop-draft.glb
+public/assets/models/_bodyshop-cleaned.glb
 public/assets/textures/forest/pine/*_needle_*
 public/assets/textures/forest/douglas-fir/*_needle_*
 public/assets/textures/forest/loblolly/*_needle_*

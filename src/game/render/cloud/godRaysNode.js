@@ -39,6 +39,9 @@ let _rendererState;
 // World metres marched along the sun through the cloud-shadow map per pixel.
 const SHADOW_MARCH_METRES = 1400;
 
+/** Module-scope strength so shader-debug can live-tweak without rebuilding the node graph. */
+export const uGodRayStrength = uniform(0.16);
+
 export class GodRaysNode extends TempNode {
   constructor({
     camera,
@@ -55,7 +58,9 @@ export class GodRaysNode extends TempNode {
     this.sceneDepth = sceneDepth;
     this.steps = Math.max(4, Math.floor(steps));
     this.renderScale = renderScale;
-    this.strength = strength;
+    // Live UniformNode (shared module default + optional ctor seed).
+    uGodRayStrength.value = strength;
+    this.strength = uGodRayStrength;
     this._cameraMatrixWorld = uniform(camera.matrixWorld);
     this._projectionMatrixInverse = uniform(camera.projectionMatrixInverse);
     this._target = new RenderTarget(1, 1, { depthBuffer: false, type: HalfFloatType, format: RGBAFormat });

@@ -203,10 +203,11 @@ const ok = (name) => { passed += 1; console.log(`  ✓ ${name}`); };
   const g1 = level.getGroundHeightAt({ x: px, y: 0, z: px }, 0, { preferRoadSurface: true });
   assert.ok(Math.abs((g0 - g1) - 0.1) < 1e-3, `rut sinks the analytic ground (${(g0 - g1).toFixed(4)} m)`);
 
-  assert.equal(build('mud', 'world').mudField, null, 'world mode builds no mud field (scope)');
+  assert.ok(build('mud', 'world').mudField, 'world + mud road → mud field present');
   assert.equal(build(undefined, 'rally').mudField, null, 'mud-less rally map builds no field');
+  assert.equal(build('mud', 'city').mudField, null, 'city mode still builds no mud field');
   void mudRoad;
-  ok('level wiring: rally-only field + rut folds into getGroundHeightAt');
+  ok('level wiring: rally+world field + rut folds into getGroundHeightAt');
 
   // VehicleSystem holds the LevelSystem FACADE (not the raw level object), so the
   // facade MUST forward `mudField` — otherwise stamping/decay silently no-op and

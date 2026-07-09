@@ -292,11 +292,10 @@ const DUST_DEFAULTS = {
 // per-instance data has to reach a custom shader at all.
 const _IDENTITY_QUAT = new THREE.Quaternion();
 
-// Deep-merge the `mud` partial onto a dust config, producing the mud spray
-// profile the DirtDustSystem swaps to on mud surfaces. Returns null when the
-// config has no mud override (so non-rally vehicles keep only the dirt profile).
-function withMudProfile(base) {
-  const m = base?.mud;
+// Deep-merge a named partial (`mud` / `water`) onto a dust config. Returns null
+// when the config has no override (so non-rally vehicles keep only dirt).
+function withSurfaceDustProfile(base, key) {
+  const m = base?.[key];
   if (!m) return null;
   const merged = {
     ...base,
@@ -310,7 +309,16 @@ function withMudProfile(base) {
     opacity: { ...base.opacity, ...(m.opacity ?? {}) },
   };
   delete merged.mud;
+  delete merged.water;
   return merged;
+}
+
+function withMudProfile(base) {
+  return withSurfaceDustProfile(base, 'mud');
+}
+
+function withWaterProfile(base) {
+  return withSurfaceDustProfile(base, 'water');
 }
 
 function makeDustPuffTexture(size = 96) {
@@ -381,12 +389,12 @@ function setRampColor(out, age01, seed, c) {
 export class DirtDustSystem {
   constructor(group, vehicle) {
     const cfg = vehicle?.config?.ground?.dust ?? DUST_DEFAULTS;
-    // Base (dirt/offroad) profile plus the rally MUD profile (a deep-merge of
-    // cfg.mud onto the base). update() swaps `this.cfg` between them by surface,
-    // so mud reuses the whole pool/emit path with darker, heavier, ballistic
-    // clods — no forked system. mudCfg is null when no mud override is configured.
+    // Base (dirt/offroad) profile plus rally MUD / WET water profiles (deep-merge
+    // of cfg.mud / cfg.water onto the base). update() swaps `this.cfg` by surface
+    // so mud/wet reuse the pool/emit path — no forked systems.
     this.baseCfg = cfg;
     this.mudCfg = withMudProfile(cfg);
+    this.waterCfg = withWaterProfile(cfg);
     this.cfg = cfg;
     this.max = cfg.poolSize ?? 1200;
 
@@ -456,10 +464,17 @@ export class DirtDustSystem {
   }
 
   update({ dt, surface, speed, intensity, vehicle, throttle = 0, lateralSpeed = 0, lateralSign = 1, camera = null }) {
-    // Swap to the mud profile on mud surfaces (reference swap, no per-frame alloc);
-    // _emit + the ramp colour both read this.cfg, so the whole plume turns to clods.
+    // Swap to mud / water profiles by surface (reference swap, no per-frame alloc);
+    // _emit + the ramp colour both read this.cfg.
     const wheelMud = (vehicle?.wheelTelemetry ?? []).some((wheel) => wheel?.surface === 'mud');
-    this.cfg = (surface === 'mud' || wheelMud) && this.mudCfg ? this.mudCfg : this.baseCfg;
+    const wheelWet = (vehicle?.wheelTelemetry ?? []).some((wheel) => wheel?.surface === 'wet');
+    if ((surface === 'mud' || wheelMud) && this.mudCfg) {
+      this.cfg = this.mudCfg;
+    } else if ((surface === 'wet' || wheelWet) && this.waterCfg) {
+      this.cfg = this.waterCfg;
+    } else {
+      this.cfg = this.baseCfg;
+    }
     const cfg = this.cfg;
     // Point the mesh at the hard clod texture on mud, the soft puff otherwise.
     // Swapped only when it actually changes (surface boundary), not every frame.
@@ -556,7 +571,8 @@ export class DirtDustSystem {
     this.mesh.material.opacity = this._materialOpacity;
 
     const onMud = surface === 'mud' || wheelMud;
-    const onLooseSurface = surface === 'dirt' || surface === 'offroad' || onMud;
+    const onWet = surface === 'wet' || wheelWet;
+    const onLooseSurface = surface === 'dirt' || surface === 'offroad' || onMud || onWet;
     if (cfg.clod && onMud && vehicle?.groundedFraction > 0) {
       const mudDynamics = resolveMudWheelDynamics(vehicle?.config?.ground?.mudWheelDynamics);
       (vehicle.wheelTelemetry ?? []).forEach((wheel, wheelIndex) => {
@@ -1277,8 +1293,9 @@ class TireScreechAudioSystem {
     this.turn.update(muted ? 0 : turnIntensity, speed);
     this.brake.update(muted ? 0 : brakeIntensity, speed);
     const mud = surface === 'mud';
+    const wet = surface === 'wet';
     if (this.gravelGain && this.gravelFilter) {
-      // Dry loose surfaces (not mud) drive the bright gravel rattle.
+      // Dry loose surfaces (not mud/wet) drive the bright gravel rattle.
       const dirt = surface === 'dirt' || surface === 'offroad';
       const amount = muted || !dirt ? 0 : THREE.MathUtils.clamp(speed / 24, 0, 1) * (0.035 + slip * 0.075);
       this.gravelGain.gain.setTargetAtTime(amount, this.ctx.currentTime, amount > 0 ? 0.05 : 0.12);
@@ -1289,11 +1306,22 @@ class TireScreechAudioSystem {
       }
     }
     if (this.mudGain && this.mudFilter) {
-      // Wet mud: a duller, wetter squelch that swells with speed + slip, plus a
-      // sticky "peel" one-shot when the tyres break loose.
-      const amount = muted || !mud ? 0 : THREE.MathUtils.clamp(speed / 20, 0, 1) * (0.05 + slip * 0.11);
+      // Mud: dull wet squelch. Wet road: lighter tire hiss (same bus, brighter
+      // filter / lower level) — no sticky peel (wet does not dig in).
+      const amount = muted
+        ? 0
+        : mud
+          ? THREE.MathUtils.clamp(speed / 20, 0, 1) * (0.05 + slip * 0.11)
+          : wet
+            ? THREE.MathUtils.clamp(speed / 22, 0, 1) * (0.03 + slip * 0.07)
+            : 0;
       this.mudGain.gain.setTargetAtTime(amount, this.ctx.currentTime, amount > 0 ? 0.06 : 0.14);
-      this.mudFilter.frequency.setTargetAtTime(360 + Math.min(speed, 30) * 16, this.ctx.currentTime, 0.1);
+      const freq = mud
+        ? 360 + Math.min(speed, 30) * 16
+        : wet
+          ? 520 + Math.min(speed, 34) * 22
+          : 360;
+      this.mudFilter.frequency.setTargetAtTime(freq, this.ctx.currentTime, 0.1);
       if (mud && !muted && slip > 0.55 && this.ctx.currentTime - this.lastPeelAt > 0.28) {
         this.lastPeelAt = this.ctx.currentTime;
         this._squelchPeel(slip);

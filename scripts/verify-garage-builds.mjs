@@ -5,7 +5,10 @@ import { fileURLToPath } from 'node:url';
 import * as THREE from 'three';
 import { BaseVehicle } from '../src/game/vehicles/BaseVehicle.js';
 import { QuadBikeVehicle } from '../src/game/vehicles/QuadBikeVehicle.js';
-import { prepareVehicleOverlayGeometry } from '../src/game/geometry/prepareVehicleOverlayGeometry.js';
+import {
+  MAX_OVERLAY_CREASE_TRIANGLES,
+  prepareVehicleOverlayGeometry,
+} from '../src/game/geometry/prepareVehicleOverlayGeometry.js';
 import {
   createGarageBuild,
   createFallbackGarageChassisOption,
@@ -177,6 +180,28 @@ for (let index = 0; index < preparedUv.count; index += 1) {
 assert.equal(preparedTinyShell.getAttribute('color'), undefined);
 assert.ok(maxU - minU >= 0.39, `generated Meshy UVs should span the albedo (got ${maxU - minU})`);
 preparedTinyShell.dispose();
+
+// Huge single shells (bodyshop publishes) must not take the weld/crease path —
+// that freezes the garage for ~60s and expands 650k tris to ~2M verts.
+{
+  const hugeTris = MAX_OVERLAY_CREASE_TRIANGLES + 1;
+  const pos = new Float32Array(hugeTris * 9);
+  for (let i = 0; i < pos.length; i += 1) pos[i] = (i % 7) * 0.01;
+  const huge = new THREE.BufferGeometry();
+  huge.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  huge.computeVertexNormals();
+  const uv = new Float32Array(hugeTris * 6);
+  for (let i = 0; i < uv.length; i += 1) uv[i] = (i % 5) * 0.1 + 0.05;
+  huge.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  const preparedHuge = prepareVehicleOverlayGeometry(huge);
+  assert.equal(
+    preparedHuge.getAttribute('position').count,
+    hugeTris * 3,
+    'large meshes should skip toCreasedNormals unindex expansion',
+  );
+  assert.ok(preparedHuge.getAttribute('normal'));
+  preparedHuge.dispose();
+}
 
 const quadBuild = sanitizeGarageBuild({
   vehicleType: 'quad',

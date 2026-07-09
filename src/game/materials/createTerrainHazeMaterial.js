@@ -62,9 +62,12 @@ export function createTerrainHazeMaterial({
     const hill = smoothstep(float(0.08), float(0.55), v)
       .mul(float(1).sub(smoothstep(float(0.72), float(0.98), v)));
     const silhouette = hill.mul(ridge.mul(0.35).add(0.65));
-    const haze = mix(terrainHazeColor, uCloudAmbientColor, float(0.55));
-    const night = vec3(0.4, 0.46, 0.58);
-    const tone = mix(mix(vec3(0.74, 0.8, 0.86), haze, float(0.88)), night, terrainNightFactor.mul(0.5));
+    // Vertical gradient: grey ground haze → sky blue higher up (not blue all the way down).
+    const groundGrey = mix(vec3(0.62, 0.63, 0.64), terrainHazeColor, float(0.85));
+    const skyBlue = mix(terrainHazeColor, uCloudAmbientColor, float(0.72));
+    const heightTone = mix(groundGrey, skyBlue, smoothstep(float(0.22), float(0.9), v));
+    const night = vec3(0.4, 0.44, 0.52);
+    const tone = mix(heightTone, night, terrainNightFactor.mul(0.5));
     const heightMask = smoothstep(float(0), float(heightFade), v).mul(
       float(1).sub(smoothstep(float(1).sub(heightFade), float(1), v)),
     );

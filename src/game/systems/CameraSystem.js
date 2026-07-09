@@ -90,6 +90,11 @@ export class CameraSystem {
     this.camera.position.set(0, 2.9, 6.8);
     this.smoothedTarget = new THREE.Vector3();
     this.hasSmoothedTarget = false;
+    this.smoothedLookTarget = new THREE.Vector3();
+    this.hasSmoothedLookTarget = false;
+    this.smoothedTargetHeight = 0;
+    this.hasSmoothedTargetHeight = false;
+    this.smoothedVehicleSpeed = 0;
     this.yaw = 0;
     this.pitch = config.initialPitch;
     this.distance = config.followDistance;
@@ -277,6 +282,8 @@ export class CameraSystem {
     if (this.driving) {
       this.driving = false;
       this.hasSmoothedTarget = false;
+      this.hasSmoothedLookTarget = false;
+      this.hasSmoothedTargetHeight = false;
       this.vehicleSteerOffset = 0;
       this.vehicleLateralOffset = 0;
       this.modeBlend = null;
@@ -444,6 +451,10 @@ export class CameraSystem {
       this.vehicleLateralOffset = 0;
       this.smoothedTarget.copy(chassis.position);
       this.hasSmoothedTarget = true;
+      this.smoothedTargetHeight = chassis.position.y;
+      this.hasSmoothedTargetHeight = true;
+      this.hasSmoothedLookTarget = false;
+      this.smoothedVehicleSpeed = getVehicleHorizontalSpeed(vehicle);
       this.yaw = headingYaw;
       this.pitch = mode.pitch;
     }
@@ -473,23 +484,78 @@ export class CameraSystem {
     this.pitch = mode.pitch;
 
     const horizontalSpeed = getVehicleHorizontalSpeed(vehicle);
-    const speedRatio = THREE.MathUtils.clamp(
-      horizontalSpeed / tuning.maxSpeedForEffects,
-      0,
-      1,
-    );
+    // Raw speed wobbles every physics step; filter before any framing / stiffness
+    // use so tracking and FOV don't pump with suspension noise.
+    const speedAlpha = 1 - Math.exp(-(tuning.speedSmoothing ?? 4) * delta);
+    this.smoothedVehicleSpeed = THREE.MathUtils.lerp(this.smoothedVehicleSpeed, horizontalSpeed, speedAlpha);
+    const maxSpeed = Math.max(tuning.maxSpeedForEffects ?? 1, 1e-3);
+    const speedRatio = THREE.MathUtils.clamp(this.smoothedVehicleSpeed / maxSpeed, 0, 1);
+    // Ease into the high-speed framing so mid-range stays near the idle distance.
+    const speedEase = smoothstep01(speedRatio);
     const responsiveDistance = viewport?.aspect < 0.8 ? mode.followDistance + 1.1 : mode.followDistance;
-    const distance = responsiveDistance + horizontalSpeed * tuning.speedDistanceBoost;
+    // speedDistanceBoost is max extra meters at top speed (clamped), not m per m/s.
+    const distance = responsiveDistance + speedEase * (tuning.speedDistanceBoost ?? 0);
     const responsiveHeight = viewport?.aspect < 0.8 ? mode.followHeight + 0.35 : mode.followHeight;
+    const lookAhead = mode.lookAhead + speedEase * (tuning.speedLookAheadBoost ?? 0);
 
+    // Soft target lag is fine at idle, but at speed it yanks the chase cam far behind the car.
+    // Scale *planar* target stiffness with smoothed speed so lag stays roughly constant
+    // (lag ≈ v / λ). Camera position uses a softer spring so the follow still eases.
+    const maxChaseLag = tuning.maxChaseLag ?? 1.25;
+    const maxTracking = tuning.maxTrackingSmoothing ?? 42;
+    const maxPosition = tuning.maxPositionSmoothing ?? 14;
+    const trackSpeed = this.smoothedVehicleSpeed;
+    const targetSmoothing = Math.min(
+      maxTracking,
+      Math.max(
+        tuning.targetSmoothing,
+        trackSpeed / Math.max(maxChaseLag, 1e-3),
+      ),
+    );
+    // Camera position stays nearly as tight as the planar target at speed so the
+    // car doesn't rubber-band; soft base rate still eases at idle / low speed.
+    const positionSmoothing = Math.min(
+      maxPosition,
+      Math.max(
+        tuning.positionSmoothing,
+        trackSpeed / Math.max(maxChaseLag * 1.15, 1e-3),
+      ),
+    );
     this.updateSmoothedTarget({
       target: chassis.position,
       delta,
-      targetSmoothing: tuning.targetSmoothing,
-      maxLag: Math.max(tuning.maxTargetLag, horizontalSpeed * 0.45),
+      targetSmoothing,
+      maxLag: Math.max(tuning.maxTargetLag, maxChaseLag * 3),
     });
-    this.lastPositionSmoothing = tuning.positionSmoothing;
-    this.lastTargetSmoothing = tuning.targetSmoothing;
+
+    // Vertical suspension heave is filtered harder than planar follow so bumps
+    // don't bob the chase cam (and thus the whole world) every frame.
+    const heightRate = tuning.targetHeightSmoothing ?? 3.6;
+    if (!this.hasSmoothedTargetHeight) {
+      this.smoothedTargetHeight = chassis.position.y;
+      this.hasSmoothedTargetHeight = true;
+    } else {
+      const heightAlpha = 1 - Math.exp(-heightRate * delta);
+      this.smoothedTargetHeight = THREE.MathUtils.lerp(
+        this.smoothedTargetHeight,
+        chassis.position.y,
+        heightAlpha,
+      );
+    }
+    // Keep the planar smoother from fighting the height filter.
+    this.smoothedTarget.y = this.smoothedTargetHeight;
+
+    // Bias planar framing toward the live chassis at speed so residual lag
+    // doesn't read as "camera pulled way out" — never blend live Y (bounce).
+    const liveAnchorBlend = speedEase * (tuning.speedLiveAnchor ?? 0.18);
+    vehicleTarget.copy(this.smoothedTarget);
+    if (liveAnchorBlend > 0) {
+      vehicleTarget.x = THREE.MathUtils.lerp(vehicleTarget.x, chassis.position.x, liveAnchorBlend);
+      vehicleTarget.z = THREE.MathUtils.lerp(vehicleTarget.z, chassis.position.z, liveAnchorBlend);
+    }
+
+    this.lastPositionSmoothing = positionSmoothing;
+    this.lastTargetSmoothing = targetSmoothing;
 
     vehicleRight.set(1, 0, 0).applyQuaternion(chassis.quaternion);
 
@@ -500,26 +566,36 @@ export class CameraSystem {
     offset.y = responsiveHeight + Math.sin(mode.pitch) * distance;
     offset.addScaledVector(vehicleRight, this.vehicleLateralOffset);
 
-    desiredPosition.copy(this.smoothedTarget).add(offset);
+    desiredPosition.copy(vehicleTarget).add(offset);
     this.camera.position.lerp(
       desiredPosition,
-      1 - Math.exp(-tuning.positionSmoothing * delta),
+      1 - Math.exp(-positionSmoothing * delta),
     );
 
-    vehicleForward.set(0, 0, -1).applyQuaternion(chassis.quaternion);
-    const lookYaw = this._computeVelocityLookYaw(headingYaw, vehicle, tuning) + rearYaw;
+    // Look direction reuses the smoothed camera yaw (it already tracks the
+    // velocity-lead yaw). Recomputing from the raw heading fed per-step physics
+    // jitter straight into lookAt, which read as rotational stutter up close.
+    const lookYaw = this.vehicleCameraYaw + rearYaw;
     const lookForwardX = -Math.sin(lookYaw);
     const lookForwardZ = -Math.cos(lookYaw);
     vehicleTarget
-      .copy(this.smoothedTarget)
-      .addScaledVector(vehicleForward.set(lookForwardX, 0, lookForwardZ).normalize(), mode.lookAhead)
+      .addScaledVector(vehicleForward.set(lookForwardX, 0, lookForwardZ).normalize(), lookAhead)
       .add({ x: 0, y: mode.lookHeight, z: 0 });
-    this.camera.lookAt(vehicleTarget);
+
+    // Final low-pass on the look point keeps orientation free of residual noise.
+    const lookAlpha = 1 - Math.exp(-(tuning.lookTargetSmoothing ?? 9) * delta);
+    if (!this.hasSmoothedLookTarget || this.smoothedLookTarget.distanceTo(vehicleTarget) > 20) {
+      this.smoothedLookTarget.copy(vehicleTarget);
+      this.hasSmoothedLookTarget = true;
+    } else {
+      this.smoothedLookTarget.lerp(vehicleTarget, lookAlpha);
+    }
+    this.camera.lookAt(this.smoothedLookTarget);
 
     this.updateFov({
       delta,
-      targetFov: tuning.baseFov + speedRatio * (tuning.speedFovBoost ?? 0),
-      smoothing: 8,
+      targetFov: tuning.baseFov + speedEase * (tuning.speedFovBoost ?? 0),
+      smoothing: 6,
     });
   }
 
@@ -634,12 +710,18 @@ export class CameraSystem {
     ) {
       this.smoothedTarget.copy(target);
       this.hasSmoothedTarget = true;
+      this.smoothedTargetHeight = target.y;
+      this.hasSmoothedTargetHeight = true;
       this.lastTargetSmoothing = targetSmoothing;
       return;
     }
 
     this.lastTargetSmoothing = targetSmoothing;
-    this.smoothedTarget.lerp(target, 1 - Math.exp(-targetSmoothing * delta));
+    // Planar follow only — vertical heave is handled by the dedicated height filter
+    // so suspension bounce does not yank the chase cam every physics step.
+    const alpha = 1 - Math.exp(-targetSmoothing * delta);
+    this.smoothedTarget.x = THREE.MathUtils.lerp(this.smoothedTarget.x, target.x, alpha);
+    this.smoothedTarget.z = THREE.MathUtils.lerp(this.smoothedTarget.z, target.z, alpha);
   }
 
   resize({ aspect }) {

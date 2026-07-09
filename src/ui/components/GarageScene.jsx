@@ -1176,6 +1176,8 @@ async function createGaragePreview(canvas, initialBuild, pickOptions = {}) {
     if (model) {
       scene.remove(model);
       disposePreviewObject(model);
+      model = null;
+      vehicle = null;
     }
     const chassis = getGarageChassisOption(build.chassisId);
     const vehicleOptions = vehicleOptionsFromGarageBuild(build);
@@ -1186,7 +1188,16 @@ async function createGaragePreview(canvas, initialBuild, pickOptions = {}) {
     });
     const nextModel = nextVehicle.buildMesh();
     nextVehicle.group = nextModel;
-    await nextVehicle.assembleGroundVehicleVisuals({ syncParkedWheels: true });
+    try {
+      await nextVehicle.assembleGroundVehicleVisuals({ syncParkedWheels: true });
+    } catch (error) {
+      console.warn(`Garage preview failed for chassis "${chassis.id}":`, error);
+      canvas.dataset.previewError = String(error?.message || error);
+    }
+    if (version !== rebuildVersion) {
+      disposePreviewObject(nextModel);
+      return;
+    }
     nextModel.position.y = 1.03;
     viewport.applyTurntable(nextModel);
     scene.add(nextModel);
@@ -1195,10 +1206,7 @@ async function createGaragePreview(canvas, initialBuild, pickOptions = {}) {
     syncVehicleMetrics();
     canvas.dataset.chassis = chassis.id;
     canvas.dataset.previewObjects = String(nextModel.children.length);
-    if (version !== rebuildVersion) {
-      scene.remove(nextModel);
-      disposePreviewObject(nextModel);
-    }
+    delete canvas.dataset.previewError;
   };
   await rebuildVehicle(initialBuild);
   // Generate the same physical-sky PMREM used by the world without showing an

@@ -130,7 +130,7 @@ export async function runGrokGenerate({ prompt, summary, mode = 'blueprint' }) {
     if (isRally) {
       courseGuidance = `
 **RALLY GUIDANCE (detected "rally" in request):**
-Use trackStyle "rallySpectator" (crowds+rope) or "rallyStage" on main roads. Set surface:"mud" for ruts. Use many "wilds"+"forest" zones (alpine/hills biomes) + terrain for nature. Make a flowing closed loop. Add start/finish POIs. Fast/remote feel.
+Use trackStyle "rallySpectator" (crowds+rope) or "rallyStage" on main roads. Set surface:"mud" for ruts, surface:"wet" for persistent puddles (no bog). Use many "wilds"+"forest" zones (alpine/hills biomes) + terrain for nature. Make a flowing closed loop. Add start/finish POIs. Fast/remote feel.
 `;
     } else if (isRace) {
       courseGuidance = `
@@ -165,7 +165,7 @@ World map schema (exact top level required):
     "spawn":{"x":0,"z":0,"yaw":0},
     "zones":[ {"id":"z1","type":"terrain|city|wilds|loopout|forest","shape":"rect","rect":{...},"props":{}} , ... ],
     "districts":[...],
-    "roads":[ {"id":"r1","points":[...],"width":6.5,"trackStyle":"rallySpectator|rallyStage|urbanCircuit|...","surface":"mud|dirt|asphalt"} , ...],
+    "roads":[ {"id":"r1","points":[...],"width":6.5,"trackStyle":"rallySpectator|rallyStage|urbanCircuit|...","surface":"mud|wet|dirt|asphalt"} , ...],
     "rivers":[...], "pois":[...],
     "entities":[...]
   }

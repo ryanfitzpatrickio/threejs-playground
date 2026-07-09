@@ -23,7 +23,7 @@
  */
 
 import { zoneContains } from './zoneGeometry.js';
-import { normalizeRoadSurface } from './roadSurface.js';
+import { normalizeRoadSurface, normalizeRoadSurfaceWear } from './roadSurface.js';
 
 export const WORLD_MAP_VERSION = 1;
 export const WORLDMAP_STORAGE_KEY = 'dreamfall:worldmap:autosave';
@@ -352,6 +352,8 @@ export function normalizeRoad(raw) {
       type: typeof raw.type === 'string' && raw.type ? raw.type : 'road',
       trackStyle: typeof raw.trackStyle === 'string' && raw.trackStyle ? raw.trackStyle : null,
       surface: normalizeRoadSurface(raw.surface),
+      surfaceWear: normalizeRoadSurfaceWear(raw.surfaceWear),
+      tread: raw.tread === false ? false : (raw.tread === true ? true : null),
       elevation: null,
       elevationMode: 'gentleSlope',
     };
@@ -366,6 +368,10 @@ export function normalizeRoad(raw) {
     trackStyle: typeof raw.trackStyle === 'string' && raw.trackStyle ? raw.trackStyle : null,
     // Optional material override. null follows the track-style default.
     surface: normalizeRoadSurface(raw.surface),
+    // Demo wear for mud/wet: null/'fresh' = clean; 'preWorn' = ~3 prior laps.
+    surfaceWear: normalizeRoadSurfaceWear(raw.surfaceWear),
+    // Wet-road tread opt-in/out (null = wet defaults on, mud always tread).
+    tread: raw.tread === false ? false : (raw.tread === true ? true : null),
     // null/absent follows terrain; a finite value pins the entire road to that
     // world-space height.
     elevation: Number.isFinite(elevation) ? elevation : null,

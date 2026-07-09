@@ -184,8 +184,18 @@ const TRANSMIT = [0.42, 0.62, 0.24]; // same transmitted green as the live folia
 function makeCardMaterial(t, cardH) {
   const mat = new MeshSSSNodeMaterial({
     map: t.albedo, roughnessMap: t.rough,
-    alphaTest: 0.35, side: DoubleSide, roughness: 1.0, metalness: 0.0,
+    // Hard cutout (not soft blend) — matches live leaf cards. Soft transparent
+    // sorting on DoubleSide crossed cards is a mess; alphaTest discards the card
+    // exterior so the plane doesn't read as a white rectangle.
+    alphaTest: 0.35,
+    transparent: false,
+    side: DoubleSide,
+    roughness: 1.0,
+    metalness: 0.0,
   });
+  // Explicit map alpha → opacity so WebGPU node materials honor the cutout even
+  // when the conventional `map` alpha path is bypassed by custom nodes.
+  mat.opacityNode = texture(t.albedo).a;
   // Keep the flat ambient foliage tint, but disable directional transmission:
   // its backlit power term blooms on an alpha card and breaks LOD color parity.
   mat.thicknessColorNode = texture(t.trans).r.mul(0.7).mul(uniform(new Color().setRGB(...TRANSMIT)));
@@ -210,12 +220,32 @@ function makeCardMaterial(t, cardH) {
   return mat;
 }
 
-/** Per-instance distance fade for forest LOD impostor billboards (M4 stretch). */
+/**
+ * Per-instance distance fade for forest LOD impostor billboards.
+ *
+ * CRITICAL: assigning `opacityNode = aImpostorFade` alone *replaces* the default
+ * map-alpha path in TSL node materials, so the baked albedo's alpha is ignored
+ * and the whole plane draws as a solid white card. Always multiply map.a × fade.
+ */
 export function cloneImpostorFadeMaterial(sourceMat) {
   const mat = sourceMat.clone();
-  mat.opacityNode = attribute('aImpostorFade', 'float');
+  const albedo = sourceMat.map
+    ?? sourceMat.userData?.impostorTextures?.albedo
+    ?? null;
+  const fade = attribute('aImpostorFade', 'float');
+  mat.opacityNode = albedo
+    ? texture(albedo).a.mul(fade)
+    : fade;
+  // transparent=true so aImpostorFade can soft-fade whole trees at LOD bands.
+  // Low alphaTest only kills near-zero texels — a high threshold would hard-cut
+  // the soft fade (opacity = map.a × fade drops below 0.35 mid-band).
   mat.transparent = true;
+  mat.alphaTest = 0.08;
+  mat.depthWrite = true;
   mat.userData.forestCloneMaterial = true;
+  if (sourceMat.userData?.impostorTextures) {
+    mat.userData.impostorTextures = sourceMat.userData.impostorTextures;
+  }
   return mat;
 }
 

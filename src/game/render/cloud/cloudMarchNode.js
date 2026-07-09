@@ -46,6 +46,8 @@ import {
   screenCoordinate,
   passTexture,
   uniform,
+  length,
+  select,
 } from 'three/tsl';
 import {
   uCloudAltitude,
@@ -73,6 +75,8 @@ class CloudMarchNode extends TempNode {
     camera,
     weatherNode,
     baseShapeNode,
+    /** Scene depth texture node — march stops at solid geometry (mountains). */
+    sceneDepthNode = null,
     steps = 48,
     lightTaps = 3,
     lightStepSize = 12,
@@ -92,6 +96,7 @@ class CloudMarchNode extends TempNode {
     this.camera = camera;
     this.weatherNode = weatherNode;
     this.baseShapeNode = baseShapeNode;
+    this.sceneDepthNode = sceneDepthNode;
     this.steps = steps;
     this.lightTaps = lightTaps;
     this.lightStepSize = lightStepSize;
@@ -167,6 +172,20 @@ class CloudMarchNode extends TempNode {
     this._hitMaterial.dispose();
   }
 
+  _sceneOccluderDist(projectionMatrixInverse) {
+    // Distance to solid geometry along this ray. Sky clear (depth = 1, dome does
+    // not write depth) returns a huge value so the march is not clipped by the
+    // camera far plane. Any written depth counts — including distant mountains.
+    if (!this.sceneDepthNode) {
+      return uCloudMaxMarchDist;
+    }
+    const depth = this.sceneDepthNode.sample(screenUV).r;
+    const sceneViewPos = getViewPosition(screenUV, depth, projectionMatrixInverse);
+    const sceneDist = length(sceneViewPos);
+    const isSolid = depth.lessThan(1.0);
+    return select(isSolid, sceneDist, uCloudMaxMarchDist);
+  }
+
   _buildMarchFn() {
     const STEPS = this.steps;
     const LIGHT_TAPS = this.lightTaps;
@@ -196,7 +215,9 @@ class CloudMarchNode extends TempNode {
       const tA = min(tBottom, tTop);
       const tB = max(tBottom, tTop);
       const tStart = max(tA, 0);
-      const tEnd = min(max(tB, tStart), uCloudMaxMarchDist);
+      // Stop integrating at mountains / buildings so density never piles up "inside" peaks.
+      const occluderDist = this._sceneOccluderDist(projectionMatrixInverse);
+      const tEnd = min(min(max(tB, tStart), uCloudMaxMarchDist), occluderDist);
       const marchLen = tEnd.sub(tStart);
       // Cap the base step so grazing rays (huge marchLen) still sample the deck
       // finely instead of in coarse horizontal bands. Empty-space coarse-skip +
@@ -280,10 +301,14 @@ class CloudMarchNode extends TempNode {
       const dir = cameraMatrixWorld.mul(vec4(normalize(viewPos), 0)).xyz;
       const origin = cameraMatrixWorld.mul(vec4(0, 0, 0, 1)).xyz;
       const dirY = max(dir.y, 0.0001);
+      const occluderDist = this._sceneOccluderDist(projectionMatrixInverse);
       const tStart = max(uCloudAltitude.sub(origin.y).div(dirY), 0);
       const tEnd = min(
-        uCloudAltitude.add(uCloudThickness).sub(origin.y).div(dirY),
-        uCloudMaxMarchDist,
+        min(
+          uCloudAltitude.add(uCloudThickness).sub(origin.y).div(dirY),
+          uCloudMaxMarchDist,
+        ),
+        occluderDist,
       );
       const dt = max(tEnd.sub(tStart), 0).div(STEPS);
       const firstHit = uCloudMaxMarchDist.toVar();

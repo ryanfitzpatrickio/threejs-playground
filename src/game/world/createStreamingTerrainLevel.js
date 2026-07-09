@@ -40,6 +40,7 @@ import { buildRiverProfile, applyRiverCorridorHeight } from '../../world/worldMa
 import { createTerrainBiomeMaterial } from '../materials/createTerrainBiomeMaterial.js';
 import { createTerrainHorizon } from './createTerrainHorizon.js';
 import { createTerrainParallaxLayers } from './createTerrainParallaxLayers.js';
+import { createDistantForest } from './createDistantForest.js';
 import { createZoneForest } from './createZoneForest.js';
 import { setForestLitterMask, clearForestLitterMask } from './forest/forestLitter.js';
 import { createRoadworks, ROAD_SURFACE_LIFT } from './createRoadworks.js';
@@ -51,7 +52,8 @@ import { createRiverworks } from './createRiverworks.js';
 import { createBlueprintEntities, collectBlueprintRoads, collectBlueprintRivers, collectBlueprintTerrainTexture } from './createBlueprintEntities.js';
 import { getGroundHeightAt as colliderGroundHeightAt, getBlockingColliderAt as colliderBlockingAt } from './createBaseLevel.js';
 import { createMudDeformField } from './mudDeformField.js';
-import { surfaceForRoad } from '../../world/worldMap/roadSurface.js';
+import { seedPreWornOnField } from './seedPreWornTracks.js';
+import { roadNeedsDeformField, surfaceForRoad } from '../../world/worldMap/roadSurface.js';
 
 const DEFAULT_LOAD_RADIUS = 3;
 
@@ -495,7 +497,13 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
   manager.setFallbackHeightSampler(sampleShapedHeight);
 
   const loadedTerrainReach = (loadRadius + 0.5) * chunkSize;
-  const viewDistance = Math.max(96, Math.ceil(loadedTerrainReach * 1.1));
+  // Distant tree-break rings sit slightly past the loaded chunk edge; give the
+  // camera enough far-plane headroom so they don't hard-clip into the sky.
+  const distantForestOn = qualityPreset.distantForest !== false;
+  const viewDistance = Math.max(
+    96,
+    Math.ceil(loadedTerrainReach * (distantForestOn ? 1.28 : 1.1)),
+  );
   const horizonEnabled = qualityPreset.terrainHorizon !== false;
   const horizon = horizonEnabled
     ? createTerrainHorizon({
@@ -511,6 +519,33 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
     ? createTerrainParallaxLayers({ viewDistance, layerCount: parallaxLayerCount })
     : null;
   if (parallax) group.add(parallax.group);
+
+  // Faux forest horizon for the infinite terrain surround — layered tree breaks
+  // + streaming low-poly blobs. Authored forest/wilds zones still own near detail.
+  const cityZonesForForest = (worldMap?.zones ?? []).filter((z) => z.type === 'city');
+  const distantForestExclude = (x, z) => {
+    const road = typeof roadCorridor === 'function' ? roadCorridor(x, z) : null;
+    if ((road?.weight ?? 0) > 0.15) return true;
+    const river = typeof riverCorridor === 'function' ? riverCorridor(x, z) : null;
+    if ((river?.weight ?? 0) > 0.15) return true;
+    for (const zone of cityZonesForForest) {
+      if (zoneContains(zone, x, z)) return true;
+    }
+    return false;
+  };
+  const distantForest = distantForestOn
+    ? createDistantForest({
+      sampleHeight: sampleShapedHeight,
+      loadedReach: loadedTerrainReach,
+      qualityPreset,
+      isExcluded: distantForestExclude,
+      renderer,
+      initialCameraPosition: worldMap?.spawn
+        ? { x: worldMap.spawn.x, y: 0, z: worldMap.spawn.z }
+        : { x: 0, y: 0, z: 0 },
+    })
+    : null;
+  if (distantForest?.group) group.add(distantForest.group);
 
   // Replace per-chunk computed normals (one-sided at edges → bright seam lines)
   // with normals from central differences of the continuous height field, so
@@ -716,23 +751,30 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
     roadCorridor = roadProfile.corridorAt;
   }
 
-  // Rally mud deform field (docs/rally-mud-tread-plan.md). Constructed ONLY in
-  // rally mode AND only when the map actually contains a mud-surface road — every
-  // other mode (and mud-less rally maps) leaves `mudField` null so getGroundHeightAt,
-  // BaseVehicle, and the deform texture all cost zero. See the scope guarantee.
-  const hasMudRoad = levelMode === 'rally' && allRoads.some((r) => surfaceForRoad(r) === 'mud');
+  // Mud/wet deform field (tyre ruts + optional pre-worn tracks). Built in rally
+  // and world when a road needs tread geometry; city/wilds leave mudField null
+  // so those modes stay free of the cost. See docs/rally-mud-tread-plan.md +
+  // docs/advanced-wet-roads-plan.md.
+  const deformLevelModes = levelMode === 'rally' || levelMode === 'world';
+  const hasDeformRoad = deformLevelModes && allRoads.some((r) => roadNeedsDeformField(r));
+  const hasMudRoad = deformLevelModes && allRoads.some((r) => surfaceForRoad(r) === 'mud');
   // Deep, churned, PERSISTENT ruts: FINE cells (0.15 m) so a skinny tyre-width
   // trough still has ~2 cells of falloff across it (crisp, not a one-cell spike),
   // a wide (~115 m) footprint so a run of tracks stays behind the car, and long
   // decay so ruts linger for ~40 s instead of melting in a few seconds.
-  const mudField = hasMudRoad
+  // Pre-worn demo tracks use much longer taus (see createMudDeformField defaults).
+  const mudField = hasDeformRoad
     ? createMudDeformField({
-      maxDepth: 0.25,
+      // Wet-only stages need less max depth (no bog); mud keeps the deep dig.
+      maxDepth: hasMudRoad ? 0.25 : 0.12,
       cellSize: 0.15,
       resolution: 1024,
       depthTau: 40,
       treadTau: 22,
       wetnessTau: 16,
+      prewornDepthTau: 180,
+      prewornTreadTau: 100,
+      prewornWetnessTau: 80,
     })
     : null;
 
@@ -764,6 +806,21 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
       riverCorridorAt: riverCorridor,
     });
     group.add(roadworks.group);
+    // Pre-worn demo tracks: ~3 prior dual-wheel laps on mud/wet roads marked
+    // surfaceWear:'preWorn'. Seeded around spawn; refresh follows the car.
+    // CRITICAL: arm deformCenter + upload the texture HERE. The material fades
+    // all ruts by distance from centerUniform (default 0,0). Rally spawns are
+    // often 100–200 m from origin, so without setCenter the whole stage is
+    // fully faded to zero until the first VehicleSystem frame (and pre-worn
+    // never reaches the GPU without syncTexture).
+    if (mudField) {
+      const spawnX = Number(worldMap?.spawn?.x) || 0;
+      const spawnZ = Number(worldMap?.spawn?.z) || 0;
+      mudField.setCenter(spawnX, spawnZ);
+      seedPreWornOnField(mudField, roadProfile, { centerX: spawnX, centerZ: spawnZ, laps: 3 });
+      mudField.ensureTexture();
+      mudField.syncTexture();
+    }
     // GT3-style trackside stack (curbs/shoulders/walls) for roads with a trackStyle.
     // Its wall colliders go into level.colliders so the vehicle is contained.
     const qualityLevel = getQualityLevel();
@@ -904,8 +961,11 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
     const distance = Math.max(Math.abs(entry.cx - initialCenterX), Math.abs(entry.cz - initialCenterZ));
     entry.physicsActive = distance <= physicsRadius;
   }
-  horizon?.update(worldMap?.spawn?.x ?? 0, worldMap?.spawn?.z ?? 0);
-  parallax?.update(worldMap?.spawn?.x ?? 0, worldMap?.spawn?.z ?? 0);
+  const spawnX = worldMap?.spawn?.x ?? 0;
+  const spawnZ = worldMap?.spawn?.z ?? 0;
+  horizon?.update(spawnX, spawnZ);
+  parallax?.update(spawnX, spawnZ);
+  distantForest?.update(spawnX, spawnZ, { force: true });
 
   return {
     name: worldMap ? `World Map: ${worldMap.name ?? 'Untitled'}` : 'Streaming Terrain',
@@ -933,10 +993,14 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
     // Heightfields for these are built at physics init; streaming handles the rest.
     terrainChunks: initialEntries.filter((entry) => entry.physicsActive).map(terrainChunkPayload),
 
-    ready: forestZoneReady,
+    ready: Promise.all([
+      forestZoneReady,
+      distantForest?.ready ?? Promise.resolve(null),
+    ]).then(([fz]) => fz),
 
     updateForestEnvironment: (env) => {
       forestZone?.updateEnvironment?.(env);
+      distantForest?.updateEnvironment?.(env);
     },
 
     updateForestDrivingColliders: (position, physics) => {
@@ -957,6 +1021,7 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
       if (forestZone && lodCenter) forestZone.setCameraPosition(lodCenter);
       if (horizon && lodCenter) horizon.update(lodCenter.x, lodCenter.z);
       if (parallax && lodCenter) parallax.update(lodCenter.x, lodCenter.z);
+      if (distantForest && lodCenter) distantForest.update(lodCenter.x, lodCenter.z);
       roadworks?.updateLOD?.(position);
       trackside?.updateLOD?.(position);
       const current = {
@@ -1215,6 +1280,7 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
         trees: forest?.count ?? 0,
         forestTrees: forestZone?.count ?? 0,
         ...forestSnapshot,
+        ...(distantForest?.snapshot?.() ?? {}),
         ...manager.getStats(),
       };
     },
@@ -1225,6 +1291,9 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
       clearForestLitterMask();
       forest?.dispose?.();
       forestZone?.dispose?.();
+      distantForest?.dispose?.();
+      horizon?.dispose?.();
+      parallax?.dispose?.();
       roadworks?.dispose?.();
       trackside?.dispose?.();
       spectatorCrowd?.dispose?.();

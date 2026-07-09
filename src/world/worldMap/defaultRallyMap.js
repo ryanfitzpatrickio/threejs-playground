@@ -43,6 +43,8 @@ const RALLY_MAP_SOURCE = Object.freeze({
       width: 6.4,
       trackStyle: 'rallySpectator',
       surface: 'mud',
+      // Demo: stage already shows ~3 prior dual-wheel laps (slow-fade pre-worn).
+      surfaceWear: 'preWorn',
       points: [
         { x: -140, z: 150 }, { x: -95, z: 105 }, { x: -112, z: 48 },
         { x: -54, z: 9 }, { x: 12, z: 34 }, { x: 76, z: 5 },
@@ -58,7 +60,10 @@ const RALLY_MAP_SOURCE = Object.freeze({
       type: 'road',
       width: 5.5,
       trackStyle: 'rallyStage',
-      surface: 'mud',
+      // Wet service: reflective puddles + shallow tread grooves, pre-worn demo.
+      surface: 'wet',
+      surfaceWear: 'preWorn',
+      tread: true,
       points: [
         { x: 76, z: 5 }, { x: 140, z: 42 }, { x: 202, z: 28 }, { x: 238, z: -22 },
       ],

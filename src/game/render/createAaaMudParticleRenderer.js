@@ -18,11 +18,13 @@ import {
   attribute,
 } from 'three/tsl';
 import {
-  RALLY_MUD_WET_LINEAR,
-  RALLY_MUD_BODY_LINEAR,
-  RALLY_MUD_DECAL_DARK_LINEAR,
-  RALLY_MUD_DECAL_LIGHT_LINEAR,
-} from '../materials/rallyMudPalette.js';
+  uMudLightColor,
+  uMudAmbient,
+  uMudWetCol,
+  uMudDryCol,
+  uMudDecalDark,
+  uMudDecalLight,
+} from './mudParticleUniforms.js';
 
 const DEFAULT_SUN_DIRECTION = new THREE.Vector3(-8, 12, 7).normalize();
 
@@ -200,12 +202,13 @@ export function createAaaMudParticleRenderer({
   name = 'AAA Mud Particles',
 }) {
   const lightDirView = uniform(new THREE.Vector3(0, 0, 1));
-  const lightColor = uniform(new THREE.Vector3(1.05, 0.98, 0.90));
-  const ambient = uniform(new THREE.Vector3(0.44, 0.42, 0.40));
-  const wetCol = uniform(new THREE.Vector3(...RALLY_MUD_WET_LINEAR));
-  const dryCol = uniform(new THREE.Vector3(...RALLY_MUD_BODY_LINEAR));
-  const decalDark = uniform(new THREE.Vector3(...RALLY_MUD_DECAL_DARK_LINEAR));
-  const decalLight = uniform(new THREE.Vector3(...RALLY_MUD_DECAL_LIGHT_LINEAR));
+  // Shared look uniforms (shader-debug Mud folder) — Vector3 linear, not Color.
+  const lightColor = uMudLightColor;
+  const ambient = uMudAmbient;
+  const wetCol = uMudWetCol;
+  const dryCol = uMudDryCol;
+  const decalDark = uMudDecalDark;
+  const decalLight = uMudDecalLight;
   const decalNow = uniform(0);
   const decalLifetime = uniform(decalLife);
 

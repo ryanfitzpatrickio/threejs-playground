@@ -29,6 +29,7 @@ import {
   DEFAULT_CLOUD_TYPE,
 } from './cloudConfig.js';
 import { terrainHazeColor } from '../../systems/terrainAerialUniforms.js';
+import { systemWrite } from '../../debug/shaderDebugRegistry.js';
 import { uCloudMaxMarchDist } from './cloudReachUniforms.js';
 import {
   uSunDirection,
@@ -194,23 +195,43 @@ export class CloudSkyProvider {
 
   applySunDirection(sunDirection, timeOfDay) {
     this.timeOfDay = timeOfDay;
+    // Direction is sim state — always stamp (never registered as editable pin).
     uSunDirection.value.copy(sunDirection);
 
     const elevation = Math.asin(THREE.MathUtils.clamp(sunDirection.y, -1, 1));
     const elevDeg = THREE.MathUtils.radToDeg(elevation);
     const day = smoothstep(-TWILIGHT_DEG, TWILIGHT_DEG, elevDeg);
     const weatherScale = WEATHER_LIGHT_SCALE[this.weather] ?? 1;
-    uSunIntensity.value = this._peakSunIntensity * day * weatherScale;
-    uSkyDarkness.value = 1 - day;
+
+    // Frozen registry ids — see docs/tsl-shader-debug-tweaking-plan.md Appendix C.
+    systemWrite('sky.sunIntensity', () => {
+      uSunIntensity.value = this._peakSunIntensity * day * weatherScale;
+    });
+    systemWrite('sky.darkness', () => {
+      uSkyDarkness.value = 1 - day;
+    });
 
     // Cloud lighting helpers: sun tint + ambient sky color, scaled by daylight.
     // M6 refines these from the real transmittance LUT; M2 uses a constant sky
     // blue and the sun color attenuated by the day factor.
-    uSunTint.value.copy(uSunColor.value).multiplyScalar(day * weatherScale);
-    // Zenith/horizon sky blue for cloud ambient fill (not grey haze).
-    uCloudAmbientColor.value.setRGB(0.34, 0.56, 0.96)
-      .multiplyScalar((0.22 + 0.78 * day) * weatherScale);
-    terrainHazeColor.value.copy(uCloudAmbientColor.value);
+    systemWrite('clouds.sunTint', () => {
+      uSunTint.value.copy(uSunColor.value).multiplyScalar(day * weatherScale);
+    });
+    systemWrite('clouds.ambientColor', () => {
+      uCloudAmbientColor.value.setRGB(0.34, 0.56, 0.96)
+        .multiplyScalar((0.22 + 0.78 * day) * weatherScale);
+    });
+    // Ground aerial haze stays greyer than zenith ambient — desaturate the sky
+    // ambient so distant terrain does not get painted pure blue.
+    systemWrite('aerial.hazeColor', () => {
+      const amb = uCloudAmbientColor.value;
+      const lum = amb.r * 0.299 + amb.g * 0.587 + amb.b * 0.114;
+      terrainHazeColor.value.setRGB(
+        lum * 0.94 + amb.r * 0.1,
+        lum * 0.97 + amb.g * 0.09,
+        lum * 1.01 + amb.b * 0.12,
+      );
+    });
 
     if (this.sun) {
       this.sun.position.copy(sunDirection).multiplyScalar(DEFAULT_SUN_DISTANCE);
@@ -244,7 +265,8 @@ export class CloudSkyProvider {
     this._shadowNode?.setCenter(position);
 
     if (Number.isFinite(delta) && delta > 0) {
-      uWindOffset.value.addScaledVector(_windDir, this._windSpeed * delta);
+      // Prefer live uniform direction so debug pins of windDirection stick.
+      uWindOffset.value.addScaledVector(uWindDirection.value, this._windSpeed * delta);
       uEvolution.value += this._evolutionSpeed * delta;
     }
     return false;
@@ -259,8 +281,8 @@ export class CloudSkyProvider {
       rain: { coverage: 0.85, density: 0.024 },
     };
     const profile = profiles[weather] ?? profiles.clear;
-    uCloudCoverage.value = profile.coverage;
-    uCloudDensity.value = profile.density;
+    systemWrite('clouds.coverage', () => { uCloudCoverage.value = profile.coverage; });
+    systemWrite('clouds.density', () => { uCloudDensity.value = profile.density; });
     this.clearHistory();
     return weather;
   }
@@ -288,30 +310,43 @@ export class CloudSkyProvider {
   }
 
   _applyCloudShapeUniforms({ shape, lighting, wind }) {
-    uCloudAltitude.value = shape.altitude;
-    uCloudThickness.value = shape.thickness;
-    uCloudCoverage.value = shape.coverage;
-    uCloudDensity.value = shape.density;
-    uCloudWeatherScale.value = shape.weatherScale;
-    uCloudBaseScale.value = shape.baseScale;
-    uCloudErosionScale.value = shape.baseScale * (shape.erosionScaleBaseMultiplier ?? 0.28);
-    uCloudBaseStrength.value = shape.baseStrength;
-    uCloudErosionStrengthBase.value = shape.erosionStrengthBase;
-    uCloudErosionStrengthPeak.value = shape.erosionStrengthPeak;
-    uCloudErosionShape.value = shape.erosionShape;
-    uCloudEdgeSoftness.value = shape.edgeSoftness;
-    uCloudEdgeSoftnessFalloff.value = shape.edgeSoftnessFalloff;
-    uCloudScatteringAlbedo.value = lighting.scatteringAlbedo;
-    uCloudPowderStrength.value = lighting.powderStrength;
-    uCloudAmbientIntensity.value = lighting.ambientIntensity;
-    // Wind: heading→direction vector + skew uniform; speeds are provider-owned
-    // and consumed per frame in update().
+    systemWrite('clouds.altitude', () => { uCloudAltitude.value = shape.altitude; });
+    systemWrite('clouds.thickness', () => { uCloudThickness.value = shape.thickness; });
+    systemWrite('clouds.coverage', () => { uCloudCoverage.value = shape.coverage; });
+    systemWrite('clouds.density', () => { uCloudDensity.value = shape.density; });
+    systemWrite('clouds.weatherScale', () => { uCloudWeatherScale.value = shape.weatherScale; });
+    systemWrite('clouds.baseScale', () => { uCloudBaseScale.value = shape.baseScale; });
+    systemWrite('clouds.erosionScale', () => {
+      uCloudErosionScale.value = shape.baseScale * (shape.erosionScaleBaseMultiplier ?? 0.28);
+    });
+    systemWrite('clouds.baseStrength', () => { uCloudBaseStrength.value = shape.baseStrength; });
+    systemWrite('clouds.erosionStrengthBase', () => {
+      uCloudErosionStrengthBase.value = shape.erosionStrengthBase;
+    });
+    systemWrite('clouds.erosionStrengthPeak', () => {
+      uCloudErosionStrengthPeak.value = shape.erosionStrengthPeak;
+    });
+    systemWrite('clouds.erosionShape', () => { uCloudErosionShape.value = shape.erosionShape; });
+    systemWrite('clouds.edgeSoftness', () => { uCloudEdgeSoftness.value = shape.edgeSoftness; });
+    systemWrite('clouds.edgeSoftnessFalloff', () => {
+      uCloudEdgeSoftnessFalloff.value = shape.edgeSoftnessFalloff;
+    });
+    systemWrite('clouds.scatteringAlbedo', () => {
+      uCloudScatteringAlbedo.value = lighting.scatteringAlbedo;
+    });
+    systemWrite('clouds.powderStrength', () => {
+      uCloudPowderStrength.value = lighting.powderStrength;
+    });
+    systemWrite('clouds.ambientIntensity', () => {
+      uCloudAmbientIntensity.value = lighting.ambientIntensity;
+    });
+    // Wind: heading→direction vector + skew; speeds are provider-owned CPU knobs.
     this._windHeading = wind.heading;
-    this._windSpeed = wind.speed;
-    this._evolutionSpeed = wind.evolutionSpeed;
+    systemWrite('clouds.windSpeed', () => { this._windSpeed = wind.speed; });
+    systemWrite('clouds.evolutionSpeed', () => { this._evolutionSpeed = wind.evolutionSpeed; });
     headingToVector(this._windHeading, _windDir);
-    uWindDirection.value.copy(_windDir);
-    uWindSkew.value = wind.skew;
+    systemWrite('clouds.windDirection', () => { uWindDirection.value.copy(_windDir); });
+    systemWrite('clouds.windSkew', () => { uWindSkew.value = wind.skew; });
   }
 
   setVisible(visible) {
@@ -340,6 +375,7 @@ export class CloudSkyProvider {
       camera,
       weatherNode: this.weatherNode,
       baseShapeNode: this.baseShapeNode,
+      sceneDepthNode: sceneDepth,
       steps: this._marchSteps,
       lightTaps: this._lightTaps,
       lightStepSize: this._lightStepSize,
@@ -363,6 +399,7 @@ export class CloudSkyProvider {
       sceneDepth,
       camera,
       cloudTexture: temporalNode.getTextureNode(),
+      // Rule: clouds always composite behind solid geometry (see cloudCompositeNode).
       sceneColorIsTexture,
     });
     if (this._godRaysEnabled) {

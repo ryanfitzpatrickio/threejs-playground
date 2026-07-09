@@ -37,10 +37,13 @@ export function buildPostPipelinePlan({
     ssao: effectiveMode === 'ssao'
       ? {
           resolutionScale: ssaoPreset.resolutionScale ?? 0.5,
-          samples: ssaoPreset.samples ?? 8,
-          radius: ssaoPreset.radius ?? 1.5,
-          intensity: ssaoPreset.intensity ?? 4,
-          blur: ssaoPreset.blur === true,
+          samples: ssaoPreset.samples ?? 12,
+          radius: ssaoPreset.radius ?? 1.25,
+          intensity: ssaoPreset.intensity ?? 1.9,
+          bias: ssaoPreset.bias ?? 0.055,
+          blurSharpness: ssaoPreset.blurSharpness ?? 0.9,
+          // Default on — half-res Vogel/IGN SSAO without blur reads as a grid.
+          blur: ssaoPreset.blur !== false,
           // Render AO (including its normal/depth pre-pass, which is a full
           // CPU-side scene re-render) every Nth frame, reusing the AO texture
           // on the frames between.

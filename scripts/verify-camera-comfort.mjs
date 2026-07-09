@@ -175,17 +175,101 @@ function testComfortDisablesSteerCoupling() {
   const tuning = cameraSystem.getVehicleTuning();
   assert.equal(tuning.steerLookStrength, 0);
   assert.equal(tuning.lateralShift, 0);
-  assert.equal(tuning.speedFovBoost, 0);
+  // Mild FOV pump is allowed so speed still reads without a long chase pull-back.
+  assert(tuning.speedFovBoost > 0 && tuning.speedFovBoost < 5, 'comfort FOV pump should stay mild');
+  assert(tuning.speedDistanceBoost <= 1.6, 'comfort distance boost should stay modest');
 
   const cinematic = bootCamera({ comfortEnabled: false });
   const cinematicTuning = cinematic.getVehicleTuning();
   assert(cinematicTuning.steerLookStrength > 0, 'cinematic restore should re-enable steer coupling');
-  console.log('  comfort tuning: steer/FOV pump disabled; cinematic restores drama');
+  assert(
+    cinematicTuning.speedFovBoost > tuning.speedFovBoost,
+    'cinematic should allow a stronger FOV pump than comfort',
+  );
+  console.log('  comfort tuning: no steer coupling; mild FOV; cinematic restores drama');
+}
+
+function cameraHorizontalOffset(cameraSystem, vehicle) {
+  const cam = cameraSystem.camera.position;
+  const car = vehicle.group.position;
+  return Math.hypot(cam.x - car.x, cam.z - car.z);
+}
+
+function testHighSpeedStaysClose() {
+  const cameraSystem = bootCamera({ comfortEnabled: true, feel: 'comfort' });
+  const idleVehicle = makeVehicle({ velocity: { x: 0, y: 0, z: 0 } });
+  driveFrames(cameraSystem, idleVehicle, 120);
+  const idleOffset = cameraHorizontalOffset(cameraSystem, idleVehicle);
+
+  const fastVehicle = makeVehicle({
+    velocity: { x: 0, y: 0, z: GAME_CONFIG.camera.vehicle.maxSpeedForEffects },
+  });
+  // Match heading to velocity so chase settles cleanly behind the car.
+  fastVehicle.group.rotation.set(0, 0, 0, 'YXZ');
+  driveFrames(cameraSystem, fastVehicle, 180, (v, i) => {
+    v.group.position.z -= GAME_CONFIG.camera.vehicle.maxSpeedForEffects * DT;
+  });
+  const fastOffset = cameraHorizontalOffset(cameraSystem, fastVehicle);
+  const pullBack = fastOffset - idleOffset;
+
+  // Slight dramatic ease-out is fine; reject the old long-chase pull-back.
+  assert(pullBack < 3.2, `high-speed pull-back ${pullBack.toFixed(2)} m is too far`);
+  assert(pullBack > 0.6, `high-speed should ease out a bit, got ${pullBack.toFixed(2)} m`);
+
+  // FOV should open a bit so speed still feels punchy.
+  const baseFov = GAME_CONFIG.camera.vehicle.baseFov;
+  assert(
+    cameraSystem.camera.fov > baseFov + 1.5,
+    `expected FOV pump at speed, got ${cameraSystem.camera.fov.toFixed(1)} (base ${baseFov})`,
+  );
+  console.log(
+    `  high-speed close: idle ${idleOffset.toFixed(2)} m → fast ${fastOffset.toFixed(2)} m`
+      + ` (Δ ${pullBack.toFixed(2)} m), fov ${cameraSystem.camera.fov.toFixed(1)}`,
+  );
+}
+
+function testHeadingNoiseDoesNotJitterOrientation() {
+  // Guards the close-mode chase jitter: physics-step heading/velocity wobble used
+  // to feed the raw heading into lookAt every frame, so the camera orientation
+  // twitched even though its position path was smoothed.
+  const cameraSystem = bootCamera();
+  const speed = 18;
+  const vehicle = makeVehicle({ velocity: { x: 0, y: 0, z: -speed } });
+
+  // Settle driving straight first.
+  driveFrames(cameraSystem, vehicle, 120, (v) => {
+    v.group.position.z -= speed * DT;
+  });
+
+  const prevQuat = new THREE.Quaternion().copy(cameraSystem.camera.quaternion);
+  let maxAngularRate = 0;
+  driveFrames(cameraSystem, vehicle, 180, (v, i) => {
+    // High-frequency heading wobble (~±0.02 rad) like per-step tyre corrections.
+    const noise = Math.sin(i * 2.7) * 0.02;
+    v.group.rotation.set(0, noise, 0, 'YXZ');
+    v.linearVelocity.x = -Math.sin(noise) * speed;
+    v.linearVelocity.z = -Math.cos(noise) * speed;
+    v.group.position.z -= speed * DT;
+
+    const angle = prevQuat.angleTo(cameraSystem.camera.quaternion);
+    maxAngularRate = Math.max(maxAngularRate, angle / DT);
+    prevQuat.copy(cameraSystem.camera.quaternion);
+  });
+
+  // Fixed behavior measures ~0.02 rad/s; reverting either the smoothed look-yaw
+  // or the look-target low-pass pushes this above 0.2.
+  assert(
+    maxAngularRate < 0.1,
+    `camera orientation jitters at ${maxAngularRate.toFixed(2)} rad/s under heading noise`,
+  );
+  console.log(`  heading-noise rejection: max angular rate ${maxAngularRate.toFixed(3)} rad/s`);
 }
 
 console.log('verify-camera-comfort');
 testComfortDisablesSteerCoupling();
+testHighSpeedStaysClose();
 testYawRateCap();
+testHeadingNoiseDoesNotJitterOrientation();
 testNoModeSnap();
 testCockpitRollLock();
 testEasedModeBlend();

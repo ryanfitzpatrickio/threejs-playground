@@ -5,7 +5,12 @@ import { listScenes, WORLDMAP_DRAFT_ID } from '../../world/worldMap/worldMapScen
 import { listBlueprints } from '../../map/blueprintLibrary.js';
 import { getFileStoreRevision, subscribeFileStore, ensureFileStore } from '../../store/fileStore.js';
 import { TRACK_CROSS_SECTIONS, TRACK_CROSS_SECTION_ORDER } from '../../game/world/trackCrossSection.js';
-import { ROAD_SURFACES, ROAD_SURFACE_ORDER } from '../../world/worldMap/roadSurface.js';
+import {
+  ROAD_SURFACES,
+  ROAD_SURFACE_ORDER,
+  ROAD_SURFACE_WEAR,
+  ROAD_SURFACE_WEAR_ORDER,
+} from '../../world/worldMap/roadSurface.js';
 
 const TOOLS = [
   { id: 'select', label: 'Select' },
@@ -154,7 +159,7 @@ export function WorldMapControls(props) {
     },
     {
       name: 'add_road',
-      description: 'Add a road spline (the main way to create rally stages or race circuits). points: array of {x,z} or [x,z]. width optional. trackStyle makes it a real course: "rallySpectator" (crowds+rope, perfect for rally), "rallyStage", "urbanCircuit" (barriers+grandstands for city race), "roadsideBuildings". surface: "mud" (deep ruts for rally), "dirt", or "asphalt".',
+      description: 'Add a road spline (the main way to create rally stages or race circuits). points: array of {x,z} or [x,z]. width optional. trackStyle makes it a real course: "rallySpectator" (crowds+rope, perfect for rally), "rallyStage", "urbanCircuit" (barriers+grandstands for city race), "roadsideBuildings". surface: "mud" (deep ruts), "wet" (puddles+shallow tread), "dirt", or "asphalt". For mud/wet set surfaceWear "preWorn" for ~3 prior dual-wheel laps (slow fade) or "fresh". Wet tread defaults on; tread:false for flat wet.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -573,6 +578,47 @@ ${JSON.stringify({ zones: (s.zones||[]).length, roads: (s.roads||[]).length, ent
             {(id) => <option value={id}>{ROAD_SURFACES[id]?.label ?? id}</option>}
           </For>
         </select>
+        <Show when={(() => {
+          const s = snap().selected?.kind === 'road' ? snap().selected.surface : snap().roadSurface;
+          return s === 'mud' || s === 'wet';
+        })()}>
+          <label style={{ 'font-size': '11px', color: '#8d9384', 'margin-top': '6px', display: 'block' }}>
+            Wear (demo)
+          </label>
+          <select
+            style={field}
+            value={
+              snap().selected?.kind === 'road'
+                ? (snap().selected.surfaceWear ?? 'fresh')
+                : (snap().roadSurfaceWear ?? 'fresh')
+            }
+            onChange={(e) => editor()?.setRoadSurfaceWear(e.target.value)}
+          >
+            <For each={ROAD_SURFACE_WEAR_ORDER}>
+              {(id) => <option value={id}>{ROAD_SURFACE_WEAR[id]?.label ?? id}</option>}
+            </For>
+          </select>
+          <div style={{ 'font-size': '10px', color: '#6a7068', 'margin-top': '2px' }}>
+            Pre-worn lays ~3 prior dual-wheel laps (slow fade). Fresh is clean.
+          </div>
+        </Show>
+        <Show when={(() => {
+          const s = snap().selected?.kind === 'road' ? snap().selected.surface : snap().roadSurface;
+          return s === 'wet';
+        })()}>
+          <label style={{ 'font-size': '11px', color: '#8d9384', 'margin-top': '6px', display: 'flex', 'align-items': 'center', gap: '6px' }}>
+            <input
+              type="checkbox"
+              checked={
+                snap().selected?.kind === 'road'
+                  ? snap().selected.tread !== false
+                  : snap().roadTread !== false
+              }
+              onChange={(e) => editor()?.setRoadTread(e.target.checked)}
+            />
+            Tread + puddles in grooves
+          </label>
+        </Show>
         <label style={{ 'font-size': '11px', color: '#8d9384', 'margin-top': '6px', display: 'block' }}>Elevation</label>
         <select
           style={field}

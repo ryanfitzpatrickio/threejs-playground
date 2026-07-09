@@ -26,6 +26,10 @@ import {
 } from '../world/worldMap/worldMapSchema.js';
 import { zoneContains, zoneBounds } from '../world/worldMap/zoneGeometry.js';
 import { sampleCenterline } from '../world/worldMap/roadProfile.js';
+import {
+  normalizeRoadSurface,
+  normalizeRoadSurfaceWear,
+} from '../world/worldMap/roadSurface.js';
 import * as Scenes from '../world/worldMap/worldMapScenes.js';
 import * as Blueprints from './blueprintLibrary.js';
 import { getWorldMapDraft, setWorldMapDraft } from '../store/fileStore.js';
@@ -62,7 +66,9 @@ export class WorldMapEditor {
 
     this.roadWidth = 8; // default width for new roads
     this.roadTrackStyle = null; // default GT3 trackside preset for new roads (null = plain)
-    this.roadSurface = null; // null follows track style; otherwise asphalt | dirt
+    this.roadSurface = null; // null follows track style; otherwise a ROAD_SURFACES key
+    this.roadSurfaceWear = null; // null/'fresh' | 'preWorn' for mud/wet demo wear
+    this.roadTread = null; // wet only: null = default on, false = flat wet
     this.roadElevation = null; // finite number when roadElevationMode === 'fixed'
     this.roadElevationMode = 'terrain'; // terrain | fixed | gentleSlope
     this.riverWidth = 10; // default width for new rivers
@@ -1060,11 +1066,48 @@ export class WorldMapEditor {
   }
 
   setRoadSurface(surface) {
-    const next = surface === 'asphalt' || surface === 'dirt' ? surface : null;
+    const next = normalizeRoadSurface(surface);
     this.roadSurface = next;
     if (this.selection?.kind === 'road') {
       const road = this._roadById(this.selection.id);
-      if (road) { road.surface = next; this.flushAutosave(); }
+      if (road) {
+        road.surface = next;
+        // Clear wear/tread when leaving mud/wet so dirt/asphalt stay clean.
+        if (next !== 'mud' && next !== 'wet') {
+          road.surfaceWear = null;
+          road.tread = null;
+        }
+        this.flushAutosave();
+      }
+    }
+    this._dirty = true;
+    this.emitChange();
+  }
+
+  setRoadSurfaceWear(wear) {
+    const next = normalizeRoadSurfaceWear(wear);
+    this.roadSurfaceWear = next;
+    if (this.selection?.kind === 'road') {
+      const road = this._roadById(this.selection.id);
+      if (road) {
+        road.surfaceWear = next;
+        this.flushAutosave();
+      }
+    }
+    this._dirty = true;
+    this.emitChange();
+  }
+
+  setRoadTread(enabled) {
+    // null = default (wet on), true = force on, false = flat wet without deform.
+    const next = enabled === false ? false : (enabled === true ? true : null);
+    this.roadTread = next;
+    if (this.selection?.kind === 'road') {
+      const road = this._roadById(this.selection.id);
+      if (road) {
+        road.tread = next;
+        this.flushAutosave();
+      }
     }
     this._dirty = true;
     this.emitChange();
@@ -1535,7 +1578,10 @@ export class WorldMapEditor {
       const r = this._roadById(this.selection.id);
       if (r) selected = {
         kind: 'road', id: r.id, width: r.width, trackStyle: r.trackStyle ?? null,
-        surface: r.surface ?? null, elevation: r.elevation ?? null,
+        surface: r.surface ?? null,
+        surfaceWear: r.surfaceWear ?? null,
+        tread: r.tread ?? null,
+        elevation: r.elevation ?? null,
         elevationMode: roadElevationMode(r),
       };
     } else if (this.selection?.kind === 'river') {
@@ -1580,6 +1626,8 @@ export class WorldMapEditor {
       roadWidth: this.roadWidth,
       roadTrackStyle: this.roadTrackStyle,
       roadSurface: this.roadSurface,
+      roadSurfaceWear: this.roadSurfaceWear,
+      roadTread: this.roadTread,
       roadElevation: this.roadElevation,
       roadElevationMode: this.roadElevationMode,
       riverWidth: this.riverWidth,
@@ -1690,6 +1738,8 @@ export class WorldMapEditor {
           width: r.width,
           trackStyle: r.trackStyle || null,
           surface: r.surface || null,
+          surfaceWear: r.surfaceWear || null,
+          tread: r.tread ?? null,
           elevation: r.elevation,
           pointsSample: sample,
         };
@@ -1741,6 +1791,8 @@ export class WorldMapEditor {
       width: opts.width ?? this.roadWidth,
       trackStyle: opts.trackStyle ?? this.roadTrackStyle ?? null,
       surface: opts.surface ?? this.roadSurface ?? null,
+      surfaceWear: opts.surfaceWear ?? this.roadSurfaceWear ?? null,
+      tread: opts.tread ?? this.roadTread ?? null,
       elevation: opts.elevation ?? (this.roadElevationMode === 'fixed' ? this.roadElevation : null),
       elevationMode: opts.elevationMode
         ?? (this.roadElevationMode === 'gentleSlope' ? 'gentleSlope' : null),

@@ -4,6 +4,12 @@ import {
   texture,
   positionWorld,
   positionLocal,
+  // Raw vertex attribute — NOT positionLocal. NodeMaterial reassigns the shared
+  // positionLocal node to positionNode's result when positionNode is set, so
+  // reading positionLocal inside (or after) positionNode sees the override, not
+  // the geometry. That silently zeroed the mud vertex sink. See createRainEffect.js
+  // header and three Position.js ("use positionGeometry for pre-transformed local").
+  positionGeometry,
   float,
   vec3,
   vec4,
@@ -14,6 +20,7 @@ import {
   mix,
   clamp,
   min,
+  max,
   sub,
   smoothstep,
   fract,
@@ -23,6 +30,9 @@ import {
   normalize,
   Fn,
   If,
+  attribute,
+  uniform,
+  pow,
 } from 'three/tsl';
 import { puddleMaskAt, puddleRippleNormal } from './wetSurfaceNodes.js';
 import { parallaxOcclusionUV } from '../../three-addons/tsl/utils/ParallaxOcclusion.js';
@@ -45,12 +55,24 @@ const RUT_TEXTURE_LENGTH = 3.2;
 // World xz sampling — same approach as terrain biome material (~3.2 m per repeat).
 export const RALLY_SURFACE_TILES_PER_METRE = 1 / 3.2;
 
+// Default persistent wetness floor for the wet-road variant (Clear sky still
+// shows puddles; rain adds on top via max(rain, wetness)).
+export const DEFAULT_WET_ROAD_WETNESS = 0.6;
+
+/**
+ * Build the rain/wet surface graph. `wetness` is a persistent surface floor
+ * (0 for dirt/mud/asphalt — rain-only). Effective wetness = max(rain, wetness).
+ * When `envReflections` is set, standing water re-enables sky PMREM IBL
+ * (docs/advanced-wet-roads-plan.md M2) instead of reflecting black.
+ */
 function applyRainWetSurface(material, {
   baseColorNode,
   baseRoughnessNode,
   baseNormalNode,
   rainWetness,
   rainWind,
+  // Persistent surface wetness (TSL uniform or float node). Null → rain only.
+  wetness = null,
   // Rally mud (M3): extra puddle coverage where the deform field is wet/deep, so
   // pooled water concentrates in ruts instead of pure noise placement. Null → 0.
   puddleBias = null,
@@ -58,8 +80,18 @@ function applyRainWetSurface(material, {
   // read as snowy white bands in the tread. Fades out with distance so distant
   // road can still pick up horizon wetness.
   rutGlossSuppress = null,
+  // Reflective puddles (wet road M2): leave scene PMREM env on and gate the
+  // near-mirror to standing water only. When false (default), black out env.
+  envReflections = null,
+  // Puddle coverage scale (fraction of RALLY_PUDDLE_COVERAGE). Quality preset.
+  puddleCoverageScale = 1,
 }) {
-  const dampColor = mix(baseColorNode, baseColorNode.mul(0.6), rainWetness);
+  // max(rain, surface) so a wet road keeps puddles in Clear weather and rain
+  // only adds. Dirt/mud pass wetness=0 → byte-for-byte rain-only behaviour.
+  const surfaceWet = wetness != null ? wetness : float(0);
+  const effWet = max(rainWetness, surfaceWet);
+
+  const dampColor = mix(baseColorNode, baseColorNode.mul(0.6), effWet);
 
   // Grazing-angle reflectivity. Real wet asphalt is matte and DARK viewed head-on
   // and only mirrors the sky at shallow (grazing) angles — the classic wet-road
@@ -69,12 +101,13 @@ function applyRainWetSurface(material, {
   const viewDir = normalize(cameraPosition.sub(positionWorld));
   const facing = clamp(normalWorld.dot(viewDir), float(0), float(1));
   const grazeRoughness = mix(float(0.35), float(0.72), facing.mul(facing));
-  const dampRoughness = mix(baseRoughnessNode, grazeRoughness, rainWetness);
+  const dampRoughness = mix(baseRoughnessNode, grazeRoughness, effWet);
 
   const puddleDetail = smoothstep(90, 20, positionWorld.distance(cameraPosition));
+  const coverageBase = effWet.mul(RALLY_PUDDLE_COVERAGE * puddleCoverageScale);
   const coverage = puddleBias != null
-    ? rainWetness.mul(RALLY_PUDDLE_COVERAGE).add(puddleBias)
-    : rainWetness.mul(RALLY_PUDDLE_COVERAGE);
+    ? coverageBase.add(puddleBias)
+    : coverageBase;
   const puddleResult = Fn(() => {
     const mask = float(0).toVar();
     const rippleN = vec3(0, 1, 0).toVar();
@@ -89,7 +122,7 @@ function applyRainWetSurface(material, {
       // The softened FBM threshold can leak a small mask even at coverage=0
       // wherever noise reaches its upper tail. Gate by live wetness so Clear
       // weather reaches an exact zero instead of leaving glossy white bands.
-      ).mul(puddleDetail).mul(rainWetness);
+      ).mul(puddleDetail).mul(effWet);
       mask.assign(m);
 
       const rippleFade = clamp(float(0.18), float(0.02), float(0.8));
@@ -121,7 +154,9 @@ function applyRainWetSurface(material, {
 
   let puddleColor = mix(dampColor, dampColor.mul(0.5), saturated); // saturated wet
   puddleColor = mix(puddleColor, dampColor.mul(0.32), standing);   // deep water darkest
-  puddleColor = mix(puddleColor, dampColor.mul(0.6), rim.mul(0.5)); // muddy sediment ring
+  // Sediment rim: slightly warmer/muddier so the pool reads as water over mud,
+  // not a hole punched to the sky (composes under the env reflection).
+  puddleColor = mix(puddleColor, dampColor.mul(vec3(0.62, 0.55, 0.42)), rim.mul(0.55));
   material.colorNode = puddleColor;
 
   // Standing water is a near-mirror (roughness ~0.05) so it POPS against the matte
@@ -140,6 +175,37 @@ function applyRainWetSurface(material, {
   } else {
     material.normalNode = rippleViewNormal;
   }
+
+  // M2 reflective puddles: r185 has no environmentIntensityNode, so the wet
+  // variant skips disablePbrEnvironment and uses the scene PMREM. Standing-water
+  // roughness (0.05) carries the sky/peak mirror; the damp floor stays high-
+  // roughness so it does not go polished-marble. Fresnel weight is already in
+  // the graze roughness term above. SSR stays reflectNonMetals:false (Q2).
+  if (envReflections?.enabled) {
+    // Schlick fresnel boosts the near-mirror core so pools flash harder at
+    // grazing angles without raising env on the whole road (roughness does that).
+    const F0 = float(0.04);
+    const oneMinusFacing = float(1).sub(facing);
+    const fresnel = F0.add(float(1).sub(F0).mul(pow(oneMinusFacing, float(5))));
+    // Slight cool tint on the standing core so the reflected sky reads as water.
+    const coolTint = mix(vec3(1, 1, 1), vec3(0.88, 0.93, 1.0), standing.mul(0.35));
+    material.colorNode = mix(
+      material.colorNode,
+      material.colorNode.mul(coolTint),
+      standing.mul(fresnel).mul(float(envReflections.envIntensity ?? 1)),
+    );
+    // Expose for probes / snapshots (CPU).
+    material.userData.wetEnvReflections = {
+      standingGate: true,
+      envIntensity: envReflections.envIntensity ?? 1,
+      fresnel: envReflections.fresnel !== false,
+    };
+  }
+
+  material.userData.wetSurface = {
+    hasWetnessUniform: wetness != null && wetness.isUniformNode,
+    envReflections: Boolean(envReflections?.enabled),
+  };
 }
 
 function configureMap(texture, { colorSpace = THREE.NoColorSpace, repeat = 1 } = {}) {
@@ -209,6 +275,19 @@ export function createRallySurfaceMaterial(maps, {
   tilesPerMetre = RALLY_SURFACE_TILES_PER_METRE,
   rainWetness = null,
   rainWind = null,
+  // Persistent surface wetness (0..1). Number → owned uniform; TSL uniform →
+  // reused. Dirt/mud leave null (rain-only). Wet roads pass ~0.6 floor.
+  wetness = null,
+  // Reflective puddles (docs/advanced-wet-roads-plan.md M2). When enabled the
+  // material does NOT call disablePbrEnvironment so standing water mirrors the
+  // scene sky PMREM. `{ enabled, envIntensity, fresnel }`.
+  envReflections = null,
+  // Puddle coverage multiplier (quality preset). 1 = default RALLY_PUDDLE_COVERAGE.
+  puddleCoverageScale = 1,
+  // Extra puddleBias toward road edges / low spots (wet M3). 0..1 strength.
+  lowSpotBias = 0,
+  // Compacted wheel-line darkening + slight gloss (wet M3). false = off.
+  tireTracks = false,
   // Rally mud deform texture (docs/rally-mud-tread-plan.md, M2). When present the
   // material darkens ruts, wets them, and reads a tread groove — sampled by the
   // SAME positionWorld.xz node, +1 sampler (3 → 4, well under the 16 budget).
@@ -223,6 +302,8 @@ export function createRallySurfaceMaterial(maps, {
   // Mud roads reuse the dirt textures but read as MUD: a dark, wet, brown base
   // (distinct from dry gravel) even before any tyre has cut a rut.
   mudSurface = false,
+  // Wet road base: slightly cooler/darker dirt, not full mud brown.
+  wetSurface = false,
   // Real geometric ruts (M2b): displace the dense ribbon down by deform depth ×
   // this scale (metres = maxDepth). Faded to 0 beyond the footprint around
   // `deformCenter` (a vec2 uniform of the car XZ) since the texture wraps.
@@ -340,6 +421,12 @@ export function createRallySurfaceMaterial(maps, {
     const sunFacing = clamp(normalWorld.dot(normalize(uSunDirection)), float(0), float(1));
     const sunBleachFix = mix(float(1), float(0.70), sunFacing.mul(sunFacing));
     baseColorNode = baseColorNode.mul(sunBleachFix);
+  } else if (wetSurface) {
+    // Wet road: cooler, darker dirt — between dry gravel and full mud brown.
+    baseColorNode = mix(baseColorNode, color(0x5a4a38), 0.42);
+    baseRoughnessNode = clamp(baseRoughnessNode.mul(0.9), float(0.4), float(1));
+    const sunFacing = clamp(normalWorld.dot(normalize(uSunDirection)), float(0), float(1));
+    baseColorNode = baseColorNode.mul(mix(float(1), float(0.82), sunFacing.mul(sunFacing)));
   }
 
   // Break the uniform gloss with LARGE-scale roughness variation — shallow
@@ -361,37 +448,89 @@ export function createRallySurfaceMaterial(maps, {
   // wet ruts read correctly and M3 can couple deform into the puddle mask.
   let puddleBias = null;
   let rutGlossSuppress = null;
+
+  // Wet M3: low-spot / edge puddle bias + compacted wheel-line darkening.
+  // Uses the ribbon `roadMark` attribute (lateral m, arc, half-width) — zero samplers.
+  if (wetSurface && (lowSpotBias > 0 || tireTracks)) {
+    const mark = attribute('roadMark', 'vec3');
+    const lateral = mark.x; // signed metres from centreline
+    const halfW = max(mark.z, float(0.5));
+    const latNorm = clamp(lateral.abs().div(halfW), float(0), float(1)); // 0 centre → 1 edge
+
+    if (lowSpotBias > 0) {
+      // Water gathers at the edges (camber runoff) and in large-scale low spots
+      // from the height map / noise — not pure FBM scatter.
+      const edgePool = smoothstep(float(0.55), float(0.95), latNorm);
+      let lowSpot = float(0);
+      if (maps?.heightMap) {
+        // Lower height texels → more pooling. Invert + soft threshold.
+        const h = texture(maps.heightMap, uv.mul(float(0.45))).r;
+        lowSpot = smoothstep(float(0.55), float(0.2), h);
+      } else {
+        // Fallback: large-scale world noise standing in for depressions.
+        const n = fract(positionWorld.xz.mul(vec2(0.07, 0.09)).dot(vec2(12.9898, 78.233)).sin().mul(43758.5453));
+        lowSpot = smoothstep(float(0.55), float(0.85), n);
+      }
+      const bias = edgePool.mul(0.55).add(lowSpot.mul(0.7)).mul(float(lowSpotBias));
+      puddleBias = puddleBias != null ? puddleBias.add(bias) : bias;
+    }
+
+    if (tireTracks) {
+      // Two wheel lines at ~±35% of half-width (typical rally track). Compacted
+      // tracks hold water, dry slower — darken + slight roughness drop (glint).
+      const trackOffset = halfW.mul(0.35);
+      const trackWidth = float(0.22);
+      const leftTrack = float(1).sub(smoothstep(float(0), trackWidth, lateral.sub(trackOffset).abs()));
+      const rightTrack = float(1).sub(smoothstep(float(0), trackWidth, lateral.add(trackOffset).abs()));
+      const tracks = clamp(leftTrack.add(rightTrack), float(0), float(1));
+      baseColorNode = mix(baseColorNode, baseColorNode.mul(0.72), tracks.mul(0.85));
+      baseRoughnessNode = mix(baseRoughnessNode, float(0.38), tracks.mul(0.35));
+      // Slight extra puddle coverage on the tracks (they hold water).
+      const trackBias = tracks.mul(0.12);
+      puddleBias = puddleBias != null ? puddleBias.add(trackBias) : trackBias;
+    }
+  }
   if (deformTexture != null && deformTilesPerMetre != null) {
-    const dUv = positionWorld.xz.mul(float(deformTilesPerMetre));
-    const deform = texture(deformTexture, dUv);
+    // Sample deform by world XZ. Use positionWorld for fragment (after any
+    // vertex sink, XZ is unchanged). Scale matches mudDeformField torus UV.
+    const deformTiles = float(deformTilesPerMetre);
+    const dUv = positionWorld.xz.mul(deformTiles);
+    // One TextureNode base; .sample(uv) clones with that UV (live .value ref).
+    const deformMap = texture(deformTexture);
+    const orientMap = orientationTexture != null ? texture(orientationTexture) : null;
+    const deform = deformMap.sample(dUv);
     const rut = deform.r; // 0..1 normalized sink depth
     const wet = deform.g; // 0..1 mud wetness
     const tread = deform.b; // 0..1 tread groove strength
-    const orientation = orientationTexture != null ? texture(orientationTexture, dUv) : null;
-    const vehicleStamp = orientation
-      ? smoothstep(float(0.75), float(0.95), orientation.a)
+    const orientation = orientMap != null ? orientMap.sample(dUv) : null;
+    // orientation.a encodes stamp kind: foot ~0.5, preworn ~0.75, vehicle ~1.0
+    // (mudDeformField KIND_*). Tyre tread atlas must cover BOTH live vehicle and
+    // pre-worn demo laps — the old smoothstep(0.75,0.95) zeroed preworn at 0.75.
+    const tyreStamp = orientation
+      ? smoothstep(float(0.62), float(0.78), orientation.a)
       : float(1);
     const footStamp = orientation
       ? smoothstep(float(0.3), float(0.46), orientation.a)
-        .mul(sub(1, smoothstep(float(0.6), float(0.76), orientation.a)))
+        .mul(sub(1, smoothstep(float(0.55), float(0.68), orientation.a)))
       : float(0);
-    // Fade the whole deform to zero beyond the footprint around the car so the
-    // wrapping texture doesn't ghost ruts onto distant road. `present` (0 where
-    // no mud was stamped) carries the fade, so everything downstream inherits it.
+    // Soft footprint fade only at the outer edge so trails stay visible behind
+    // the car. (Hard fade previously zeroed the whole stage when center lagged.)
     let present = deform.a;
     if (deformCenter != null && deformFadeFar > 0) {
       const fade = sub(1, smoothstep(float(deformFadeNear), float(deformFadeFar), positionWorld.xz.distance(deformCenter)));
-      present = present.mul(fade);
+      // Keep at least 35% strength even at the edge so ruts never fully vanish
+      // due to center lag; torus ghosts stay mild.
+      present = present.mul(mix(float(0.35), float(1), fade));
     }
     // Ruts read as dark CHURNED mud, not water: darken hard and keep them MATTE
     // (raise roughness) so they're clearly distinct from the glossy rain puddles.
-    // Tread grooves add darker lines. Gated by `present` so un-stamped road just
-    // shows the base mud look.
-    const darken = mix(float(1), float(0.52), rut.mul(present))
-      .mul(mix(float(1), float(0.78), tread.mul(present)));
+    // Strong enough that tracks still read even if vertex sink fails to compile.
+    // Gated by `present` so un-stamped road just shows the base mud look.
+    const darken = mix(float(1), float(0.32), rut.mul(present))
+      .mul(mix(float(1), float(0.55), tread.mul(present).mul(tyreStamp)));
     baseColorNode = baseColorNode.mul(darken);
     // Churned mud is rougher than the surrounding wet skin (matte, not slick).
-    baseRoughnessNode = mix(baseRoughnessNode, float(0.85), rut.mul(present));
+    baseRoughnessNode = mix(baseRoughnessNode, float(0.88), rut.mul(present).mul(tyreStamp));
 
     if (rutAtlas != null && orientationTexture != null) {
       // Decode the heading written by each wheel stamp. Projecting world XZ onto
@@ -404,14 +543,12 @@ export function createRallySurfaceMaterial(maps, {
         fract(lateralCycle.sub(orientation.b).add(0.5)),
         positionWorld.xz.dot(rutDirection).div(RUT_TEXTURE_LENGTH),
       );
-      // Narrow, hard-walled channel: only the deep core of the sink shows tread.
-      // A single tight smoothstep (was two wide, overlapping ramps on the same
-      // depth value) drops the feathered shallow rim (narrower rut) and gives
-      // steep walls + a flatter floor instead of a soft round dish (less round).
-      const depressionMask = smoothstep(float(0.16), float(0.32), rut)
+      // Channel mask — open early so a single pass still imprints the atlas
+      // (normalized rut often ~0.15–0.5 after brush falloff).
+      const depressionMask = smoothstep(float(0.04), float(0.18), rut)
         .mul(present)
-        .mul(vehicleStamp);
-      const heavyBlend = smoothstep(float(0.48), float(0.86), rut);
+        .mul(tyreStamp);
+      const heavyBlend = smoothstep(float(0.35), float(0.78), rut);
       // Reuse one TextureNode per atlas. Four quadrant samples still consume one
       // sampled-texture binding, avoiding WebGPU's pipeline-layout limit.
       const lightAtlas = texture(rutAtlas);
@@ -420,9 +557,9 @@ export function createRallySurfaceMaterial(maps, {
       const heavyHeight = heavyAtlas.sample(atlasTileUv(rutUv, 1, 1)).r;
       const rutHeight = mix(lightHeight, heavyHeight, heavyBlend);
       const imprintMask = depressionMask.mul(mix(
-        float(0.7),
+        float(0.75),
         float(1),
-        smoothstep(float(0.2), float(0.8), rutHeight),
+        smoothstep(float(0.15), float(0.75), rutHeight),
       ));
       const lightColor = mx_srgb_texture_to_lin_rec709(lightAtlas.sample(atlasTileUv(rutUv, 0, 0)).rgb);
       const heavyColor = mx_srgb_texture_to_lin_rec709(heavyAtlas.sample(atlasTileUv(rutUv, 0, 0)).rgb);
@@ -450,34 +587,64 @@ export function createRallySurfaceMaterial(maps, {
         ? normalize(mix(baseNormalNode, rutNormal, imprintMask))
         : rutNormal;
     }
-    // Alternating player-foot stamps are encoded as type 0.5 in the orientation
-    // texture. Their local wet/depth channels raise puddle coverage only inside
-    // each footprint; the global rainWetness gate still removes them when dry.
-    puddleBias = smoothstep(float(0.02), float(0.14), rut)
+    // Puddles pool in tyre grooves (and foot stamps). ADD to any wet-road edge
+    // bias instead of replacing it so wet+tread keeps both.
+    const groovePuddle = smoothstep(float(0.04), float(0.22), rut)
       .mul(wet)
-      .mul(footStamp)
       .mul(present)
+      .mul(tyreStamp.add(footStamp))
       .mul(0.95);
+    puddleBias = puddleBias != null ? puddleBias.add(groovePuddle) : groovePuddle;
     // Keep nearby tyre tread matte under rain — puddle gloss + SSR on low-roughness
     // ruts read as snowy white when you're on top of them. Fade out by ~40 m so
     // distant road can still catch horizon wetness.
     const rutDepthMask = smoothstep(float(0.03), float(0.35), rut).mul(present);
     const rutClose = smoothstep(float(40), float(8), positionWorld.distance(cameraPosition));
-    rutGlossSuppress = rutDepthMask.mul(rutClose).mul(vehicleStamp);
+    rutGlossSuppress = rutDepthMask.mul(rutClose).mul(tyreStamp);
 
     // M2b: vertex sink — push the dense ribbon DOWN into the rut so it's real
-    // geometry, not a painted-on shadow. Sampled at the vertex world XZ, gated by
-    // presence×fade, scaled to metres by maxDepth.
-    if (deformSinkScale > 0 && deformCenter != null && deformFadeFar > 0) {
-      const vXZ = positionLocal.xz;
-      const dv = texture(deformTexture, vXZ.mul(float(deformTilesPerMetre)));
-      const vFade = sub(1, smoothstep(float(deformFadeNear), float(deformFadeFar), vXZ.distance(deformCenter)));
-      // Shape the cross-section: remap raw depth through a tight smoothstep so the
-      // groove has steep walls and a flatter floor (a defined channel) rather than
-      // a soft round dish, and its rim sinks to nothing (narrower).
-      const profile = smoothstep(float(0.1), float(0.45), dv.r);
-      const sink = profile.mul(dv.a).mul(vFade).mul(float(deformSinkScale));
-      material.positionNode = positionLocal.sub(vec3(0, sink, 0));
+    // geometry. MUST use positionGeometry inside Fn (raw attribute). NodeMaterial
+    // reassigns positionLocal to positionNode's result; reading positionLocal in
+    // the sink graph compiles to a no-op / circular node and leaves the ribbon
+    // flat (see createRainEffect.js). Road ribbons bake world XZ into the
+    // position attribute with the mesh at the origin → geometry.xz == world.xz.
+    if (deformSinkScale > 0) {
+      const sinkScale = float(deformSinkScale);
+      const tiles = float(deformTilesPerMetre);
+      const hasFade = deformCenter != null && deformFadeFar > 0;
+      const fadeNear = float(deformFadeNear || 0);
+      const fadeFar = float(deformFadeFar || 1);
+      material.positionNode = Fn(() => {
+        const geoPos = positionGeometry.toVar();
+        const vXZ = geoPos.xz;
+        const dv = deformMap.sample(vXZ.mul(tiles));
+        let vFade = float(1);
+        if (hasFade) {
+          vFade = mix(
+            float(0.35),
+            float(1),
+            sub(1, smoothstep(fadeNear, fadeFar, vXZ.distance(deformCenter))),
+          );
+        }
+        // Open early so a single tyre pass carves a clear trough.
+        const profile = smoothstep(float(0.02), float(0.18), dv.r);
+        const sink = profile.mul(dv.a).mul(vFade).mul(sinkScale);
+        return geoPos.sub(vec3(0, sink, 0));
+      })();
+    }
+  }
+
+  // Own a TSL wetness uniform when a number floor is passed so callers can
+  // read/write `.value` (CPU grip / probes) without rebuilding the node graph.
+  let wetnessNode = null;
+  let wetnessUniform = null;
+  if (wetness != null) {
+    if (typeof wetness === 'number') {
+      wetnessUniform = uniform(wetness);
+      wetnessNode = wetnessUniform;
+    } else {
+      wetnessNode = wetness;
+      wetnessUniform = wetness.isUniformNode ? wetness : null;
     }
   }
 
@@ -488,8 +655,11 @@ export function createRallySurfaceMaterial(maps, {
       baseNormalNode,
       rainWetness,
       rainWind,
+      wetness: wetnessNode,
       puddleBias,
       rutGlossSuppress,
+      envReflections: envReflections?.enabled ? envReflections : null,
+      puddleCoverageScale,
     });
   } else {
     material.colorNode = baseColorNode;
@@ -498,6 +668,17 @@ export function createRallySurfaceMaterial(maps, {
   }
 
   material.metalnessNode = float(0);
-  disablePbrEnvironment(material);
+  if (wetnessUniform) {
+    material.userData.wetnessUniform = wetnessUniform;
+    // Convenience alias for CPU readers (grip worsen, probes).
+    material.wetnessUniform = wetnessUniform;
+  }
+  // Reflective puddles need the scene sky PMREM (RendererSystem.installEnvironment).
+  // r185 has no environmentIntensityNode — Q1 resolved: skip the black-out so
+  // standing water (roughness 0.05) mirrors sky/peaks; damp floor stays high-
+  // roughness so the road does not go polished marble. Dirt/mud still black out.
+  if (!envReflections?.enabled) {
+    disablePbrEnvironment(material);
+  }
   return material;
 }

@@ -68,7 +68,6 @@ import {
   storage,
   instanceIndex,
   varyingProperty,
-  uniform,
   cameraPosition,
   time,
   mod,
@@ -81,22 +80,23 @@ import {
   float,
 } from 'three/tsl';
 import { lightningFlash } from '../systems/weatherUniforms.js';
+import { systemWrite } from '../debug/shaderDebugRegistry.js';
+import {
+  uRainVolume,
+  uRainFallSpeed,
+  uRainLengthBase,
+  uRainStreakWidth,
+  uRainWindVec,
+  uRainIntensity,
+  DEFAULT_RAIN_WIND,
+} from './rainUniforms.js';
 
 const DEFAULT_MAX_DROPS = 12000;
-// Matches the reference's uVolume (50, 40, 50).
-const DEFAULT_VOLUME = new THREE.Vector3(50, 40, 50);
-const DEFAULT_FALL_SPEED = 22; // uSpeed
-const DEFAULT_LENGTH = 1.4; // uLength
-// The reference's exact 0.012 is a true hairline that only reads against
-// its dark rainy-night scene; in this game's bright desert test scene it was
-// confirmed invisible even at max opacity (placement was still correct —
-// verified with a full-opacity/oversized diagnostic pass). Widened enough to
-// actually read as a streak against a bright backdrop while keeping the same
-// hairline character.
-const DEFAULT_STREAK_WIDTH = 0.03;
-const DEFAULT_WIND = { x: 3, z: 1 }; // uWind default from the reference's main.js
 
-export function createRainEffect({ maxDrops = DEFAULT_MAX_DROPS, wind = DEFAULT_WIND } = {}) {
+export function createRainEffect({
+  maxDrops = DEFAULT_MAX_DROPS,
+  wind = { x: DEFAULT_RAIN_WIND.x, z: DEFAULT_RAIN_WIND.z },
+} = {}) {
   const geometry = new THREE.PlaneGeometry(1, 1);
 
   // Per-instance random seed/variation (aSeed/aRand in the reference), read
@@ -111,13 +111,19 @@ export function createRainEffect({ maxDrops = DEFAULT_MAX_DROPS, wind = DEFAULT_
   const seedBuffer = storage(seedAttr, 'vec3', maxDrops);
   const randBuffer = storage(randAttr, 'float', maxDrops);
 
-  const volume = uniform(DEFAULT_VOLUME.clone());
-  const fallSpeed = uniform(DEFAULT_FALL_SPEED);
-  const lengthBase = uniform(DEFAULT_LENGTH);
-  const windVec = uniform(new THREE.Vector3(wind.x ?? 0, 0, wind.z ?? 0));
-  const streakWidth = uniform(DEFAULT_STREAK_WIDTH);
+  // Module-scope uniforms (shader-debug live-tweak + single global rain).
+  // Optional wind ctor override only applies when not user-pinned.
+  systemWrite('rain.windVec', () => {
+    uRainWindVec.value.set(wind.x ?? DEFAULT_RAIN_WIND.x, 0, wind.z ?? DEFAULT_RAIN_WIND.z);
+  });
+
+  const volume = uRainVolume;
+  const fallSpeed = uRainFallSpeed;
+  const lengthBase = uRainLengthBase;
+  const windVec = uRainWindVec;
+  const streakWidth = uRainStreakWidth;
   // Ramped in update() so toggling weather fades in/out instead of popping.
-  const intensity = uniform(0);
+  const intensity = uRainIntensity;
 
   const material = new MeshBasicNodeMaterial();
   material.transparent = true;
@@ -216,8 +222,11 @@ export function createRainEffect({ maxDrops = DEFAULT_MAX_DROPS, wind = DEFAULT_
     if (Math.abs(currentFraction - targetFraction) < 0.002) currentFraction = targetFraction;
     // mesh.count stays fixed at maxDrops (see above); the fade is entirely
     // this uniform driving opacityNode's `.mul(intensity)`.
-    intensity.value = currentFraction;
-    mesh.visible = currentFraction > 0;
+    // systemWrite: pin rain.intensity to freeze opacity for authoring.
+    systemWrite('rain.intensity', () => {
+      intensity.value = currentFraction;
+    });
+    mesh.visible = intensity.value > 0 || currentFraction > 0;
   };
 
   const dispose = () => {

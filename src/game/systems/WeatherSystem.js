@@ -46,6 +46,7 @@ import * as THREE from 'three';
 import { createRainEffect } from '../render/createRainEffect.js';
 import { createLightningBolt } from '../render/createLightningBolt.js';
 import { rainWetness, lightningFlash } from './weatherUniforms.js';
+import { systemWrite } from '../debug/shaderDebugRegistry.js';
 
 const WETNESS_RISE_TAU = 15; // seconds to approach full wetness while raining
 const WETNESS_FALL_TAU = 8; // fallback decay if wetness is changed externally
@@ -113,7 +114,7 @@ export class WeatherSystem {
 
     if (raining) this._rainAudio().resume();
     else {
-      rainWetness.value = 0;
+      systemWrite('weather.wetness', () => { rainWetness.value = 0; });
       this.rainAudio?.mute(true);
       this.cabinRainAudio?.update(0);
     }
@@ -128,8 +129,11 @@ export class WeatherSystem {
     const target = raining ? 1 : 0;
     const tau = target > rainWetness.value ? WETNESS_RISE_TAU : WETNESS_FALL_TAU;
     const rate = Math.min(1, Math.max(0, delta) / tau);
-    rainWetness.value += (target - rainWetness.value) * rate;
-    if (Math.abs(rainWetness.value - target) < 0.002) rainWetness.value = target;
+    // systemWrite: pin weather.wetness to freeze surface wet look while authoring.
+    systemWrite('weather.wetness', () => {
+      rainWetness.value += (target - rainWetness.value) * rate;
+      if (Math.abs(rainWetness.value - target) < 0.002) rainWetness.value = target;
+    });
 
     if (raining) {
       this._rainAudio().setExteriorMix(inVehicle ? 0.14 : 1);

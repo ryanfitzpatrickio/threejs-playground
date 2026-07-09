@@ -388,25 +388,30 @@ export function createTerrainBiomeMaterial({
 
   // Distance aerial perspective: fade keyed to the live view distance (not the
   // post-pass kilometre-scale aerial* defaults). Horizontal XZ distance so hills
-  // don't skew the fade. At the load / far-plane edge the albedo should match
-  // the sky haze so the geometric cutoff disappears.
+  // don't skew the fade. Mid-field keeps full albedo; only the outer load edge
+  // melts into horizon haze so the geometric cutoff disappears.
   const aerialColor = Fn(() => {
     const color = biomeColor.toVar();
     const delta = positionWorld.xz.sub(cameraPosition.xz);
     const dist = delta.length();
-    const fadeEnd = min(terrainAerialEnd, terrainFadeRadius.mul(0.96));
-    const aerialT = smoothstep(terrainAerialStart, fadeEnd, dist)
+    const fadeEnd = min(terrainAerialEnd, terrainFadeRadius.mul(0.98));
+    // Ease-in power keeps the first half of the fade band nearly invisible.
+    const aerialLinear = smoothstep(terrainAerialStart, fadeEnd, dist);
+    const aerialT = aerialLinear.mul(aerialLinear)
       .mul(terrainAerialStrength)
       .mul(terrainAerialEnabled);
-    // Push loaded-ring edge to full haze so the geometric cutoff vanishes.
-    const edgePush = smoothstep(terrainLoadedReach.mul(0.82), terrainLoadedReach.mul(0.98), dist);
-    const aerialMix = min(float(1), aerialT.add(edgePush.mul(0.55)));
-    const haze = mix(terrainHazeColor, uCloudAmbientColor, float(0.45));
-    const nightHaze = mix(haze, vec3(0.38, 0.44, 0.58), max(terrainNightFactor, uSkyDarkness).mul(0.65));
+    // Full horizon melt only on the outermost ring (not 82% of load radius).
+    const edgePush = smoothstep(terrainLoadedReach.mul(0.92), terrainLoadedReach.mul(0.995), dist);
+    // Cap mid-fade haze so only edgePush can go fully white/grey.
+    const aerialMix = min(float(1), aerialT.mul(0.55).add(edgePush));
+    // Ground aerial is grey path-haze, not zenith sky blue. A tiny cool cast is
+    // enough to sit under a blue sky without painting the landscape cyan.
+    const haze = mix(terrainHazeColor, uCloudAmbientColor, float(0.1));
+    const nightHaze = mix(haze, vec3(0.42, 0.45, 0.52), max(terrainNightFactor, uSkyDarkness).mul(0.65));
     const luminance = color.dot(vec3(0.299, 0.587, 0.114));
     color.assign(mix(color, vec3(luminance), aerialMix.mul(terrainAerialDesat)));
-    const softened = color.mul(float(1).sub(aerialMix.mul(terrainAerialContrast).mul(0.55))).add(
-      aerialMix.mul(terrainAerialContrast).mul(0.28),
+    const softened = color.mul(float(1).sub(aerialMix.mul(terrainAerialContrast).mul(0.4))).add(
+      aerialMix.mul(terrainAerialContrast).mul(0.12),
     );
     color.assign(mix(color, softened, aerialMix));
     color.assign(mix(color, nightHaze, aerialMix));

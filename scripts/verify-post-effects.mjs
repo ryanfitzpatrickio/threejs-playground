@@ -54,11 +54,12 @@ for (const mode of ['ssao', 'ssr', 'off']) {
   assert.equal(resolveEffectivePostEffectMode(mode, low), 'off', `low quality runs off (requested ${mode})`);
 }
 assert.equal(resolveEffectivePostEffectMode('ssao', ultra), 'ssao');
-assert.equal(high.ssao.samples, 8, 'high preset uses 8 SSAO samples');
-assert.equal(ultra.ssao.samples, 8, 'ultra caps SSAO at 8 samples');
-assert.equal(high.ssao.radius, 1.5);
-assert.equal(high.ssao.intensity, 4);
-assert.equal(high.ssao.resolutionScale, 0.4, 'SSAO runs below full resolution (inherited by medium + ultra)');
+assert.equal(high.ssao.samples, 12, 'high preset uses 12 SSAO samples');
+assert.equal(ultra.ssao.samples, 12, 'ultra keeps 12 SSAO samples');
+assert.equal(high.ssao.radius, 1.25);
+assert.equal(high.ssao.intensity, 1.9);
+assert.equal(high.ssao.blur, true, 'high SSAO uses depth-aware blur to hide half-res sample grid');
+assert.equal(high.ssao.resolutionScale, 0.5, 'SSAO runs at half resolution');
 assert.equal(high.environment.bloomResolutionScale, 0.25, 'bloom runs at quarter resolution');
 
 // --- mutually exclusive pipeline branches ---
@@ -91,12 +92,26 @@ for (const [presetName, preset] of [['high', high], ['ultra', ultra], ['low', lo
 const highSsaoPlan = buildPostPipelinePlan({ requestedMode: 'ssao', qualityPreset: high, backend: 'webgpu' });
 assert.equal(highSsaoPlan.requestedMode, 'ssao');
 assert.deepEqual(highSsaoPlan.ssao, {
-  resolutionScale: 0.4, samples: 8, radius: 1.5, intensity: 4, blur: false, updateInterval: 2,
+  resolutionScale: 0.5,
+  samples: 12,
+  radius: 1.25,
+  intensity: 1.9,
+  bias: 0.055,
+  blurSharpness: 0.9,
+  blur: true,
+  updateInterval: 2,
 });
 assert.equal(highSsaoPlan.ssao.updateInterval, 2, 'high renders AO every other frame');
 const ultraSsaoPlan = buildPostPipelinePlan({ requestedMode: 'ssao', qualityPreset: ultra, backend: 'webgpu' });
 assert.deepEqual(ultraSsaoPlan.ssao, {
-  resolutionScale: 0.33, samples: 8, radius: 1.5, intensity: 4, blur: true, updateInterval: 2,
+  resolutionScale: 0.5,
+  samples: 12,
+  radius: 1.25,
+  intensity: 2.2,
+  bias: 0.055,
+  blurSharpness: 1.0,
+  blur: true,
+  updateInterval: 2,
 });
 assert.equal(ultraSsaoPlan.ssao.updateInterval, 2, 'ultra renders AO every other frame when static');
 assert.equal(ultraSsaoPlan.bloom, null, 'ultra omits the bloom pass');

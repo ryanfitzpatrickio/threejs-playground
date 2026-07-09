@@ -8,7 +8,7 @@ import {
   RenderPipeline,
   SRGBColorSpace,
   RGBAFormat,
-  UnsignedByteType,
+  HalfFloatType,
   WebGPURenderer,
   Vector3,
   Quaternion,
@@ -23,6 +23,17 @@ import { syncTerrainAerialUniforms, syncTerrainViewDistance } from './terrainAer
 import { buildPostPipelinePlan } from '../render/postPipelinePlan.js';
 import { DrawCallProfiler } from '../render/drawCallProfiler.js';
 import { CITY_FURNITURE_LAYER } from '../render/renderLayers.js';
+import {
+  uHeightFogDensityScale,
+  uHeightFogAlphaMax,
+  uHeightFogStreetColor,
+  uHeightFogHighColor,
+  syncHeightFogColorsFromHaze,
+} from '../render/heightFogUniforms.js';
+import {
+  reapplyShaderDebugOverrides,
+  refreshShaderDebugBindings,
+} from '../debug/shaderDebugRegistry.js';
 import {
   Fn,
   Loop,
@@ -90,7 +101,7 @@ export class RendererSystem {
     this.fogEnabled = false;
     this.weather = 'clear';
     this.aerialPerspectiveEnabled = true;
-    this.aerialHazeColor = [0.32, 0.42, 0.48];
+    this.aerialHazeColor = [0.58, 0.60, 0.62];
     this.viewDistance = null;
     this.fogMarchSteps = 16;
     this.fogMaxDistance = 165; // overwritten in initialize() via getRecommendedFogMaxDistance
@@ -99,6 +110,10 @@ export class RendererSystem {
     this.baseExposure = DEFAULT_EXPOSURE;
     this.requestedPostEffectMode = 'ssao';
     this.postPipelinePlan = null;
+    /** Bumped each ensureRenderPipeline rebuild; used by shader-debug post rebind. */
+    this.pipelineGeneration = 0;
+    /** Live SSAO/bloom node refs for shader-debug (null when plan omits them). */
+    this._debugPost = null;
     // Volumetric sky/cloud provider (set by GameRuntime when SkySystem is in
     // 'volumetric' mode). When present, the cloud composite subsumes the
     // aerial-perspective output node in ensureRenderPipeline.
@@ -406,6 +421,8 @@ export class RendererSystem {
     });
     const trackedNodes = [];
     this._prepassCamera = null;
+    let debugSsao = null;
+    let debugBloom = null;
 
     const scenePass = pass(scene, camera);
     trackedNodes.push(scenePass);
@@ -420,9 +437,11 @@ export class RendererSystem {
     }
 
     if (plan.normalPrePass) {
-      // Opaque-only normal/depth pre-pass: view normals packed into an
-      // unsigned-byte target (bandwidth), decoded through a sampled node. The
-      // resulting AO darkens only the ambient/IBL term via builtinAOContext —
+      // Opaque-only normal/depth pre-pass: view normals packed into a half-float
+      // RGBA target, decoded through a sampled node. U8 normals quantized gentle
+      // outdoor slopes into contour bands that SSAO amplified into a faint grid;
+      // half-float keeps the bandwidth cost modest without those steps.
+      // The resulting AO darkens only the ambient/IBL term via builtinAOContext —
       // direct sun and local lights are unaffected.
       // The pre-pass renders through its OWN camera, kept in lockstep with the
       // live camera by render(), for two reasons:
@@ -445,7 +464,7 @@ export class RendererSystem {
       prePass.transparent = false;
       prePass.setMRT(mrt({ output: vec4(packNormalToRGB(normalView), float(1)) }));
       const normalTarget = prePass.getTexture('output');
-      normalTarget.type = UnsignedByteType;
+      normalTarget.type = HalfFloatType;
       // WebGPU WriteTexture requires 4-byte RGBA rows; vec3 normals alone fault with
       // "layout (4) exceeds linear data size (3)".
       normalTarget.format = RGBAFormat;
@@ -457,8 +476,15 @@ export class RendererSystem {
       aoNode.samples.value = plan.ssao.samples;
       aoNode.radius.value = plan.ssao.radius;
       aoNode.intensity.value = plan.ssao.intensity;
+      if (Number.isFinite(plan.ssao.bias)) {
+        aoNode.bias.value = plan.ssao.bias;
+      }
+      if (Number.isFinite(plan.ssao.blurSharpness)) {
+        aoNode.blurSharpness.value = plan.ssao.blurSharpness;
+      }
       aoNode.blurEnabled = plan.ssao.blur;
       trackedNodes.push(aoNode);
+      debugSsao = aoNode;
 
       // Every-Nth-frame AO: the pre-pass is a full CPU-side scene re-render
       // (~7 ms/frame at ultra draw counts, measured), and the AO term is
@@ -556,9 +582,10 @@ export class RendererSystem {
               sceneColor,
               sceneDepth,
               camera,
-              startDistance: Math.floor((this.viewDistance ?? camera.far ?? 300) * 0.28),
-              endDistance: Math.floor((this.viewDistance ?? camera.far ?? 300) * 0.92),
-              maxOpacity: Math.min(0.42, (this.qualityPreset.environment?.aerialMaxOpacity ?? 0.22) * 1.35),
+              // Match terrain material: only the far ring melts into haze.
+              startDistance: Math.floor((this.viewDistance ?? camera.far ?? 300) * 0.72),
+              endDistance: Math.floor((this.viewDistance ?? camera.far ?? 300) * 0.96),
+              maxOpacity: Math.min(0.32, (this.qualityPreset.environment?.aerialMaxOpacity ?? 0.22) * 1.1),
               hazeColor: this.aerialHazeColor,
             })
           : sceneColor;
@@ -580,6 +607,7 @@ export class RendererSystem {
       ).setResolutionScale(plan.bloom.resolutionScale);
       trackedNodes.push(bloomNode);
       outputNode = outputNode.add(bloomNode);
+      debugBloom = bloomNode;
     }
     const gradedRgb = vibrance(
       saturation(outputNode.rgb, environmentPreset.saturation ?? 1.0),
@@ -591,6 +619,16 @@ export class RendererSystem {
     this._pipelineNodes = trackedNodes;
     this.pipelineScene = scene;
     this.pipelineCamera = camera;
+
+    this.pipelineGeneration = (this.pipelineGeneration ?? 0) + 1;
+    this._debugPost = {
+      generation: this.pipelineGeneration,
+      ssao: debugSsao,
+      bloom: debugBloom,
+    };
+    // Re-apply pinned post sliders onto the new nodes, then refresh pane monitors.
+    reapplyShaderDebugOverrides('post.');
+    refreshShaderDebugBindings('Post (SSAO / Bloom)');
   }
 
   invalidatePipeline() {
@@ -603,6 +641,7 @@ export class RendererSystem {
     this.pipelineScene = null;
     this.pipelineCamera = null;
     this._aoCameraValid = false;
+    this._debugPost = null;
     this.onPipelineInvalidated?.();
   }
 
@@ -711,15 +750,15 @@ function createHeightFogOutputNode({
   fogMaxDistance,
   hazeColor = [0.54, 0.62, 0.59],
 }) {
+  // Seed street/high colors from haze (respects fog color pins via systemWrite).
+  syncHeightFogColorsFromHaze(hazeColor);
+
   const cameraMatrixWorld = uniform(camera.matrixWorld);
   const cameraProjectionMatrixInverse = uniform(camera.projectionMatrixInverse);
   const cameraPosition = uniform(camera.position);
-  const streetFogColor = vec3(hazeColor[0] * 0.92, hazeColor[1] * 0.94, hazeColor[2] * 0.96);
-  const highFogColor = vec3(
-    hazeColor[0] * 1.08 + 0.12,
-    hazeColor[1] * 1.1 + 0.14,
-    hazeColor[2] * 1.12 + 0.14,
-  );
+  // Live uniforms — density/alpha/colors tweakable without pipeline rebuild.
+  const streetFogColor = uHeightFogStreetColor;
+  const highFogColor = uHeightFogHighColor;
   const fogMax = float(fogMaxDistance);
   const fogSteps = float(fogMarchSteps);
 
@@ -753,14 +792,18 @@ function createHeightFogOutputNode({
         .mul(distanceDensity)
         .mul(lowView.mul(0.38).add(0.62))
         .mul(cloudShape.mul(0.52).add(0.62))
-        .mul(0.117);
+        .mul(uHeightFogDensityScale);
 
       fogIntegral.assign(fogIntegral.add(density.mul(marchDistance.div(fogSteps))));
     });
 
     const rooftopBoost = smoothstep(18.0, 68.0, cameraPosition.y).mul(0.38).add(1.0);
     const lowSkyBlend = smoothstep(0.99, 1.0, depth).mul(smoothstep(64.0, 150.0, marchDistance)).mul(0.075);
-    const fogAlpha = clamp(float(1).sub(exp(fogIntegral.mul(rooftopBoost).negate())).add(lowSkyBlend), 0.0, 0.68);
+    const fogAlpha = clamp(
+      float(1).sub(exp(fogIntegral.mul(rooftopBoost).negate())).add(lowSkyBlend),
+      0.0,
+      uHeightFogAlphaMax,
+    );
     const fogColor = mix(streetFogColor, highFogColor, smoothstep(52.0, 150.0, marchDistance));
 
     return vec4(mix(sceneTexel.rgb, fogColor, fogAlpha), sceneTexel.a);
@@ -774,7 +817,7 @@ function createAerialPerspectiveOutputNode({
   startDistance,
   endDistance,
   maxOpacity,
-  hazeColor = [0.32, 0.42, 0.48],
+  hazeColor = [0.58, 0.60, 0.62],
 }) {
   const cameraProjectionMatrixInverse = uniform(camera.projectionMatrixInverse);
   const horizonColor = vec3(hazeColor[0], hazeColor[1], hazeColor[2]);

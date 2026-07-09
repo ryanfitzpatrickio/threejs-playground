@@ -5,6 +5,11 @@ import { flattenGeometryForWebGPU } from './prepareWebGPUGeometry.js';
 // Tripo splits vertices at almost every edge; merge then smooth up to this angle.
 const DEFAULT_CREASE_ANGLE_DEG = 88;
 
+// Weld + toCreasedNormals unindexes every triangle. A single 650k-tri bodyshop
+// shell freezes the garage main thread for ~60s and expands to ~2M verts.
+// Stock multi-part shells stay under this per-mesh (orange-car max ~203k).
+export const MAX_OVERLAY_CREASE_TRIANGLES = 250_000;
+
 /**
  * Weld split vertices and rebuild averaged normals for a round shaded shell.
  * Per-triangle derivative normals (the old "smooth shader") stay faceted — this
@@ -12,6 +17,9 @@ const DEFAULT_CREASE_ANGLE_DEG = 88;
  *
  * Meshy / KHR_mesh_quantization exports use interleaved Uint16 positions;
  * mergeVertices must run after flattenGeometryForWebGPU converts them to floats.
+ *
+ * Huge single meshes (bodyshop-authored shells) take a light path: flatten for
+ * WebGPU, keep existing normals, skip weld/crease.
  */
 export function prepareVehicleOverlayGeometry(
   geometry,
@@ -20,6 +28,23 @@ export function prepareVehicleOverlayGeometry(
   if (!geometry) return geometry;
 
   flattenGeometryForWebGPU(geometry);
+
+  const position = geometry.getAttribute('position');
+  const index = geometry.getIndex();
+  const triCount = position
+    ? (index ? index.count / 3 : position.count / 3)
+    : 0;
+
+  if (triCount > MAX_OVERLAY_CREASE_TRIANGLES) {
+    if (!geometry.getAttribute('normal')) {
+      geometry.computeVertexNormals();
+    }
+    stripOverlayVertexColors(geometry);
+    ensureOverlayUv(geometry);
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+    return geometry;
+  }
 
   let merged = mergeVertices(geometry, mergeTolerance);
   if (merged !== geometry) geometry.dispose();
