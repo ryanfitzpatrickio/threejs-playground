@@ -27,9 +27,13 @@ import {
   pow,
   max,
   min,
+  abs,
   dot,
   normalize,
   smoothstep,
+  select,
+  mix,
+  clamp,
 } from 'three/tsl';
 import { ATMOSPHERE } from './cloudConfig.js';
 import {
@@ -51,6 +55,7 @@ export function createSkyMaterial(transmittanceNode, multiScatterNode, { sunDisc
   material.name = 'cloud.sky';
   material.depthWrite = false;
   material.depthTest = false;
+  material.fog = false;
   material.side = THREE.BackSide;
   // The scene pass captures this in linear HDR (matching the SkyMesh path);
   // tone mapping happens once at the RenderPipeline output.
@@ -79,13 +84,18 @@ function buildSkyFn(transmittanceNode, multiScatterNode, sunDisc) {
 
     const sunDir = uSunDirection;
     const dirRaw = positionWorld.sub(cameraPosition);
-    const clampedY = max(dirRaw.y, float(0.001));
-    const dir = normalize(vec3(dirRaw.x, clampedY, dirRaw.z));
+    const dir = normalize(dirRaw);
+    // BackSide sky sphere still draws below the horizon. Clamping every sub-horizon
+    // ray to y=0.001 collapsed the whole lower dome to one LUT sample (flat band).
+    // Mirror elevation gently so the lower sky keeps variation without marching
+    // through the planet.
+    const marchY = max(select(dir.y.lessThan(0), abs(dir.y).mul(0.22), dir.y), float(0.001));
+    const marchDir = normalize(vec3(dir.x, marchY, dir.z));
 
     // Observer at sea level (camera altitude in dreamfall is ~metres → ~0 km).
     const originY = EARTH_R.add(0.001);
-    // Ray/atmosphere-shell intersection: origin = (0, originY, 0), |dir|=1.
-    const b = float(2).mul(originY).mul(dir.y);
+    // Ray/atmosphere-shell intersection (use marchDir — same ray as the integral).
+    const b = float(2).mul(originY).mul(marchDir.y);
     const c = originY.mul(originY).sub(ATMO_R.mul(ATMO_R));
     const discAtmo = max(b.mul(b).sub(float(4).mul(c)), 0);
     const tFar = max(b.negate().add(sqrt(discAtmo)).div(2), 0);
@@ -101,9 +111,9 @@ function buildSkyFn(transmittanceNode, multiScatterNode, sunDisc) {
       const dist = no.mul(no).mul(tFar); // quadratic: denser sampling near the ground
       const wn = no.mul(step);
 
-      const sx = dir.x.mul(dist);
-      const sy = originY.add(dir.y.mul(dist));
-      const sz = dir.z.mul(dist);
+      const sx = marchDir.x.mul(dist);
+      const sy = originY.add(marchDir.y.mul(dist));
+      const sz = marchDir.z.mul(dist);
       const r = sqrt(sx.mul(sx).add(sy.mul(sy)).add(sz.mul(sz)));
       const altitude = max(r.sub(EARTH_R), 0);
       const hr = exp(altitude.negate().div(Hr));
@@ -122,7 +132,7 @@ function buildSkyFn(transmittanceNode, multiScatterNode, sunDisc) {
     });
 
     // Phase functions.
-    const cosT = dot(dir, sunDir);
+    const cosT = dot(marchDir, sunDir);
     const cosT2 = cosT.mul(cosT);
     const rayleighPhase = float(3).div(float(16).mul(PI)).mul(float(1).add(cosT2));
     const g = uAtmosphereMieG;
@@ -139,20 +149,41 @@ function buildSkyFn(transmittanceNode, multiScatterNode, sunDisc) {
       .mul(rayleighPhase)
       .add(betaM.mul(accumM).mul(miePhase).mul(uAtmosphereMieStrength));
 
+    // Multi-scatter LUT sampled at view elevation — the old fixed v=0.02 was
+    // ground-bounce grey and washed the zenith to white.
+    const msUv = vec2(
+      sunDir.y.mul(0.5).add(0.5),
+      clamp(marchDir.y.mul(0.5).add(0.5), float(0.04), float(0.98)),
+    );
     const multiScatter = multiScatterNode
-      .sample(vec2(sunDir.y.mul(0.5).add(0.5), 0.02))
+      .sample(msUv)
       .rgb
       .mul(uAtmosphereSkyMultiScatter);
-    const sky = scatter.add(multiScatter).mul(uSunIntensity);
+    const skyLinear = scatter.add(multiScatter).mul(uSunIntensity);
+    // Artistic zenith saturation — physical march is milky at our short sample count.
+    // Lighter blues than the old cobalt (0.38/0.58/1.12) so clear midday feels airy.
+    const zenith = smoothstep(0.06, 0.78, marchDir.y);
+    const zenithTint = mix(vec3(0.88, 0.92, 0.98), vec3(0.58, 0.74, 1.04), zenith);
+    const sky = skyLinear.mul(zenithTint);
 
     // Sun disc: soft circle around the sun direction, brightened through the
-    // transmittance at the sun's elevation.
-    const mu = dot(dir, sunDir);
-    const disc = smoothstep(float(1).sub(uSunDiscSize), float(1).sub(uSunDiscSize.mul(0.5)), mu);
+    // transmittance at the sun's elevation. Wider soft falloff (×0.2 core) so the
+    // disc reads as a broad glow rather than a hard pin.
+    const mu = dot(marchDir, sunDir);
+    const disc = smoothstep(float(1).sub(uSunDiscSize), float(1).sub(uSunDiscSize.mul(0.2)), mu);
+    const corona = smoothstep(
+      float(1).sub(uSunDiscSize.mul(3.2)),
+      float(1).sub(uSunDiscSize.mul(0.55)),
+      mu,
+    ).mul(0.22);
     const tHorizon = transmittanceNode
       .sample(vec2(sunDir.y.mul(0.5).add(0.5), 0))
       .rgb;
-    const discColor = uSunColor.mul(tHorizon).mul(uSunIntensity).mul(disc).mul(sunDisc ? 20 : 0);
+    const discColor = uSunColor
+      .mul(tHorizon)
+      .mul(uSunIntensity)
+      .mul(disc.add(corona))
+      .mul(sunDisc ? 18 : 0);
 
     return vec4(sky.add(discColor), 1);
   });

@@ -140,6 +140,8 @@ function fbm2(x, y, seed, octaves, lacunarity = 2, gain = 0.5, basePeriod = 2) {
 }
 
 // R = coverage (mainMass FBM recentered + detail), B = precipitation FBM.
+// basePeriod 4 (not 2) on the large-scale mass: a 2-cell lattice produces huge
+// rectangular weather blocks that read as boxy clouds at typical weatherScale.
 export function generateWeatherMap(size, seed = 0) {
   const s = Math.max(32, Math.floor(size));
   const data = new Uint8Array(s * s * 4);
@@ -147,11 +149,13 @@ export function generateWeatherMap(size, seed = 0) {
   for (let y = 0; y < s; y++) {
     for (let x = 0; x < s; x++) {
       const u = x / s, v = y / s;
-      const mainMass = fbm2(u, v, seed, 5, 2, 0.5);
-      const detail = fbm2(u + 7.3, v + 3.1, seed + 1, 6, 2, 0.5);
-      const coverage = (mainMass - 0.5) * 1.3 + 0.5 + (detail - 0.5) * 0.13;
+      const mainMass = fbm2(u, v, seed, 5, 2, 0.52, 4);
+      const detail = fbm2(u + 7.3, v + 3.1, seed + 1, 7, 2, 0.48, 4);
+      const ridge = 1 - Math.abs(fbm2(u + 2.1, v + 5.7, seed + 3, 4, 2, 0.5, 4) * 2 - 1);
+      // Milder contrast + stronger detail/ridge so masses fray instead of forming slabs.
+      const coverage = (mainMass - 0.5) * 1.05 + 0.5 + (detail - 0.5) * 0.24 + (ridge - 0.5) * 0.1;
       // Full unit domain (not u*0.5) so precip tiles too; 2 octaves keeps it low-freq.
-      const precip = fbm2(u, v, seed + 5, 2, 2, 0.5);
+      const precip = fbm2(u, v, seed + 5, 2, 2, 0.5, 4);
       data[p] = toByte(coverage);
       data[p + 1] = 0;
       data[p + 2] = toByte(precip);

@@ -8,11 +8,14 @@ import { QuadBikeVehicle } from '../src/game/vehicles/QuadBikeVehicle.js';
 import { prepareVehicleOverlayGeometry } from '../src/game/geometry/prepareVehicleOverlayGeometry.js';
 import {
   createGarageBuild,
+  createFallbackGarageChassisOption,
   deleteGarageBuild,
   getActiveGarageBuild,
+  getGarageChassisOption,
   loadGarageBuilds,
   saveGarageBuild,
   sanitizeGarageBuild,
+  setGarageChassisOptionsOverride,
   spawnVehicleOptions,
   vehicleOptionsFromGarageBuild,
 } from '../src/game/vehicles/garageBuilds.js';
@@ -209,5 +212,27 @@ const modelTireQuad = vehicleOptionsFromGarageBuild(sanitizeGarageBuild({
 }));
 assert.equal(modelTireQuad.wheelVisual, null);
 assert.equal(modelTireQuad.useEmbeddedModelTires, true);
+
+setGarageChassisOptionsOverride(null);
+const bodyshopBuild = saveGarageBuild(createGarageBuild('street', {
+  name: 'Custom Shell',
+  chassisId: 'orange-ev-mk2',
+}));
+assert.equal(bodyshopBuild.chassisId, 'orange-ev-mk2');
+assert.equal(getActiveGarageBuild().chassisId, 'orange-ev-mk2');
+const bodyshopOptions = vehicleOptionsFromGarageBuild(getActiveGarageBuild());
+assert.equal(bodyshopOptions.chassisOverlay.profileId, 'orange-ev-mk2');
+assert.equal(bodyshopOptions.chassisOverlay.url, '/assets/models/orange-ev-mk2.glb');
+assert.deepEqual(createFallbackGarageChassisOption('orange-ev-mk2'), {
+  id: 'orange-ev-mk2',
+  name: 'orange-ev-mk2',
+  description: 'Authored chassis.',
+  url: '/assets/models/orange-ev-mk2.glb',
+  defaultTransform: null,
+  source: 'bodyshop',
+});
+assert.equal(getGarageChassisOption('orange-ev-mk2').url, '/assets/models/orange-ev-mk2.glb');
+assert.equal(spawnVehicleOptions('city').chassisOverlay.profileId, 'orange-ev-mk2');
+deleteGarageBuild(bodyshopBuild.id);
 
 console.log('Garage persistence and vehicle conversion checks passed.');

@@ -1,7 +1,12 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { BaseVehicle } from '../game/vehicles/BaseVehicle.js';
-import { GARAGE_DEFAULT_CHASSIS_TRANSFORM, GARAGE_FRAME_PRESETS } from '../game/vehicles/garageBuilds.js';
+import { GARAGE_DEFAULT_CHASSIS_TRANSFORM } from '../game/vehicles/garageBuilds.js';
+import {
+  BODYSHOP_FLOOR_CLEARANCE,
+  BODYSHOP_FLOOR_Y,
+  createBodyshopVehicleOptions,
+} from './bodyshopVehicleConfig.js';
 import {
   configureBodyshopRenderer,
   installBodyshopEnvironment,
@@ -12,45 +17,21 @@ export async function createBodyshopVehiclePreview({
   container,
   glbUrl,
   chassisId = 'bodyshop-preview',
-}) {
+  framePresetId = 'street',
+  chassisTransform = GARAGE_DEFAULT_CHASSIS_TRANSFORM,
+} = {}) {
   if (!container) throw new Error('Preview container is required.');
 
-  const preset = GARAGE_FRAME_PRESETS.find((entry) => entry.id === 'street') ?? GARAGE_FRAME_PRESETS[0];
-  const frame = preset.frame;
-
-  const transform = GARAGE_DEFAULT_CHASSIS_TRANSFORM;
   const vehicle = new BaseVehicle({
     name: 'Bodyshop Preview',
-    hideEngine: true,
-    chassisOverlay: {
-      url: glbUrl,
-      profileId: chassisId,
-      chassisSurfaceMode: 'metallic',
-      position: [...transform.position],
-      rotationDegrees: [...transform.rotationDegrees],
-      scale: [...transform.scale],
-    },
-    frameParameters: frame,
-    config: {
-      body: {
-        size: [frame.frameWidth, frame.frameHeight, frame.frameLength],
+    ...createBodyshopVehicleOptions({
+      framePresetId,
+      chassisTransform,
+      chassisOverlay: {
+        url: glbUrl,
+        profileId: chassisId,
       },
-      ground: {
-        enginePower: 8,
-        traction: 0.55,
-        wheelRadius: 0.38,
-        wheelWidth: 0.3,
-        wheelInset: 0.12,
-        rayCast: {
-          wheelRadius: 0.38,
-          suspensionStiffness: 24,
-          suspensionCompression: 12,
-          suspensionRelaxation: 12,
-          maxSteerYawRate: 0.75,
-          highSpeedSteerYawRate: 0.42,
-        },
-      },
-    },
+    }),
   });
 
   const model = vehicle.buildMesh();
@@ -58,10 +39,10 @@ export async function createBodyshopVehiclePreview({
   await vehicle.assembleGroundVehicleVisuals({ syncParkedWheels: true });
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color('#c9cec9');
+  scene.background = new THREE.Color('#d6dbde');
 
   const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 200);
-  camera.position.set(5.2, 2.1, 5.4);
+  camera.position.set(4.5, 2.2, 4.6);
 
   const renderer = new THREE.WebGPURenderer({ antialias: true, forceWebGL: true });
   configureBodyshopRenderer(renderer);
@@ -71,23 +52,22 @@ export async function createBodyshopVehiclePreview({
   await renderer.init();
   await installBodyshopEnvironment(renderer, scene);
 
-  const ambient = new THREE.AmbientLight(0xffffff, 0.32);
-  const hemi = new THREE.HemisphereLight('#fff7d8', '#73806e', 1.5);
-  const sun = new THREE.DirectionalLight('#fff4db', 2.0);
+  const ambient = new THREE.AmbientLight(0xffffff, 0.34);
+  const hemi = new THREE.HemisphereLight('#fff7d8', '#73806e', 1.7);
+  const sun = new THREE.DirectionalLight('#fff4db', 2.1);
   sun.position.set(4, 7, 5);
-  sun.castShadow = true;
   scene.add(ambient, hemi, sun);
 
   const floor = new THREE.Mesh(
-    new THREE.CircleGeometry(6, 64),
-    new THREE.MeshStandardMaterial({ color: '#b8c0bb', roughness: 0.92, metalness: 0.04 }),
+    new THREE.PlaneGeometry(18, 18),
+    new THREE.MeshStandardMaterial({ color: '#c7cfca', roughness: 0.95, metalness: 0.02 }),
   );
   floor.rotation.x = -Math.PI / 2;
-  floor.position.y = 0.16;
-  floor.receiveShadow = true;
+  floor.position.y = BODYSHOP_FLOOR_Y;
+  floor.userData._builderHelper = true;
   scene.add(floor);
   scene.add(model);
-  liftObjectToFloor(model, 0.16, 0.02);
+  liftObjectToFloor(model, BODYSHOP_FLOOR_Y, BODYSHOP_FLOOR_CLEARANCE);
 
   model.updateMatrixWorld(true);
   const bounds = new THREE.Box3().setFromObject(model);
@@ -98,7 +78,7 @@ export async function createBodyshopVehiclePreview({
   const orbitControls = new OrbitControls(camera, renderer.domElement);
   orbitControls.enableDamping = true;
   orbitControls.target.copy(center);
-  camera.position.copy(center.clone().add(new THREE.Vector3(radius * 1.8, radius * 0.85, radius * 1.8)));
+  camera.position.copy(center.clone().add(new THREE.Vector3(radius * 1.9, radius * 0.95, radius * 1.9)));
   orbitControls.update();
 
   const resize = () => {

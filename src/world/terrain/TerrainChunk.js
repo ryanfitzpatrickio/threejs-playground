@@ -232,11 +232,18 @@ export function syncSeam(fromChunk, toChunk, edgeOnFrom) {
  * lives in [0,size] x [0,size] in xz. This makes edge sharing trivial.
  */
 export function createTerrainChunkMesh(chunkData, options = {}) {
-  const { material = null, castShadow = true, receiveShadow = true, visualResolution = null } = options;
+  const {
+    material = null,
+    castShadow = true,
+    receiveShadow = true,
+    visualResolution = null,
+    computeTangents = false,
+  } = options;
   const { size, resolution } = chunkData;
   let currentChunkData = chunkData;
   // Physics and editing retain the authoritative heightfield resolution. Outer
   // streaming rings can render a cheaper grid sampled from that same data.
+  const wantsTangents = computeTangents === true;
   const meshResolution = Math.max(2, Math.min(resolution, visualResolution ?? resolution));
   const step = size / (resolution - 1);
   const sourceAt = (i, j) => currentChunkData.heights[j * resolution + i] ?? 0;
@@ -287,6 +294,7 @@ export function createTerrainChunkMesh(chunkData, options = {}) {
   posAttr.needsUpdate = true;
   uvAttr.needsUpdate = true;
   geometry.computeVertexNormals();
+  if (wantsTangents) geometry.computeTangents();
   geometry.computeBoundingSphere();
 
   const meshMaterial = material || new THREE.MeshStandardMaterial({
@@ -336,6 +344,7 @@ export function createTerrainChunkMesh(chunkData, options = {}) {
     }
     p.needsUpdate = true;
     geometry.computeVertexNormals();
+    if (wantsTangents) geometry.computeTangents();
     geometry.computeBoundingSphere();
     // boundingBox not strictly needed but keep fresh
     geometry.boundingBox = null;
@@ -355,6 +364,7 @@ export function createTerrainChunkMesh(chunkData, options = {}) {
       // previously-unused vertices with zero normals, rendering black patches.
       // computeVertexNormals updates the existing attribute in place.
       geometry.computeVertexNormals();
+      if (wantsTangents) geometry.computeTangents();
     },
     updateChunkData(nextChunkData, nextOptions = {}) {
       if (nextChunkData.size !== size || nextChunkData.resolution !== resolution) {

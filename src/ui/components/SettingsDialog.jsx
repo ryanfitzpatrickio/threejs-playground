@@ -171,9 +171,10 @@ export function SettingsDialog(props) {
                     value={props.quality}
                     onChange={props.onQualityChange}
                     options={[
-                      { id: 'ultra', label: 'Ultra', title: 'Maximum quality' },
-                      { id: 'high', label: 'Medium', title: 'Balanced quality and performance' },
-                      { id: 'low', label: 'Low', title: 'Capped pixel ratio, smaller city loading' },
+                      { id: 'max', label: 'Max', title: 'Former Ultra: highest city draw distance and density' },
+                      { id: 'ultra', label: 'Ultra', title: 'High quality (city density like former Medium)' },
+                      { id: 'high', label: 'Medium', title: 'Balanced (city like former Low)' },
+                      { id: 'low', label: 'Low', title: 'New lower spec for city' },
                     ]}
                   />
                 </SettingSection>
@@ -189,6 +190,22 @@ export function SettingsDialog(props) {
                     options={[
                       { id: 'ACESFilmic', label: 'ACES', title: 'Warmer cinematic highlight rolloff' },
                       { id: 'AgX', label: 'AgX', title: 'More neutral color and highlight handling' },
+                    ]}
+                  />
+                </SettingSection>
+
+                <SettingSection
+                  title="Sky & clouds"
+                  hint="Reloads the page. Ultra defaults to volumetric LUT sky + raymarched clouds; lower tiers use the dome sky unless overridden here."
+                >
+                  <ChipGroup
+                    label="Sky mode"
+                    value={props.cloudMode}
+                    onChange={props.onCloudModeChange}
+                    options={[
+                      { id: 'volumetric', label: 'Volumetric', title: 'LUT atmosphere + raymarched clouds (Ultra default)' },
+                      { id: 'dome', label: 'Dome', title: 'SkyMesh procedural dome clouds' },
+                      { id: 'off', label: 'Off', title: 'Clear sky only — no cloud layer' },
                     ]}
                   />
                 </SettingSection>

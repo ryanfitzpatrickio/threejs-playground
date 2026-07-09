@@ -248,9 +248,40 @@ export function getGarageFramePreset(id) {
     ?? GARAGE_FRAME_PRESETS[0];
 }
 
+export function isKnownGarageChassisId(id) {
+  const clean = String(id || '').trim();
+  if (!clean) return false;
+  const options = garageChassisOptionsOverride ?? GARAGE_CHASSIS_OPTIONS;
+  return options.some((option) => option.id === clean);
+}
+
+export function createFallbackGarageChassisOption(id) {
+  const clean = String(id || '').trim();
+  if (!clean || clean === 'bare') return null;
+  if (!/^[a-z0-9_-]+$/.test(clean)) return null;
+  return Object.freeze({
+    id: clean,
+    name: clean,
+    description: 'Authored chassis.',
+    url: `/assets/models/${clean}.glb`,
+    defaultTransform: null,
+    source: 'bodyshop',
+  });
+}
+
 export function getGarageChassisOption(id) {
   const options = garageChassisOptionsOverride ?? GARAGE_CHASSIS_OPTIONS;
-  return options.find((option) => option.id === id) ?? GARAGE_CHASSIS_OPTIONS[0];
+  const found = options.find((option) => option.id === id);
+  if (found) return found;
+  return createFallbackGarageChassisOption(id) ?? GARAGE_CHASSIS_OPTIONS[0];
+}
+
+function resolveGarageChassisId(id) {
+  const raw = String(id || '').trim();
+  if (!raw) return 'bare';
+  if (isKnownGarageChassisId(raw)) return raw;
+  if (createFallbackGarageChassisOption(raw)) return raw;
+  return getGarageChassisOption(raw).id;
 }
 
 export function getGarageTireOption(id) {
@@ -487,7 +518,7 @@ export function sanitizeGarageBuild(value = {}) {
       ? value.paintId
       : 'forest',
     presetId: preset.id,
-    chassisId: getGarageChassisOption(value.chassisId).id,
+    chassisId: resolveGarageChassisId(value.chassisId),
     hideBackSeats: value.hideBackSeats === true,
     hideEngine: value.hideEngine === true,
     disableGlassDetection: value.disableGlassDetection === true,

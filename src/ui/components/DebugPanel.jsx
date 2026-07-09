@@ -22,16 +22,19 @@ export function DebugPanel(props) {
   const cloudPresets = listCloudTypePresets();
   const lookPresets = listPhotorealismPresets();
 
-  // Experimental volumetric sky (CloudSkyProvider) is opt-in and off by default;
-  // the default sky uses the simple SkyMesh dome clouds. Switching pipelines
-  // means rebuilding the sky + render pipeline, so this reloads the page.
-  const readVolumetric = () => {
-    try { return localStorage.getItem('dreamfall:clouds') === 'volumetric'; } catch { return false; }
+  // Volumetric vs dome sky — rebuilds the sky + render pipeline, so reload.
+  const readCloudMode = () => {
+    try {
+      const value = localStorage.getItem('dreamfall:clouds');
+      return value === 'volumetric' || value === 'dome' || value === 'off' ? value : null;
+    } catch {
+      return null;
+    }
   };
-  const [volumetricSky, setVolumetricSky] = createSignal(readVolumetric());
-  const toggleVolumetricSky = (on) => {
-    setVolumetricSky(on);
-    try { localStorage.setItem('dreamfall:clouds', on ? 'volumetric' : 'dome'); } catch { /* ignore */ }
+  const [cloudMode, setCloudMode] = createSignal(readCloudMode() ?? (sky()?.clouds ?? 'dome'));
+  const setCloudModeAndReload = (mode) => {
+    setCloudMode(mode);
+    try { localStorage.setItem('dreamfall:clouds', mode); } catch { /* ignore */ }
     location.reload();
   };
 
@@ -206,12 +209,16 @@ export function DebugPanel(props) {
         </select>
 
         <div class="debug-section">Clouds</div>
-        <Toggle
-          label="Volumetric sky (experimental)"
-          checked={volumetricSky}
-          onChange={(v) => toggleVolumetricSky(v)}
-        />
-        <Show when={volumetricSky()}>
+        <select
+          class="dbg-select"
+          value={cloudMode()}
+          onChange={(e) => setCloudModeAndReload(e.currentTarget.value)}
+        >
+          <option value="volumetric">Volumetric</option>
+          <option value="dome">Dome</option>
+          <option value="off">Off</option>
+        </select>
+        <Show when={cloudMode() === 'volumetric'}>
           <select
             class="dbg-select"
             value={cloudType()}

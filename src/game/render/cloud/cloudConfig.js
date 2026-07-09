@@ -31,40 +31,45 @@ export const LUT_SIZES = {
 // Default live parameters. The provider copies a subset of these into the
 // `cloudUniforms` shared nodes; time-of-day / weather calls mutate them.
 export const DEFAULT_ATMOSPHERE_PARAMS = {
-  rayleigh: 1,
-  turbidity: 3.3,
-  mieDirectionalG: 0.7,
-  mieScatteringStrength: 1,
-  multipleScattering: 0.2,
-  skyMultipleScattering: 0.5,
+  // Slightly lower rayleigh + higher multi-scatter reads as a lighter midday blue
+  // (the prior 2.6/0.18 combo leaned deep cobalt at zenith).
+  rayleigh: 1.95,
+  turbidity: 1.5,
+  mieDirectionalG: 0.76,
+  mieScatteringStrength: 0.26,
+  multipleScattering: 0.22,
+  skyMultipleScattering: 0.28,
   groundAlbedo: [0.18, 0.17, 0.15],
 };
 
 export const DEFAULT_SUN_PARAMS = {
   // Sky reference source radiance-space intensity (separate from Three's DirectionalLight
   // intensity, which drives the scene lighting). ~6–8 reads as midday.
-  intensity: 6.6,
-  discSize: 0.0003,
+  intensity: 8.2,
+  // Angular soft-disc size (mu falloff). 3e-4 was a pinprick; ~1.6e-3 reads as a
+  // wider cinematic disc without washing the whole horizon.
+  discSize: 0.0016,
   color: [1, 0.95, 0.85],
 };
 
 // Cloud layer + march defaults, scaled for dreamfall's flat, metre-scale world
 // and ~320–2400 m draw distance (sky reference source's 4000 m altitude / 29000 m weather
 // scale would sit permanently beyond the horizon). Tuned by eye in M2.
+// Shape knobs bias toward soft, eroded cumulus rather than hard weather-map blocks.
 export const DEFAULT_CLOUD_PARAMS = {
   shape: {
     altitude: 1200,
     thickness: 1800,
     density: 0.02,
     coverage: 0.5,
-    edgeSoftness: 0.095,
-    edgeSoftnessFalloff: 1,
-    weatherScale: 6000,
-    baseScale: 1800,
-    erosionScaleBaseMultiplier: 0.4,
-    baseStrength: 0.69,
-    erosionStrengthBase: 0.24,
-    erosionStrengthPeak: 2.15,
+    edgeSoftness: 0.16,
+    edgeSoftnessFalloff: 0.82,
+    weatherScale: 4600,
+    baseScale: 1300,
+    erosionScaleBaseMultiplier: 0.28,
+    baseStrength: 0.6,
+    erosionStrengthBase: 0.42,
+    erosionStrengthPeak: 2.95,
     erosionShape: 1,
     baseWeatherStrength: 0.54,
     baseWeatherHeightStart: 0,
@@ -72,8 +77,8 @@ export const DEFAULT_CLOUD_PARAMS = {
   },
   lighting: {
     scatteringAlbedo: 1,
-    powderStrength: 0.7,
-    ambientIntensity: 0.48,
+    powderStrength: 0.65,
+    ambientIntensity: 0.52,
     baseShadowStrength: 0.88,
     baseShadowHeight: 0.13,
   },
@@ -81,7 +86,7 @@ export const DEFAULT_CLOUD_PARAMS = {
     heading: 181,
     speed: 18,
     evolutionSpeed: 6,
-    skew: 350,
+    skew: 420,
   },
 };
 
@@ -121,45 +126,47 @@ export const CLOUD_TYPE_PRESETS = {
   fair: {
     label: 'Fair-weather cumulus',
     shape: {
-      altitude: 950, thickness: 1200, coverage: 0.35, density: 0.03,
-      weatherScale: 3200, baseScale: 1500, baseStrength: 0.82,
-      erosionStrengthPeak: 2.4, edgeSoftness: 0.06,
+      altitude: 950, thickness: 1400, coverage: 0.34, density: 0.028,
+      weatherScale: 3600, baseScale: 1200, baseStrength: 0.68,
+      erosionStrengthBase: 0.48, erosionStrengthPeak: 3.1, edgeSoftness: 0.14,
+      erosionScaleBaseMultiplier: 0.26,
     },
-    wind: { heading: 181, speed: 16, evolutionSpeed: 5, skew: 300 },
+    wind: { heading: 181, speed: 16, evolutionSpeed: 5, skew: 380 },
   },
   cumulus: {
     label: 'Cumulus congestus',
     shape: {
-      altitude: 800, thickness: 2600, coverage: 0.4, density: 0.045,
-      weatherScale: 4200, baseScale: 2000, baseStrength: 0.86,
-      erosionStrengthPeak: 2.6, edgeSoftness: 0.07,
+      altitude: 800, thickness: 2600, coverage: 0.38, density: 0.04,
+      weatherScale: 4000, baseScale: 1500, baseStrength: 0.72,
+      erosionStrengthBase: 0.45, erosionStrengthPeak: 3.0, edgeSoftness: 0.13,
+      erosionScaleBaseMultiplier: 0.26,
     },
-    wind: { heading: 181, speed: 18, evolutionSpeed: 7, skew: 420 },
+    wind: { heading: 181, speed: 18, evolutionSpeed: 7, skew: 480 },
   },
   stratocumulus: {
     label: 'Stratocumulus',
     shape: {
-      altitude: 700, thickness: 1000, coverage: 0.46, density: 0.04,
-      weatherScale: 4800, baseScale: 2200, baseStrength: 0.7,
-      erosionStrengthPeak: 1.8, edgeSoftness: 0.1,
+      altitude: 700, thickness: 1000, coverage: 0.46, density: 0.038,
+      weatherScale: 4400, baseScale: 1800, baseStrength: 0.62,
+      erosionStrengthPeak: 2.2, edgeSoftness: 0.15,
     },
-    wind: { heading: 181, speed: 14, evolutionSpeed: 4, skew: 300 },
+    wind: { heading: 181, speed: 14, evolutionSpeed: 4, skew: 340 },
   },
   altocumulus: {
     label: 'Altocumulus (mackerel)',
     shape: {
-      altitude: 2600, thickness: 800, coverage: 0.45, density: 0.03,
-      weatherScale: 2600, baseScale: 1100, baseStrength: 0.6,
-      erosionStrengthBase: 0.4, erosionStrengthPeak: 2.7, edgeSoftness: 0.07,
+      altitude: 2600, thickness: 800, coverage: 0.44, density: 0.028,
+      weatherScale: 2400, baseScale: 950, baseStrength: 0.55,
+      erosionStrengthBase: 0.55, erosionStrengthPeak: 3.0, edgeSoftness: 0.12,
     },
-    wind: { heading: 181, speed: 20, evolutionSpeed: 6, skew: 260 },
+    wind: { heading: 181, speed: 20, evolutionSpeed: 6, skew: 300 },
   },
   stratus: {
     label: 'Overcast stratus',
     shape: {
       altitude: 600, thickness: 700, coverage: 0.8, density: 0.05,
       weatherScale: 9000, baseScale: 2600, baseStrength: 0.35,
-      erosionStrengthBase: 0.1, erosionStrengthPeak: 1.0, edgeSoftness: 0.18,
+      erosionStrengthBase: 0.1, erosionStrengthPeak: 1.0, edgeSoftness: 0.2,
     },
     lighting: { ambientIntensity: 0.4, powderStrength: 0.55 },
     wind: { heading: 181, speed: 10, evolutionSpeed: 3, skew: 220 },
@@ -168,8 +175,8 @@ export const CLOUD_TYPE_PRESETS = {
     label: 'Cirrus wisps',
     shape: {
       altitude: 4200, thickness: 700, coverage: 0.44, density: 0.012,
-      weatherScale: 5200, baseScale: 2600, baseStrength: 0.5,
-      erosionStrengthBase: 1.2, erosionStrengthPeak: 3.4, edgeSoftness: 0.16,
+      weatherScale: 5200, baseScale: 2400, baseStrength: 0.48,
+      erosionStrengthBase: 1.2, erosionStrengthPeak: 3.5, edgeSoftness: 0.18,
     },
     lighting: { ambientIntensity: 0.62, powderStrength: 0.35 },
     // Fast, strongly height-skewed wind stretches the wisps into long streaks.
@@ -178,12 +185,12 @@ export const CLOUD_TYPE_PRESETS = {
   storm: {
     label: 'Cumulonimbus (storm)',
     shape: {
-      altitude: 500, thickness: 3800, coverage: 0.7, density: 0.06,
-      weatherScale: 7000, baseScale: 2400, baseStrength: 0.9,
-      erosionStrengthPeak: 2.2, edgeSoftness: 0.08,
+      altitude: 500, thickness: 3800, coverage: 0.68, density: 0.055,
+      weatherScale: 6200, baseScale: 1900, baseStrength: 0.78,
+      erosionStrengthBase: 0.35, erosionStrengthPeak: 2.6, edgeSoftness: 0.12,
     },
     lighting: { ambientIntensity: 0.34, powderStrength: 0.85 },
-    wind: { heading: 181, speed: 24, evolutionSpeed: 9, skew: 520 },
+    wind: { heading: 181, speed: 24, evolutionSpeed: 9, skew: 560 },
   },
 };
 
@@ -210,8 +217,41 @@ export function resolveCloudTypePreset(name) {
 
 export const CLOUD_MODES = ['volumetric', 'dome', 'off'];
 
+const CLOUD_MODE_STORAGE_KEY = 'dreamfall:clouds';
+
 export function normalizeCloudMode(mode, fallback = 'dome') {
   return CLOUD_MODES.includes(mode) ? mode : fallback;
+}
+
+/** User override from localStorage, or null when unset / invalid. */
+export function getCloudModeOverride() {
+  try {
+    const value = localStorage.getItem(CLOUD_MODE_STORAGE_KEY);
+    return CLOUD_MODES.includes(value) ? value : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/** Persist sky/cloud mode (`volumetric` | `dome` | `off`). */
+export function setCloudModeOverride(mode) {
+  const normalized = normalizeCloudMode(mode);
+  try {
+    localStorage.setItem(CLOUD_MODE_STORAGE_KEY, normalized);
+  } catch (_) {
+    // Ignore write failures.
+  }
+  return normalized;
+}
+
+/**
+ * Effective cloud mode: localStorage override wins, then quality preset, then dome.
+ * @param {object} [qualityPreset]
+ */
+export function resolveCloudMode(qualityPreset = {}) {
+  return normalizeCloudMode(
+    getCloudModeOverride() ?? qualityPreset.environment?.clouds,
+  );
 }
 
 /**
@@ -226,7 +266,13 @@ export function resolveCloudConfig(qualityPreset, { force = false } = {}) {
   const vc = env.volumetricClouds ?? {};
   const cloudOverride = env.cloudShape ?? {};
   return {
-    atmosphere: { ...DEFAULT_ATMOSPHERE_PARAMS, ...env.cloudAtmosphere },
+    atmosphere: {
+      ...DEFAULT_ATMOSPHERE_PARAMS,
+      ...env.cloudAtmosphere,
+      ...(env.rayleigh != null ? { rayleigh: env.rayleigh } : {}),
+      ...(env.turbidity != null ? { turbidity: env.turbidity } : {}),
+      ...(env.mieDirectionalG != null ? { mieDirectionalG: env.mieDirectionalG } : {}),
+    },
     sun: { ...DEFAULT_SUN_PARAMS, ...env.cloudSun },
     cloud: {
       shape: {

@@ -94,9 +94,14 @@ function density(x, y, z, s, erosionScale) {
   baseMass += erosion;
   const coverageField = wr + (s.coverage - 1) + baseMass * s.coverage;
   const heightMetres = Math.max(hf, 0) * s.thickness * 0.001;
-  const softness = Math.max(s.edgeSoftness / Math.pow(Math.max(s.edgeSoftnessFalloff, 0.001), heightMetres), 0.0001);
-  const top = smoothstep(-softness, softness, coverageField - hf);
-  const bottom = smoothstep(-softness, softness, hf - erosion * s.coverage);
+  const softness = Math.max(
+    s.edgeSoftness / Math.pow(Math.max(s.edgeSoftnessFalloff, 0.001), heightMetres),
+    0.012,
+  );
+  // Match cloudDensity.js: sub-linear height cut + softer bottoms.
+  const heightCut = Math.pow(Math.max(hf, 0), 0.78);
+  const top = smoothstep(-softness, softness, coverageField - heightCut);
+  const bottom = smoothstep(-softness * 1.35, softness * 1.15, hf - erosion * s.coverage * 1.25);
   return Math.max(top * bottom, 0);
 }
 
@@ -113,7 +118,7 @@ function probe(name) {
   s.windDirX = Math.sin(rad);
   s.windDirZ = Math.cos(rad);
   s.skew = h.skew;
-  const erosionScale = s.baseScale * (s.erosionScaleBaseMultiplier ?? 0.4);
+  const erosionScale = s.baseScale * (s.erosionScaleBaseMultiplier ?? 0.28);
   const extinction = s.density;
 
   let covered = 0;

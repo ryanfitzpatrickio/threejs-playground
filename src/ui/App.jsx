@@ -22,11 +22,16 @@ import {
 import {
   getPostEffectMode,
   getQualityLevel,
+  getQualityPreset,
   getToneMappingMode,
   setPostEffectMode,
   setQualityLevel,
   setToneMappingMode,
 } from '../game/config/qualityPresets.js';
+import {
+  resolveCloudMode,
+  setCloudModeOverride,
+} from '../game/render/cloud/cloudConfig.js';
 import { createDevTools, BodyshopScene } from 'virtual:dreamfall-dev-tools';
 import { loadGarageChassisOptions } from '../game/vehicles/bodyshopChassisRegistry.js';
 
@@ -47,6 +52,7 @@ export function App() {
   const [quality, setQuality] = createSignal(getQualityLevel());
   const [toneMapping, setToneMapping] = createSignal(getToneMappingMode());
   const [postEffect, setPostEffect] = createSignal(getPostEffectMode());
+  const [cloudMode, setCloudMode] = createSignal(resolveCloudMode(getQualityPreset(getQualityLevel())));
   const [showControls, setShowControls] = createSignal(false);
   const [showDebugPanel, setShowDebugPanel] = createSignal(false);
   const [hudVisible, setHudVisible] = createSignal(true);
@@ -56,6 +62,7 @@ export function App() {
 
   // First-time player guide: show automatically unless previously dismissed
   onMount(() => {
+    void loadGarageChassisOptions();
     try {
       const dismissed = localStorage.getItem('dreamfall:controls-dismissed') === 'true';
       if (!dismissed) {
@@ -87,6 +94,13 @@ export function App() {
     if (mode === postEffect()) return;
     setPostEffectMode(mode);
     setPostEffect(mode);
+    window.location.reload();
+  };
+
+  const handleCloudModeChange = (mode) => {
+    if (mode === cloudMode()) return;
+    setCloudModeOverride(mode);
+    setCloudMode(mode);
     window.location.reload();
   };
 
@@ -255,6 +269,7 @@ export function App() {
         quality={quality()}
         toneMapping={toneMapping()}
         postEffect={postEffect()}
+        cloudMode={cloudMode()}
         clothEditorEnabled={isJacketClothUiEnabled()}
         clothEditorOpen={showClothEditor()}
         debugPanelOpen={showDebugPanel()}
@@ -267,6 +282,7 @@ export function App() {
         onQualityChange={handleQualityChange}
         onToneMappingChange={handleToneMappingChange}
         onPostEffectChange={handlePostEffectChange}
+        onCloudModeChange={handleCloudModeChange}
         onVehicleCameraModeChange={(mode) => gameRuntime?.setVehicleCameraMode(mode)}
         onComfortChange={(enabled) => gameRuntime?.setCameraComfortEnabled(enabled)}
         onOnFootFirstPersonChange={(enabled) => gameRuntime?.setOnFootFirstPersonEnabled(enabled)}

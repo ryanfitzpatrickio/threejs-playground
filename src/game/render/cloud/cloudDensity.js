@@ -98,18 +98,22 @@ export function sampleCloudDensity({ pos, shellHeightFraction, weatherNode, base
   const coverageField = weather.r.add(coverage.sub(1)).add(baseMass.mul(coverage));
 
   // Edge softness scales with altitude (metres): sharper near the slab floor,
-  // softer higher up.
+  // softer higher up. A small floor keeps distant edges from snapping into
+  // hard rectangles when the weather map is near the coverage threshold.
   const heightMetres = max(shellHeightFraction, 0).mul(uCloudThickness).mul(0.001);
   const softness = max(
     uCloudEdgeSoftness.div(pow(max(uCloudEdgeSoftnessFalloff, 0.001), heightMetres)),
-    0.0001,
+    0.012,
   );
 
-  const top = smoothstep(softness.negate(), softness, coverageField.sub(shellHeightFraction));
+  // Soften the vertical cut so cloud tops don't form flat slab boxes. A sub-linear
+  // height remaps more mass into rounded mid-body, then erosion carves the silhouette.
+  const heightCut = pow(max(shellHeightFraction, 0), float(0.78));
+  const top = smoothstep(softness.negate(), softness, coverageField.sub(heightCut));
   const bottom = smoothstep(
-    softness.negate(),
-    softness,
-    shellHeightFraction.sub(erosion.mul(coverage)),
+    softness.negate().mul(1.35),
+    softness.mul(1.15),
+    shellHeightFraction.sub(erosion.mul(coverage).mul(1.25)),
   );
   return max(top.mul(bottom), 0);
 }

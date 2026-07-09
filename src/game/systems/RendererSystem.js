@@ -10,6 +10,8 @@ import {
   RGBAFormat,
   UnsignedByteType,
   WebGPURenderer,
+  Vector3,
+  Quaternion,
 } from 'three/webgpu';
 import { ClusteredLighting } from 'three/examples/jsm/lighting/ClusteredLighting.js';
 import { ssr } from 'three/examples/jsm/tsl/display/SSRNode.js';
@@ -17,6 +19,7 @@ import { ssao } from '../../three-addons/tsl/display/SSAONode.js';
 import { dualKawaseBloom } from '../../three-addons/tsl/display/DualKawaseBloomNode.js';
 import { getPostEffectMode, getRecommendedFogMaxDistance, getToneMappingMode, mergeQualityPresetForScene } from '../config/qualityPresets.js';
 import { normalizeAerialHazeColor } from '../config/photorealismPresets.js';
+import { syncTerrainAerialUniforms, syncTerrainViewDistance } from './terrainAerialUniforms.js';
 import { buildPostPipelinePlan } from '../render/postPipelinePlan.js';
 import { DrawCallProfiler } from '../render/drawCallProfiler.js';
 import { CITY_FURNITURE_LAYER } from '../render/renderLayers.js';
@@ -88,6 +91,7 @@ export class RendererSystem {
     this.weather = 'clear';
     this.aerialPerspectiveEnabled = true;
     this.aerialHazeColor = [0.32, 0.42, 0.48];
+    this.viewDistance = null;
     this.fogMarchSteps = 16;
     this.fogMaxDistance = 165; // overwritten in initialize() via getRecommendedFogMaxDistance
     this.environmentRenderTarget = null;
@@ -113,6 +117,17 @@ export class RendererSystem {
     this.drawCallProfiler = new DrawCallProfiler();
     this.drawProfileCounter = 0;
     this.sceneContext = 'exterior';
+    this._aoCameraPos = new Vector3();
+    this._aoCameraQuat = new Quaternion();
+    this._aoCameraValid = false;
+    this._renderCamera = null;
+  }
+
+  setViewDistance(distance) {
+    if (!Number.isFinite(distance) || distance <= 0) return;
+    if (this.viewDistance === distance) return;
+    this.viewDistance = distance;
+    this.invalidatePipeline();
   }
 
   getActiveQualityPreset() {
@@ -142,6 +157,7 @@ export class RendererSystem {
     this.fogEnabled = this.weather === 'fog';
     this.aerialPerspectiveEnabled = environmentPreset.aerialPerspective !== false;
     this.aerialHazeColor = normalizeAerialHazeColor(environmentPreset.aerialHazeColor);
+    syncTerrainAerialUniforms(environmentPreset);
     this.fogMarchSteps = preset.fogMarchSteps ?? 16;
     this.fogMaxDistance = preset.fogMaxDistance ?? getRecommendedFogMaxDistance(preset);
     const maxPixelRatio = preset.maxPixelRatio ?? 2;
@@ -328,6 +344,7 @@ export class RendererSystem {
 
   render({ scene, camera, deferExpensivePasses = false }) {
     this.ensureRenderPipeline(scene, camera);
+    this._renderCamera = camera;
     // Drives the SSAO updateInterval gate (and any other every-Nth-frame node
     // throttles installed by ensureRenderPipeline).
     this.pipelineFrameIndex = (this.pipelineFrameIndex ?? 0) + 1;
@@ -455,12 +472,20 @@ export class RendererSystem {
         let hasRendered = false;
         node.updateBefore = (frame) => {
           // Never skip the first update — the AO/pre-pass targets are empty
-          // until then and the scene pass would sample garbage. Once valid,
-          // retain the previous AO texture while terrain render objects churn.
-          if (hasRendered && this.deferExpensivePasses) return;
-          if (!hasRendered || (this.pipelineFrameIndex ?? 0) % aoInterval === 0) {
+          // until then and the scene pass would sample garbage.
+          if (!hasRendered) {
             hasRendered = true;
             originalUpdateBefore(frame);
+            this._snapshotAoCamera(this._renderCamera);
+            return;
+          }
+          const motionStale = this._aoCameraMotionExceedsThreshold(this._renderCamera);
+          // During streaming/compile deferral, reuse AO only while the view is
+          // static — otherwise stale screen-space AO ghosts across the terrain.
+          if (this.deferExpensivePasses && !motionStale) return;
+          if (motionStale || (this.pipelineFrameIndex ?? 0) % aoInterval === 0) {
+            originalUpdateBefore(frame);
+            this._snapshotAoCamera(this._renderCamera);
           }
         };
       }
@@ -506,6 +531,7 @@ export class RendererSystem {
             camera,
             fogMarchSteps: this.fogMarchSteps,
             fogMaxDistance: this.fogMaxDistance,
+            hazeColor: this.aerialHazeColor,
           })
         : sceneColor;
       outputNode = this.cloudSkyProvider.buildCloudPass({
@@ -523,15 +549,16 @@ export class RendererSystem {
             camera,
             fogMarchSteps: this.fogMarchSteps,
             fogMaxDistance: this.fogMaxDistance,
+            hazeColor: this.aerialHazeColor,
           })
         : this.aerialPerspectiveEnabled
           ? createAerialPerspectiveOutputNode({
               sceneColor,
               sceneDepth,
               camera,
-              startDistance: this.qualityPreset.environment?.aerialStart ?? 550,
-              endDistance: this.qualityPreset.environment?.aerialEnd ?? 1600,
-              maxOpacity: this.qualityPreset.environment?.aerialMaxOpacity ?? 0.22,
+              startDistance: Math.floor((this.viewDistance ?? camera.far ?? 300) * 0.28),
+              endDistance: Math.floor((this.viewDistance ?? camera.far ?? 300) * 0.92),
+              maxOpacity: Math.min(0.42, (this.qualityPreset.environment?.aerialMaxOpacity ?? 0.22) * 1.35),
               hazeColor: this.aerialHazeColor,
             })
           : sceneColor;
@@ -575,7 +602,22 @@ export class RendererSystem {
     this._prepassCamera = null;
     this.pipelineScene = null;
     this.pipelineCamera = null;
+    this._aoCameraValid = false;
     this.onPipelineInvalidated?.();
+  }
+
+  _aoCameraMotionExceedsThreshold(camera) {
+    if (!camera || !this._aoCameraValid) return true;
+    if (this._aoCameraPos.distanceToSquared(camera.position) > 0.16) return true;
+    if (this._aoCameraQuat.angleTo(camera.quaternion) > 0.02) return true;
+    return false;
+  }
+
+  _snapshotAoCamera(camera) {
+    if (!camera) return;
+    this._aoCameraPos.copy(camera.position);
+    this._aoCameraQuat.copy(camera.quaternion);
+    this._aoCameraValid = true;
   }
 
   setExposure(exposure = DEFAULT_EXPOSURE) {
@@ -607,6 +649,7 @@ export class RendererSystem {
     this.qualityPreset = { ...this.qualityPreset, environment: environmentPreset };
     this.aerialPerspectiveEnabled = environmentPreset.aerialPerspective !== false;
     this.aerialHazeColor = normalizeAerialHazeColor(environmentPreset.aerialHazeColor);
+    syncTerrainAerialUniforms(environmentPreset);
 
     if (this.renderer) {
       const toneMappingMode = environmentPreset.toneMapping ?? getToneMappingMode();
@@ -660,12 +703,23 @@ function resolveRendererBackend(renderer) {
   return backendName || 'unknown';
 }
 
-function createHeightFogOutputNode({ sceneColor, sceneDepth, camera, fogMarchSteps, fogMaxDistance }) {
+function createHeightFogOutputNode({
+  sceneColor,
+  sceneDepth,
+  camera,
+  fogMarchSteps,
+  fogMaxDistance,
+  hazeColor = [0.54, 0.62, 0.59],
+}) {
   const cameraMatrixWorld = uniform(camera.matrixWorld);
   const cameraProjectionMatrixInverse = uniform(camera.projectionMatrixInverse);
   const cameraPosition = uniform(camera.position);
-  const streetFogColor = vec3(0.54, 0.62, 0.59);
-  const highFogColor = vec3(0.72, 0.79, 0.75);
+  const streetFogColor = vec3(hazeColor[0] * 0.92, hazeColor[1] * 0.94, hazeColor[2] * 0.96);
+  const highFogColor = vec3(
+    hazeColor[0] * 1.08 + 0.12,
+    hazeColor[1] * 1.1 + 0.14,
+    hazeColor[2] * 1.12 + 0.14,
+  );
   const fogMax = float(fogMaxDistance);
   const fogSteps = float(fogMarchSteps);
 
@@ -686,15 +740,18 @@ function createHeightFogOutputNode({ sceneColor, sceneDepth, camera, fogMarchSte
       const stepT = float(i).add(jitter).div(fogSteps);
       const sampleDistance = marchDistance.mul(stepT);
       const sampleWorld = cameraPosition.add(rayDirection.mul(sampleDistance)).toVar();
-      const streetLayer = float(1).sub(smoothstep(1.0, 18.0, sampleWorld.y));
+      const groundHug = float(1).sub(smoothstep(0.5, 22.0, sampleWorld.y));
+      const streetLayer = float(1).sub(smoothstep(1.0, 18.0, sampleWorld.y)).mul(groundHug.mul(0.55).add(0.45));
       const upperLayer = float(1).sub(smoothstep(16.0, 54.0, sampleWorld.y)).mul(0.34);
       const distanceDensity = smoothstep(6.0, 116.0, sampleDistance);
+      const lowView = float(1).sub(smoothstep(0.08, 0.42, rayDirection.y.abs()));
       const noisePosition = sampleWorld.mul(0.035).add(vec3(time.mul(0.012), 0.0, time.mul(0.017)));
       const broadNoise = mx_noise_float(noisePosition).mul(0.5).add(0.5);
       const fineNoise = mx_noise_float(noisePosition.mul(2.8).add(vec3(17.0, 3.0, 29.0))).mul(0.5).add(0.5);
       const cloudShape = clamp(broadNoise.mul(0.76).add(fineNoise.mul(0.24)), 0.15, 1.0);
       const density = streetLayer.mul(1.28).add(upperLayer)
         .mul(distanceDensity)
+        .mul(lowView.mul(0.38).add(0.62))
         .mul(cloudShape.mul(0.52).add(0.62))
         .mul(0.117);
 

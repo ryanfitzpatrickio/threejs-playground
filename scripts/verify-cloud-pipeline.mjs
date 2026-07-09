@@ -12,23 +12,29 @@ import {
   CLOUD_TYPE_PRESETS,
   DEFAULT_CLOUD_TYPE,
 } from '../src/game/render/cloud/cloudConfig.js';
+import { syncCloudReach, uCloudMaxMarchDist, uCloudFadeStart, uCloudFadeEnd } from '../src/game/render/cloud/cloudReachUniforms.js';
 import { resolveDomeWeatherProfile } from '../src/game/systems/SkySystem.js';
 
 const low = getQualityPreset('low');
 const high = getQualityPreset('high');
 const ultra = getQualityPreset('ultra');
 assert.equal(normalizeCloudMode('bad'), 'dome');
-// Every tier now defaults to the simple SkyMesh dome clouds; the volumetric
-// pipeline is opt-in via the debug-panel checkbox (localStorage dreamfall:clouds
-// = 'volumetric'). resolveCloudConfig therefore returns null unless forced, but
-// the volumetricClouds config still drives the pipeline when it is enabled.
+// Ultra (and Max, which spreads Ultra) default to volumetric sky clouds.
+// Users can still force dome/off via localStorage; high/low stay on dome.
 assert.equal(low.environment.clouds, 'dome');
 assert.equal(high.environment.clouds, 'dome');
-assert.equal(ultra.environment.clouds, 'dome');
+assert.equal(ultra.environment.clouds, 'volumetric');
 assert.equal(resolveCloudConfig(high), null);
-assert.equal(resolveCloudConfig(high, { force: true }).march.maxSteps, 96);
-assert.equal(resolveCloudConfig(ultra, { force: true }).volumetric.godRays, true);
-assert.equal(resolveCloudConfig(ultra, { force: true }).volumetric.shadowResolution, 1024);
+const ultraCloud = resolveCloudConfig(ultra);
+assert.equal(ultraCloud.volumetric.marchSteps, 96);
+assert.equal(ultraCloud.volumetric.godRays, true);
+assert.equal(ultraCloud.volumetric.shadowResolution, 1024);
+
+syncCloudReach({ viewDistance: 370, fogMaxDistance: 165, environmentPreset: ultra.environment });
+assert.ok(uCloudMaxMarchDist.value <= 22000);
+assert.ok(uCloudMaxMarchDist.value >= 7000);
+assert.ok(uCloudFadeEnd.value > uCloudFadeStart.value);
+assert.ok(uCloudFadeStart.value > 4000, 'fade distances must be on cloud-slab scale, not viewDistance');
 
 // --- SkyMesh weather profiles ----------------------------------------------
 // The physical disc feeds a 19,000x HDR term. Rain and overcast require exact
@@ -111,9 +117,13 @@ try {
     localStorage.setItem('dreamfall:post-effect', 'off');
     localStorage.setItem('dreamfall:level', 'world');
     localStorage.setItem('dreamfall:controls-dismissed', 'true');
-    // Opt into the volumetric pipeline — it is no longer the default, but this
-    // smoke test exists to exercise it (temporal, shadows, god-rays, rain).
-    localStorage.setItem('dreamfall:clouds', 'volumetric');
+    // Ultra preset defaults to volumetric; explicit override keeps the smoke
+    // test stable if presets change.
+    if ((globalThis.__CLOUD_TEST_QUALITY__ ?? 'high') === 'ultra') {
+      localStorage.removeItem('dreamfall:clouds');
+    } else {
+      localStorage.setItem('dreamfall:clouds', 'volumetric');
+    }
   });
   await page.addInitScript((quality) => {
     globalThis.__CLOUD_TEST_QUALITY__ = quality;

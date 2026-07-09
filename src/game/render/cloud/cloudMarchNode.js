@@ -62,6 +62,7 @@ import {
   uAtmosphereMieG,
   uEvolution,
 } from './cloudUniforms.js';
+import { uCloudMaxMarchDist } from './cloudReachUniforms.js';
 import { sampleCloudDensity, shellHeightFractionAt, multiPhase, powder } from './cloudDensity.js';
 
 const _quadMesh = /*@__PURE__*/ new QuadMesh();
@@ -170,7 +171,6 @@ class CloudMarchNode extends TempNode {
     const STEPS = this.steps;
     const LIGHT_TAPS = this.lightTaps;
     const LIGHT_STEP = this.lightStepSize;
-    const MAX_MARCH = this.maxMarchDist;
     const MAX_STEP = this.maxStepSize;
     const EARLY_EXIT = this.earlyExitTransmittance;
     const weatherNode = this.weatherNode;
@@ -196,7 +196,7 @@ class CloudMarchNode extends TempNode {
       const tA = min(tBottom, tTop);
       const tB = max(tBottom, tTop);
       const tStart = max(tA, 0);
-      const tEnd = min(max(tB, tStart), MAX_MARCH);
+      const tEnd = min(max(tB, tStart), uCloudMaxMarchDist);
       const marchLen = tEnd.sub(tStart);
       // Cap the base step so grazing rays (huge marchLen) still sample the deck
       // finely instead of in coarse horizontal bands. Empty-space coarse-skip +
@@ -271,7 +271,6 @@ class CloudMarchNode extends TempNode {
 
   _buildHitDistanceFn() {
     const STEPS = Math.max(24, Math.ceil(this.steps * 0.5));
-    const MAX_MARCH = this.maxMarchDist;
     const weatherNode = this.weatherNode;
     const baseShapeNode = this.baseShapeNode;
     const cameraMatrixWorld = this._cameraMatrixWorld;
@@ -284,10 +283,10 @@ class CloudMarchNode extends TempNode {
       const tStart = max(uCloudAltitude.sub(origin.y).div(dirY), 0);
       const tEnd = min(
         uCloudAltitude.add(uCloudThickness).sub(origin.y).div(dirY),
-        MAX_MARCH,
+        uCloudMaxMarchDist,
       );
       const dt = max(tEnd.sub(tStart), 0).div(STEPS);
-      const firstHit = float(MAX_MARCH).toVar();
+      const firstHit = uCloudMaxMarchDist.toVar();
       If(dir.y.greaterThan(0).and(tEnd.greaterThan(tStart)), () => {
         Loop(STEPS, ({ i }) => {
           const t = tStart.add(float(i).add(0.5).mul(dt));
@@ -298,12 +297,12 @@ class CloudMarchNode extends TempNode {
             weatherNode,
             baseShapeNode,
           });
-          If(density.greaterThan(0.01).and(firstHit.greaterThan(MAX_MARCH * 0.999)), () => {
+          If(density.greaterThan(0.01).and(firstHit.greaterThan(uCloudMaxMarchDist.mul(0.999))), () => {
             firstHit.assign(t);
           });
         });
       });
-      const normalizedHit = min(firstHit.div(MAX_MARCH), 1);
+      const normalizedHit = min(firstHit.div(uCloudMaxMarchDist), 1);
       return vec4(normalizedHit, normalizedHit, normalizedHit, 1);
     });
   }

@@ -4,10 +4,9 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { createCutToolState, handleCutClick, undoLastPoint, clearCutPoints, applyCut, applyCylinderCut, disposeCutVisuals, createSliceState, handleSliceClick, updateSlicePreview, clearSlice, disposeSlice, applySlice } from '../game/geometry/bodyshopCutTool.js';
 import { publishBodyshopChassis } from '../game/vehicles/bodyshopChassisRegistry.js';
-import { GARAGE_DEFAULT_CHASSIS_TRANSFORM } from '../game/vehicles/garageBuilds.js';
+import { GARAGE_DEFAULT_CHASSIS_TRANSFORM, GARAGE_FRAME_PRESETS } from '../game/vehicles/garageBuilds.js';
 import {
   BODYSHOP_REQUIRED_LOCATOR_NAMES,
   addMissingBodyshopLocators,
@@ -22,10 +21,24 @@ import {
   scheduleBodyshopAutosave,
 } from '../game/vehicles/bodyshopSession.js';
 import { createBodyshopVehiclePreview } from './bodyshopVehiclePreview.js';
+import { createBodyshopFrameReference } from './bodyshopFrameReference.js';
+import {
+  applyChassisTransformToGroup,
+  BODYSHOP_FLOOR_Y,
+} from './bodyshopVehicleConfig.js';
+import {
+  applySequentialCylinderCuts,
+  createResolvedMeshesFromCut,
+  disposeMeshResource,
+  joinBodyshopMeshes,
+  replaceMeshWithGeometry,
+  replaceMeshWithSplit,
+} from './bodyshopMeshOps.js';
 import {
   configureBodyshopRenderer,
   installBodyshopEnvironment,
   prepareBodyshopGltfMaterials,
+  setBodyshopMeshWireframe,
 } from './bodyshopViewport.js';
 import { ensureFileStore } from '../store/fileStore.js';
 
@@ -93,6 +106,7 @@ export function BodyshopScene(props) {
   let cylinderHelper = null;
   let previewHandle = null;
   let previewBlobUrl = null;
+  let frameReference = null;
   let editPaused = false;
   let sessionRestored = false;
 
@@ -112,8 +126,12 @@ export function BodyshopScene(props) {
   const [previewMode, setPreviewMode] = createSignal(false);
   const [previewSteer, setPreviewSteer] = createSignal(0);
   const [previewDoor, setPreviewDoor] = createSignal(0);
+  const [showFrameReference, setShowFrameReference] = createSignal(true);
+  const [bodyWireframe, setBodyWireframe] = createSignal(false);
+  const [framePresetId, setFramePresetId] = createSignal('street');
   const [status, setStatus] = createSignal('Load a GLB to begin.');
   const [busy, setBusy] = createSignal(false);
+  const [sessionReady, setSessionReady] = createSignal(false);
   const [undoCount, setUndoCount] = createSignal(0);
   const [redoCount, setRedoCount] = createSignal(0);
 
@@ -171,6 +189,7 @@ export function BodyshopScene(props) {
 
     clearSelection();
     syncHierarchy();
+    applyBodyWireframeMode();
   }
 
   function undo() {
@@ -215,8 +234,35 @@ export function BodyshopScene(props) {
   const [renameValue, setRenameValue] = createSignal('');
   const [selectedTransform, setSelectedTransform] = createSignal(null);
 
+  function resolveSceneNodeName(child, usedNames) {
+    const trimmed = String(child.name ?? '').trim();
+    if (trimmed) {
+      const key = trimmed.toLowerCase();
+      if (!usedNames.has(key)) {
+        usedNames.add(key);
+        return trimmed;
+      }
+      let suffix = 2;
+      while (usedNames.has(`${trimmed} ${suffix}`.toLowerCase())) suffix += 1;
+      const unique = `${trimmed} ${suffix}`;
+      usedNames.add(unique.toLowerCase());
+      return unique;
+    }
+
+    const base = child.isMesh ? 'mesh' : 'group';
+    let suffix = 1;
+    let candidate = base;
+    while (usedNames.has(candidate.toLowerCase())) {
+      suffix += 1;
+      candidate = `${base} ${suffix}`;
+    }
+    usedNames.add(candidate.toLowerCase());
+    return candidate;
+  }
+
   function syncHierarchy() {
     const items = [];
+    const usedNames = new Set();
     objectMap.clear();
 
     if (!sceneRoot) {
@@ -237,10 +283,15 @@ export function BodyshopScene(props) {
         child.userData._builderId = id;
       }
 
+      const name = resolveSceneNodeName(child, usedNames);
+      if (!String(child.name ?? '').trim()) {
+        child.name = name;
+      }
+
       objectMap.set(id, child);
       items.push({
         id,
-        name: child.name || (child.isMesh ? 'mesh' : 'group'),
+        name,
         visible: child.visible,
         type: child.isMesh ? 'mesh' : 'group',
         depth: getDepth(child)
@@ -260,6 +311,7 @@ export function BodyshopScene(props) {
     }
 
     updateValidation();
+    if (bodyWireframe()) applyBodyWireframeMode();
   }
 
   function getDepth(obj) {
@@ -270,6 +322,15 @@ export function BodyshopScene(props) {
       current = current.parent;
     }
     return depth;
+  }
+
+  function applyBodyWireframeMode() {
+    if (!sceneRoot) return;
+    setBodyshopMeshWireframe(sceneRoot, bodyWireframe());
+  }
+
+  function syncFrameReferenceVisibility() {
+    frameReference?.setVisible(showFrameReference() && !previewMode());
   }
 
   function autosaveMeta() {
@@ -298,32 +359,36 @@ export function BodyshopScene(props) {
   async function restoreBodyshopSession() {
     if (sessionRestored || !sceneRoot) return;
     sessionRestored = true;
-    await ensureFileStore();
-    const session = readBodyshopSession();
-    if (!session) return;
-
-    if (session.publishId) setPublishId(session.publishId);
-    if (session.publishName) setPublishName(session.publishName);
-    if (session.publishDescription) setPublishDescription(session.publishDescription);
-    if (typeof session.publishDevOnly === 'boolean') setPublishDevOnly(session.publishDevOnly);
-
-    if (!session.hasDraft || !session.draftUrl) return;
 
     try {
-      setBusy(true);
-      const gltf = await loader.loadAsync(`${session.draftUrl}?v=${session.updatedAt || 0}`);
-      sceneRoot.clear();
-      const model = gltf.scene;
-      sceneRoot.add(model);
-      prepareBodyshopGltfMaterials(model);
+      await ensureFileStore();
+      const session = readBodyshopSession();
+      if (session?.publishId) setPublishId(session.publishId);
+      if (session?.publishName) setPublishName(session.publishName);
+      if (session?.publishDescription) setPublishDescription(session.publishDescription);
+      if (typeof session?.publishDevOnly === 'boolean') setPublishDevOnly(session.publishDevOnly);
 
-      syncHierarchy();
-      frameCamera();
-      setStatus('Restored bodyshop draft.');
-    } catch (error) {
-      setStatus(`Could not restore draft: ${error.message}`);
+      if (session?.hasDraft && session.draftUrl) {
+        try {
+          setBusy(true);
+          const gltf = await loader.loadAsync(`${session.draftUrl}?v=${session.updatedAt || 0}`);
+          sceneRoot.clear();
+          const model = gltf.scene;
+          sceneRoot.add(model);
+          prepareBodyshopGltfMaterials(model);
+
+          syncHierarchy();
+          frameCamera();
+          applyBodyWireframeMode();
+          setStatus('Restored bodyshop draft.');
+        } catch (error) {
+          setStatus(`Could not restore draft: ${error.message}`);
+        } finally {
+          setBusy(false);
+        }
+      }
     } finally {
-      setBusy(false);
+      setSessionReady(true);
     }
   }
 
@@ -360,6 +425,7 @@ export function BodyshopScene(props) {
         container: viewportRef,
         glbUrl: previewBlobUrl,
         chassisId: publishId().trim() || 'bodyshop-preview',
+        framePresetId: framePresetId(),
       });
       previewHandle.setSteer(previewSteer());
       previewHandle.setDoorOpen(previewDoor());
@@ -391,11 +457,30 @@ export function BodyshopScene(props) {
   });
 
   createEffect(() => {
+    if (!sessionReady()) return;
     publishId();
     publishName();
     publishDescription();
     publishDevOnly();
     queueAutosave({ includeGlb: false });
+  });
+
+  createEffect(() => {
+    bodyWireframe();
+    applyBodyWireframeMode();
+  });
+
+  createEffect(() => {
+    showFrameReference();
+    previewMode();
+    syncFrameReferenceVisibility();
+  });
+
+  createEffect(() => {
+    const presetId = framePresetId();
+    if (!frameReference) return;
+    const preset = frameReference.setPreset(presetId);
+    if (preset) setStatus(`${preset.name} frame reference loaded.`);
   });
 
   createEffect(() => {
@@ -588,6 +673,7 @@ export function BodyshopScene(props) {
     });
     transformControls.addEventListener('objectChange', () => {
       refreshSelectedTransform();
+      queueAutosave();
     });
     transformHelper = transformControls.getHelper();
     scene.add(transformHelper);
@@ -697,6 +783,7 @@ export function BodyshopScene(props) {
 
       syncHierarchy();
       frameCamera();
+      applyBodyWireframeMode();
       setStatus(`Loaded ${file.name}`);
       queueAutosave();
     } catch (error) {
@@ -723,6 +810,7 @@ export function BodyshopScene(props) {
 
       sceneRoot.add(model);
       syncHierarchy();
+      applyBodyWireframeMode();
 
       const id = model.userData._builderId;
       if (id) {
@@ -808,6 +896,7 @@ export function BodyshopScene(props) {
     if (!obj) return;
     obj.visible = !obj.visible;
     syncHierarchy();
+    queueAutosave();
   }
 
   function deleteSelected() {
@@ -837,10 +926,12 @@ export function BodyshopScene(props) {
     snapshotScene();
     const obj = objectMap.get(id);
     if (obj) {
-      obj.name = renameValue();
+      const fallback = obj.isMesh ? 'mesh' : 'group';
+      obj.name = renameValue().trim() || fallback;
     }
     setRenamingId(null);
     syncHierarchy();
+    queueAutosave();
   }
 
   function joinSelected() {
@@ -870,41 +961,18 @@ export function BodyshopScene(props) {
       return;
     }
 
-    const materialBuckets = new Map();
-    for (const mesh of meshes) {
-      mesh.updateMatrixWorld(true);
-      const key = mesh.material.uuid;
-      if (!materialBuckets.has(key)) {
-        materialBuckets.set(key, { material: mesh.material, geometries: [] });
+    try {
+      const joined = joinBodyshopMeshes(meshes, sceneRoot);
+      for (const mesh of joined) {
+        prepareBodyshopGltfMaterials(mesh);
       }
-      const geo = mesh.geometry.clone();
-      geo.applyMatrix4(mesh.matrixWorld);
-      materialBuckets.get(key).geometries.push(geo);
+      clearSelection();
+      syncHierarchy();
+      applyBodyWireframeMode();
+      setStatus(`Joined ${meshes.length} meshes into ${joined.length} mesh(es).`);
+    } catch (error) {
+      setStatus(`Join failed: ${error.message}`);
     }
-
-    const parent = meshes[0].parent || sceneRoot;
-
-    for (const mesh of meshes) {
-      mesh.parent?.remove(mesh);
-    }
-
-    for (const bucket of materialBuckets.values()) {
-      const merged = mergeGeometries(bucket.geometries, false);
-      for (const geo of bucket.geometries) geo.dispose();
-      if (!merged) continue;
-
-      const inverseParent = new THREE.Matrix4();
-      inverseParent.copy(parent.matrixWorld).invert();
-      merged.applyMatrix4(inverseParent);
-
-      const joinedMesh = new THREE.Mesh(merged, bucket.material);
-      joinedMesh.name = 'joined';
-      parent.add(joinedMesh);
-    }
-
-    clearSelection();
-    syncHierarchy();
-    setStatus(`Joined ${meshes.length} meshes.`);
   }
 
   function updateTransformProperty(axis, component, value) {
@@ -923,6 +991,7 @@ export function BodyshopScene(props) {
 
     obj.updateMatrixWorld(true);
     refreshSelectedTransform();
+    queueAutosave();
   }
 
   function raycastSceneMeshes() {
@@ -1055,44 +1124,22 @@ export function BodyshopScene(props) {
 
     try {
       const result = applyCut(cutState, targetMesh, camera);
-
-      const parent = targetMesh.parent || sceneRoot;
-      const material = targetMesh.material;
-
-      // Compute world transform so we can re-add at sceneRoot level
-      targetMesh.updateMatrixWorld(true);
-      const worldMatrix = targetMesh.matrixWorld.clone();
-
-      parent.remove(targetMesh);
-
-      // Decompose world transform for top-level placement
-      const wPos = new THREE.Vector3();
-      const wQuat = new THREE.Quaternion();
-      const wScl = new THREE.Vector3();
-      worldMatrix.decompose(wPos, wQuat, wScl);
-      const wRot = new THREE.Euler().setFromQuaternion(wQuat);
-
-      const bodyMesh = new THREE.Mesh(result.body, material.clone());
-      bodyMesh.name = targetMesh.name || 'body';
-      bodyMesh.material.side = THREE.DoubleSide;
-      bodyMesh.position.copy(wPos);
-      bodyMesh.rotation.copy(wRot);
-      bodyMesh.scale.copy(wScl);
-      sceneRoot.add(bodyMesh);
-
-      const cutoutMesh = new THREE.Mesh(result.cutout, material.clone());
-      cutoutMesh.name = 'cutout';
-      cutoutMesh.material.side = THREE.DoubleSide;
-      cutoutMesh.position.copy(wPos);
-      cutoutMesh.rotation.copy(wRot);
-      cutoutMesh.scale.copy(wScl);
-      sceneRoot.add(cutoutMesh);
+      const { bodyMesh, cutoutMesh } = replaceMeshWithSplit({
+        sourceMesh: targetMesh,
+        sceneRoot,
+        bodyGeometry: result.body,
+        cutoutGeometry: result.cutout,
+        cutoutName: 'cutout',
+      });
+      prepareBodyshopGltfMaterials(bodyMesh);
+      prepareBodyshopGltfMaterials(cutoutMesh);
 
       disposeCutVisuals(cutState);
       cutState = createCutToolState(scene);
 
       clearSelection();
       syncHierarchy();
+      applyBodyWireframeMode();
       setStatus('Cut applied. Rename the cutout piece (e.g. "window", "door").');
     } catch (error) {
       setStatus(`Cut failed: ${error.message}`);
@@ -1179,33 +1226,19 @@ export function BodyshopScene(props) {
     try {
       sliceState.flipSide = sliceFlip();
       const resultGeo = applySlice(sliceState, targetMesh, camera);
-
-      const parent = targetMesh.parent || sceneRoot;
-      const material = targetMesh.material;
-
-      targetMesh.updateMatrixWorld(true);
-      const worldMatrix = targetMesh.matrixWorld.clone();
-      parent.remove(targetMesh);
-
-      const wPos = new THREE.Vector3();
-      const wQuat = new THREE.Quaternion();
-      const wScl = new THREE.Vector3();
-      worldMatrix.decompose(wPos, wQuat, wScl);
-      const wRot = new THREE.Euler().setFromQuaternion(wQuat);
-
-      const resultMesh = new THREE.Mesh(resultGeo, material.clone());
-      resultMesh.name = targetMesh.name || 'sliced';
-      resultMesh.material.side = THREE.DoubleSide;
-      resultMesh.position.copy(wPos);
-      resultMesh.rotation.copy(wRot);
-      resultMesh.scale.copy(wScl);
-      sceneRoot.add(resultMesh);
+      const resultMesh = replaceMeshWithGeometry({
+        sourceMesh: targetMesh,
+        sceneRoot,
+        geometry: resultGeo,
+      });
+      prepareBodyshopGltfMaterials(resultMesh);
 
       clearSlice(sliceState);
       setSliceReady(false);
       setSliceFlip(false);
       clearSelection();
       syncHierarchy();
+      applyBodyWireframeMode();
       setStatus('Slice applied. Removed side is gone, cut edge is capped.');
     } catch (error) {
       setStatus(`Slice failed: ${error.message}`);
@@ -1381,39 +1414,20 @@ export function BodyshopScene(props) {
 
     try {
       const result = applyCylinderCut(cylinderHelper, targetMesh);
-
-      const parent = targetMesh.parent || sceneRoot;
-      const material = targetMesh.material;
-
-      targetMesh.updateMatrixWorld(true);
-      const worldMatrix = targetMesh.matrixWorld.clone();
-      parent.remove(targetMesh);
-
-      const wPos = new THREE.Vector3();
-      const wQuat = new THREE.Quaternion();
-      const wScl = new THREE.Vector3();
-      worldMatrix.decompose(wPos, wQuat, wScl);
-      const wRot = new THREE.Euler().setFromQuaternion(wQuat);
-
-      const bodyMesh = new THREE.Mesh(result.body, material.clone());
-      bodyMesh.name = targetMesh.name || 'body';
-      bodyMesh.material.side = THREE.DoubleSide;
-      bodyMesh.position.copy(wPos);
-      bodyMesh.rotation.copy(wRot);
-      bodyMesh.scale.copy(wScl);
-      sceneRoot.add(bodyMesh);
-
-      const cutoutMesh = new THREE.Mesh(result.cutout, material.clone());
-      cutoutMesh.name = 'wheel-cutout';
-      cutoutMesh.material.side = THREE.DoubleSide;
-      cutoutMesh.position.copy(wPos);
-      cutoutMesh.rotation.copy(wRot);
-      cutoutMesh.scale.copy(wScl);
-      sceneRoot.add(cutoutMesh);
+      const split = replaceMeshWithSplit({
+        sourceMesh: targetMesh,
+        sceneRoot,
+        bodyGeometry: result.body,
+        cutoutGeometry: result.cutout,
+        cutoutName: 'wheel-cutout',
+      });
+      prepareBodyshopGltfMaterials(split.bodyMesh);
+      prepareBodyshopGltfMaterials(split.cutoutMesh);
 
       // Don't remove cylinder - user likely wants to reposition for next wheel
       clearSelection();
       syncHierarchy();
+      applyBodyWireframeMode();
       setStatus('Cylinder cut applied. Reposition cylinder for next wheel or remove it.');
     } catch (error) {
       setStatus(`Cylinder cut failed: ${error.message}`);
@@ -1455,7 +1469,7 @@ export function BodyshopScene(props) {
       opacity: 0.4,
       depthTest: false
     });
-    const line = new THREE.LineLoop(geo, mat);
+    const line = new THREE.LineSegments(geo, mat);
     line.userData._builderHelper = true;
     line.renderOrder = 997;
     return line;
@@ -1474,10 +1488,10 @@ export function BodyshopScene(props) {
     const rl = wheelCylinders[2].position;
     const rr = wheelCylinders[3].position;
     const verts = new Float32Array([
-      fl.x, fl.y, fl.z,
-      fr.x, fr.y, fr.z,
-      rr.x, rr.y, rr.z,
-      rl.x, rl.y, rl.z
+      fl.x, fl.y, fl.z, fr.x, fr.y, fr.z,
+      fr.x, fr.y, fr.z, rr.x, rr.y, rr.z,
+      rr.x, rr.y, rr.z, rl.x, rl.y, rl.z,
+      rl.x, rl.y, rl.z, fl.x, fl.y, fl.z,
     ]);
     wheelAlignRect.geometry.dispose();
     wheelAlignRect.geometry = new THREE.BufferGeometry();
@@ -1724,51 +1738,31 @@ export function BodyshopScene(props) {
     setStatus('Cutting 4 wheels...');
 
     try {
-      const parent = targetMesh.parent || sceneRoot;
-      const material = targetMesh.material;
+      const cutResult = applySequentialCylinderCuts(wheelCylinders, targetMesh);
+      disposeMeshResource(targetMesh);
 
-      targetMesh.updateMatrixWorld(true);
-      const worldMatrix = targetMesh.matrixWorld.clone();
-      const wPos = new THREE.Vector3();
-      const wQuat = new THREE.Quaternion();
-      const wScl = new THREE.Vector3();
-      worldMatrix.decompose(wPos, wQuat, wScl);
-      const wRot = new THREE.Euler().setFromQuaternion(wQuat);
+      const { bodyMesh, cutoutMeshes } = createResolvedMeshesFromCut({
+        sceneRoot,
+        bodyGeometry: cutResult.bodyGeometry,
+        cutoutGeometries: cutResult.cutoutGeometries,
+        referenceWorld: cutResult.referenceWorld,
+        material: cutResult.material,
+        sourceName: cutResult.sourceName,
+        cutoutNames: WHEEL_NAMES.map((name) => `wheel-${name}`),
+      });
 
-      let currentBody = targetMesh;
-
-      for (let i = 0; i < 4; i++) {
-        const cyl = wheelCylinders[i];
-        const result = applyCylinderCut(cyl, currentBody);
-
-        // Create the cutout mesh at sceneRoot level
-        const cutoutMesh = new THREE.Mesh(result.cutout, material.clone());
-        cutoutMesh.name = `wheel-${WHEEL_NAMES[i]}`;
-        cutoutMesh.material.side = THREE.DoubleSide;
-        cutoutMesh.position.copy(wPos);
-        cutoutMesh.rotation.copy(wRot);
-        cutoutMesh.scale.copy(wScl);
-        sceneRoot.add(cutoutMesh);
-
-        // Replace currentBody with the subtracted result for the next iteration
-        const bodyMesh = new THREE.Mesh(result.body, material.clone());
-        bodyMesh.name = currentBody.name || 'body';
-        bodyMesh.material.side = THREE.DoubleSide;
-        bodyMesh.position.copy(wPos);
-        bodyMesh.rotation.copy(wRot);
-        bodyMesh.scale.copy(wScl);
-
-        parent.remove(currentBody);
-        sceneRoot.add(bodyMesh);
-        currentBody = bodyMesh;
-
-        setStatus(`Cut wheel ${i + 1}/4 (${WHEEL_NAMES[i]})...`);
+      for (const mesh of cutoutMeshes) {
+        sceneRoot.add(mesh);
+        prepareBodyshopGltfMaterials(mesh);
       }
+      sceneRoot.add(bodyMesh);
+      prepareBodyshopGltfMaterials(bodyMesh);
 
       removeWheelAlignment();
       removeCylinder();
       clearSelection();
       syncHierarchy();
+      applyBodyWireframeMode();
       setStatus('All 4 wheels cut. Meshes named wheel-front-left, wheel-front-right, etc.');
     } catch (error) {
       setStatus(`4-wheel cut failed: ${error.message}`);
@@ -1836,13 +1830,25 @@ export function BodyshopScene(props) {
           new THREE.MeshStandardMaterial({ color: '#c7cfca', roughness: 0.95, metalness: 0.02 })
         );
         floor.rotation.x = -Math.PI / 2;
-        floor.position.y = -0.02;
+        floor.position.y = BODYSHOP_FLOOR_Y;
         floor.userData._builderHelper = true;
         scene.add(floor);
 
         sceneRoot = new THREE.Group();
         sceneRoot.name = '__builder_root__';
-        scene.add(sceneRoot);
+
+        frameReference = await createBodyshopFrameReference({
+          framePresetId: framePresetId(),
+          floorY: BODYSHOP_FLOOR_Y,
+        });
+        scene.add(frameReference.group);
+
+        const bodyMount = new THREE.Group();
+        bodyMount.name = '__body_mount__';
+        applyChassisTransformToGroup(bodyMount, GARAGE_DEFAULT_CHASSIS_TRANSFORM);
+        frameReference.chassisSocket.add(bodyMount);
+        bodyMount.add(sceneRoot);
+        syncFrameReferenceVisibility();
 
         orbitControls = new OrbitControls(camera, renderer.domElement);
         orbitControls.enableDamping = true;
@@ -1892,6 +1898,8 @@ export function BodyshopScene(props) {
   onCleanup(() => {
     window.removeEventListener('keydown', handleKeyDown);
     void exitVehiclePreview();
+    frameReference?.dispose();
+    frameReference = null;
     void flushBodyshopAutosave({
       meta: autosaveMeta(),
       exportGlb: sceneRoot && sceneItems().length > 0
@@ -2399,6 +2407,42 @@ export function BodyshopScene(props) {
               </div>
             </div>
           </Show>
+
+          <div class="builder-section">
+            <h3 class="builder-section-title">Viewport</h3>
+            <label class="bodyshop-checkbox">
+              <input
+                type="checkbox"
+                checked={showFrameReference()}
+                disabled={previewMode()}
+                onChange={(event) => setShowFrameReference(event.currentTarget.checked)}
+              />
+              <span>Show garage frame</span>
+            </label>
+            <label class="bodyshop-checkbox">
+              <input
+                type="checkbox"
+                checked={bodyWireframe()}
+                disabled={previewMode()}
+                onChange={(event) => setBodyWireframe(event.currentTarget.checked)}
+              />
+              <span>Body wireframe (see-through)</span>
+            </label>
+            <div class="builder-transform-group">
+              <label>Frame preset</label>
+              <select
+                class="builder-rename-input bodyshop-field"
+                value={framePresetId()}
+                disabled={previewMode()}
+                onChange={(event) => setFramePresetId(event.currentTarget.value)}
+              >
+                <For each={GARAGE_FRAME_PRESETS}>
+                  {(preset) => <option value={preset.id}>{preset.name}</option>}
+                </For>
+              </select>
+            </div>
+            <p class="bodyshop-hint">Align your body shell to the semi-transparent frame and wheel positions.</p>
+          </div>
 
           <div class="builder-section">
             <h3 class="builder-section-title">Publish</h3>

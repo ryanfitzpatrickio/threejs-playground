@@ -1,4 +1,5 @@
 import {
+  flushFileStore,
   getBodyshopAutosave,
   setBodyshopAutosave,
 } from '../../store/fileStore.js';
@@ -100,4 +101,6 @@ export async function flushBodyshopAutosave({
       writeBodyshopSessionMeta({ hasDraft: true, draftUrl: DRAFT_GLB_URL }, { debounce: false });
     }
   }
+
+  await flushFileStore();
 }

@@ -12,7 +12,7 @@
 // is computed by SkySystem and passed in via `applySunDirection`.
 
 import * as THREE from 'three';
-import { texture, texture3D, vec4, screenUV } from 'three/tsl';
+import { texture, texture3D } from 'three/tsl';
 import { AtmosphereLUTNode } from './atmosphereLUT.js';
 import { createSkyMaterial } from './cloudSkyMaterial.js';
 import { CloudMarchNode } from './cloudMarchNode.js';
@@ -20,6 +20,7 @@ import { CloudTemporalNode } from './cloudTemporalNode.js';
 import { CloudShadowNode } from './cloudShadowNode.js';
 import { GodRaysNode } from './godRaysNode.js';
 import { createCloudCompositeOutputNode } from './cloudCompositeNode.js';
+import { createGodRaysCompositeNode } from './godRaysCompositeNode.js';
 import { generateBaseShape3D, generateWeatherMap } from './cloudNoise.js';
 import {
   resolveCloudConfig,
@@ -27,6 +28,8 @@ import {
   CLOUD_TYPE_PRESETS,
   DEFAULT_CLOUD_TYPE,
 } from './cloudConfig.js';
+import { terrainHazeColor } from '../../systems/terrainAerialUniforms.js';
+import { uCloudMaxMarchDist } from './cloudReachUniforms.js';
 import {
   uSunDirection,
   uSunIntensity,
@@ -73,7 +76,9 @@ const _lastCameraPosition = /*@__PURE__*/ new THREE.Vector3();
 const _lastCameraQuaternion = /*@__PURE__*/ new THREE.Quaternion();
 // Per-frame rotation above this clears temporal history (fast look/spin otherwise
 // reprojects stale cloud samples into the sky band and reads as black flicker).
-const CAMERA_ROTATION_HISTORY_RESET_RAD = 0.12;
+const CAMERA_ROTATION_HISTORY_RESET_RAD = 0.28;
+// World translation (m) before history reset — avoid clearing on every small step.
+const CAMERA_POSITION_HISTORY_RESET_M = 55;
 
 export class CloudSkyProvider {
   initialize(scene, { sun = null, hemisphere = null, qualityPreset = {} } = {}) {
@@ -118,7 +123,7 @@ export class CloudSkyProvider {
     uCloudWeatherScale.value = shape.weatherScale ?? 6000;
     uCloudBaseScale.value = shape.baseScale ?? 1800;
     const baseScale = uCloudBaseScale.value;
-    uCloudErosionScale.value = baseScale * (shape.erosionScaleBaseMultiplier ?? 0.4);
+    uCloudErosionScale.value = baseScale * (shape.erosionScaleBaseMultiplier ?? 0.28);
     uCloudBaseStrength.value = shape.baseStrength ?? 0.69;
     uCloudErosionStrengthBase.value = shape.erosionStrengthBase ?? 0.24;
     uCloudErosionStrengthPeak.value = shape.erosionStrengthPeak ?? 2.15;
@@ -139,13 +144,9 @@ export class CloudSkyProvider {
     this._godRaysEnabled = vc.godRays === true;
     this._godRaySteps = vc.godRaySteps ?? 24;
     this._lightStepSize = 12;
-    // How far a grazing ray marches before giving up. This sets the ground-level
-    // horizon cutoff: a flat slab at `altitude` is reached at cloudNear =
-    // altitude/sin(elev), so the deck stops at ~asin(altitude/maxMarchDist).
-    // 150 km ⇒ ~0.45° for a 1200 m deck, so clouds run essentially to the
-    // horizon. Only grazing rays hit this cap (overhead exits the thin slab long
-    // before it), and the step count is fixed, so this costs nothing extra.
-    this._maxMarchDist = 150000;
+    // Capped each frame via syncCloudReach(viewDistance) from GameRuntime.
+    this._maxMarchDist = vc.maxMarchDist ?? 16000;
+    uCloudMaxMarchDist.value = this._maxMarchDist;
 
     this.baseShapeTexture = generateBaseShape3D(this._baseShapeDims);
     this.weatherTexture = generateWeatherMap(vc.weatherMapResolution ?? 512, 0);
@@ -206,8 +207,10 @@ export class CloudSkyProvider {
     // M6 refines these from the real transmittance LUT; M2 uses a constant sky
     // blue and the sun color attenuated by the day factor.
     uSunTint.value.copy(uSunColor.value).multiplyScalar(day * weatherScale);
-    uCloudAmbientColor.value.setRGB(0.5, 0.62, 0.78)
-      .multiplyScalar((0.18 + 0.82 * day) * weatherScale);
+    // Zenith/horizon sky blue for cloud ambient fill (not grey haze).
+    uCloudAmbientColor.value.setRGB(0.34, 0.56, 0.96)
+      .multiplyScalar((0.22 + 0.78 * day) * weatherScale);
+    terrainHazeColor.value.copy(uCloudAmbientColor.value);
 
     if (this.sun) {
       this.sun.position.copy(sunDirection).multiplyScalar(DEFAULT_SUN_DISTANCE);
@@ -224,7 +227,7 @@ export class CloudSkyProvider {
     if (!camera) return false;
     this.attachToCamera(camera);
     const position = camera.position;
-    if (this._hasCameraPosition && _lastCameraPosition.distanceToSquared(position) > 10000) {
+    if (this._hasCameraPosition && _lastCameraPosition.distanceToSquared(position) > CAMERA_POSITION_HISTORY_RESET_M * CAMERA_POSITION_HISTORY_RESET_M) {
       this.clearHistory();
     }
     if (this._hasCameraRotation) {
@@ -291,7 +294,7 @@ export class CloudSkyProvider {
     uCloudDensity.value = shape.density;
     uCloudWeatherScale.value = shape.weatherScale;
     uCloudBaseScale.value = shape.baseScale;
-    uCloudErosionScale.value = shape.baseScale * (shape.erosionScaleBaseMultiplier ?? 0.4);
+    uCloudErosionScale.value = shape.baseScale * (shape.erosionScaleBaseMultiplier ?? 0.28);
     uCloudBaseStrength.value = shape.baseStrength;
     uCloudErosionStrengthBase.value = shape.erosionStrengthBase;
     uCloudErosionStrengthPeak.value = shape.erosionStrengthPeak;
@@ -347,7 +350,7 @@ export class CloudSkyProvider {
       camera,
       marchNode,
       renderScale: this._renderScale,
-      blend: 0.12,
+      blend: 0.24,
     });
     this._shadowNode = shadowNode;
     this._marchNode = marchNode;
@@ -366,12 +369,18 @@ export class CloudSkyProvider {
       const godRaysNode = new GodRaysNode({
         camera,
         shadowNode,
+        sceneDepth,
         steps: this._godRaySteps,
       });
       this._godRaysNode = godRaysNode;
       track(godRaysNode);
-      const rays = godRaysNode.getTextureNode().sample(screenUV);
-      outputNode = vec4(outputNode.rgb.add(rays.rgb), outputNode.a);
+      outputNode = createGodRaysCompositeNode({
+        baseColor: outputNode,
+        sceneDepth,
+        cloudTexture: temporalNode.getTextureNode(),
+        raysTexture: godRaysNode.getTextureNode(),
+        camera,
+      });
     }
     return outputNode;
   }
@@ -389,7 +398,10 @@ export class CloudSkyProvider {
 
   get cloudShadow() {
     return this._shadowNode
-      ? { texture: this._shadowNode.getTextureNode(), projection: this._shadowNode.projection }
+      ? {
+        texture: this._shadowNode.getShadowTexture(),
+        projection: this._shadowNode.projection,
+      }
       : null;
   }
 

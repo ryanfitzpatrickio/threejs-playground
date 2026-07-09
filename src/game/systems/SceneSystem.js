@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { CachedClipmapShadowNode } from '../render/CachedClipmapShadowNode.js';
 import { getRecommendedSceneFog } from '../config/qualityPresets.js';
-import { getSkyDaylightFactor, SkySystem, isDirectionalSunDaytime } from './SkySystem.js';
+import { getSkyDaylightFactor, SkySystem, isDirectionalSunDaytime, VOLUMETRIC_SKY_CLEAR } from './SkySystem.js';
 import { CITY_FURNITURE_LAYER } from '../render/renderLayers.js';
 
 // Fixed offset from the shadow target to the sun. Keeping this constant while we
@@ -46,9 +46,11 @@ export class SceneSystem {
       : getRecommendedSceneFog(qualityPreset);
     this._sceneFog = new THREE.Fog(DAY_FOG, fog.near, fog.far);
     this.weather = qualityPreset.environment?.weather ?? 'clear';
+    this.exteriorDistanceFog = qualityPreset.exteriorDistanceFog !== false;
     this._fogColorScratch = new THREE.Color();
     this._fogDayColorScratch = new THREE.Color();
-    this.scene.fog = qualityPreset.environment?.weather === 'fog' ? this._sceneFog : null;
+    this._viewDistance = null;
+    this.scene.fog = this._shouldUseDistanceFog() ? this._sceneFog : null;
 
     const hemisphere = new THREE.HemisphereLight(0xf6fbf5, 0x7f7664, HEMISPHERE_INTENSITY);
     hemisphere.name = 'Salt Marches Hemisphere Light';
@@ -108,6 +110,7 @@ export class SceneSystem {
       hemisphere,
       qualityPreset,
     });
+    this.scene.fog = this._shouldUseDistanceFog() ? this._sceneFog : null;
     this._sunUserEnabled = true;
     this.skySystem.onTimeOfDayChanged = (timeOfDay) => {
       this.syncSunVisibilityForTimeOfDay(timeOfDay);
@@ -133,10 +136,22 @@ export class SceneSystem {
 
   setViewDistance(distance) {
     if (!Number.isFinite(distance) || distance <= 0 || !this._sceneFog) return;
-    // Keep weather fog inside the terrain camera plane. Clear weather remains
-    // unchanged and relies on camera clipping rather than forced distance fog.
-    this._sceneFog.near = Math.max(48, Math.floor(distance * 0.42));
-    this._sceneFog.far = Math.max(this._sceneFog.near + 24, Math.floor(distance * 0.88));
+    this._viewDistance = distance;
+    // Pull distant terrain + horizon skirt into the sky tint before the far plane.
+    this._sceneFog.near = Math.max(48, Math.floor(distance * 0.3));
+    this._sceneFog.far = Math.max(this._sceneFog.near + 28, Math.floor(distance * 0.9));
+    if (this._shouldUseDistanceFog()) {
+      this.scene.fog = this._sceneFog;
+    }
+  }
+
+  _shouldUseDistanceFog() {
+    if (this.lightingMode === 'clustered') return false;
+    if (this.weather === 'fog') return true;
+    // Volumetric sky + terrain aerial already hide the load edge; THREE.Fog on
+    // clear weather tints distant hills grey-white and reads as a flat haze band.
+    if (this.skySystem?.cloudMode === 'volumetric' && this.weather === 'clear') return false;
+    return this.exteriorDistanceFog === true;
   }
 
   // Clipmaps follow the camera themselves. When they are disabled, translate the
@@ -238,7 +253,9 @@ export class SceneSystem {
       this.streetLightGroup.visible = true;
     } else {
       this.skySystem?.setVisible(true);
-      this.scene.background = null;
+      this.scene.background = this.skySystem?.cloudMode === 'volumetric'
+        ? new THREE.Color(VOLUMETRIC_SKY_CLEAR)
+        : null;
       this.skySystem?.setTimeOfDay(this.skySystem.timeOfDay);
       this.syncFogColorForTimeOfDay(this.skySystem?.timeOfDay ?? 0.72);
       this.streetLightGroup.visible = false;
@@ -261,7 +278,7 @@ export class SceneSystem {
   setSceneFogEnabled(enabled) {
     if (enabled) {
       if (this._sceneFog && this.scene.fog !== this._sceneFog) this.scene.fog = this._sceneFog;
-    } else {
+    } else if (!this._shouldUseDistanceFog()) {
       this.scene.fog = null;
     }
     return this.snapshot();
@@ -270,6 +287,7 @@ export class SceneSystem {
   setWeather(weather = 'clear') {
     this.weather = Object.hasOwn(WEATHER_FOG, weather) ? weather : 'clear';
     this.syncFogColorForTimeOfDay(this.skySystem?.timeOfDay ?? 0.72);
+    this.scene.fog = this._shouldUseDistanceFog() ? this._sceneFog : null;
     return this.weather;
   }
 

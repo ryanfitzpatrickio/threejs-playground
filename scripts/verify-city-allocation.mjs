@@ -22,7 +22,7 @@ page.on('console', (message) => {
 });
 
 await page.addInitScript(() => {
-  localStorage.setItem('dreamfall:quality', 'ultra');
+  localStorage.setItem('dreamfall:quality', 'max');
   localStorage.setItem('dreamfall:post-effect', 'ssao');
   localStorage.setItem('dreamfall:level', 'city');
   localStorage.setItem('dreamfall:controls-dismissed', 'true');

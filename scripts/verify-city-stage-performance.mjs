@@ -31,7 +31,8 @@ page.on('console', (message) => {
 });
 
 await page.addInitScript(() => {
-  localStorage.setItem('dreamfall:quality', 'ultra');
+  // Use 'max' to exercise the (former) Ultra city load path under the new tiering.
+  localStorage.setItem('dreamfall:quality', 'max');
   localStorage.setItem('dreamfall:post-effect', 'ssao');
   localStorage.setItem('dreamfall:level', 'city');
   localStorage.setItem('dreamfall:controls-dismissed', 'true');
@@ -151,10 +152,10 @@ try {
   assert.ok(result.city.worstAttachMs >= result.city.lastAttachMs);
   assert.ok(result.attachMeasures > 0);
   assert.ok(result.ledges > 0, 'near traversal was backfilled');
-  assert.equal(result.city.activeLoadRadius, 2, 'ultra steady load radius');
-  // Shadows + SSAO post-effect must remain intact (regression guard for the
-  // earlier render-list re-entrancy crash).
-  assert.equal(result.renderer.shadows, true, 'clipmap shadows on');
+  assert.equal(result.city.activeLoadRadius, 2, 'max steady load radius');
+  // SSAO post-effect + high-density load must remain intact (regression guard
+  // for prior render-list / city streaming crashes). City always forces the
+  // follow-frustum shadowMap off (clipmap used only on Max tier).
   assert.equal(result.renderer.postEffectMode, 'ssao', 'SSAO post-effect on');
 
   // P1: incremental collider index — add + remove paths + query parity.

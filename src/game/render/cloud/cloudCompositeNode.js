@@ -29,7 +29,11 @@ import {
   screenUV,
   uniform,
 } from 'three/tsl';
-import { uCloudAltitude } from './cloudUniforms.js';
+import { uCloudAltitude, uCloudAmbientColor } from './cloudUniforms.js';
+import {
+  uCloudFadeEnd,
+  uCloudFadeStart,
+} from './cloudReachUniforms.js';
 
 export function createCloudCompositeOutputNode({
   sceneColor,
@@ -62,17 +66,17 @@ export function createCloudCompositeOutputNode({
     const occluded = isSky.not().and(sceneDist.lessThan(cloudNear));
 
     const cloud = cloudTexture.sample(uv);
-    // Near-horizon fades, aligned to the 150 km march cutoff (see provider
-    // `_maxMarchDist`). `horizonMelt` only softens the last fraction of a degree
-    // where the grazing march is numerically worst; `farMelt` fades the deck out
-    // exactly where the march stops giving samples (cloudNear → 150 km), so there
-    // is no hard edge; aerial perspective adds gentle recession over the last few
-    // degrees without washing the deck to the bright horizon-sky colour.
-    const horizonMelt = smoothstep(0.003, 0.014, worldDir.y);
-    const farMelt = float(1).sub(smoothstep(125000, 150000, cloudNear));
-    const alpha = select(occluded, float(0), cloud.a.mul(horizonMelt).mul(farMelt));
-    const aerialAmount = smoothstep(40000, 125000, cloudNear).mul(0.45);
-    const aerialCloud = mix(cloud.rgb, sceneTexel.rgb, aerialAmount);
-    return vec4(mix(sceneTexel.rgb, aerialCloud, alpha), sceneTexel.a);
+    const horizonMelt = smoothstep(0.0015, 0.028, worldDir.y);
+    // Fade along-ray as we approach the march cap (grazing horizon rays).
+    const reachFade = float(1).sub(smoothstep(uCloudFadeStart, uCloudFadeEnd, cloudNear));
+    // Near the horizon, soften cloud edges into sky blue (not grey terrain haze).
+    const horizonHaze = float(1).sub(smoothstep(0.006, 0.05, worldDir.y));
+    const cloudColor = mix(
+      cloud.rgb,
+      mix(sceneTexel.rgb, uCloudAmbientColor, float(0.55)),
+      horizonHaze.mul(0.38),
+    );
+    const alpha = select(occluded, float(0), cloud.a.mul(horizonMelt).mul(reachFade));
+    return vec4(mix(sceneTexel.rgb, cloudColor, alpha), sceneTexel.a);
   })();
 }

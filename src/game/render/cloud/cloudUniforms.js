@@ -18,17 +18,17 @@ import { uniform } from 'three/tsl';
 export const uSunDirection = uniform(new THREE.Vector3(0, 0.3, -1).normalize());
 export const uSunIntensity = uniform(6.6);                 // sky reference source radiance space
 export const uSunColor = uniform(new THREE.Color(1, 0.95, 0.85));
-export const uSunDiscSize = uniform(0.0003);
+export const uSunDiscSize = uniform(0.0016);
 
 // --- Atmosphere params (written on init / preset change) ----------------------
 // Re-baking the transmittance LUT when these change is M6 polish; for now they
 // are set once at provider init.
-export const uAtmosphereRayleigh = uniform(1);
-export const uAtmosphereTurbidity = uniform(3.3);
-export const uAtmosphereMieG = uniform(0.7);
-export const uAtmosphereMieStrength = uniform(1);
-export const uAtmosphereMultiScatter = uniform(0.2);
-export const uAtmosphereSkyMultiScatter = uniform(0.5);
+export const uAtmosphereRayleigh = uniform(1.95);
+export const uAtmosphereTurbidity = uniform(1.5);
+export const uAtmosphereMieG = uniform(0.76);
+export const uAtmosphereMieStrength = uniform(0.26);
+export const uAtmosphereMultiScatter = uniform(0.22);
+export const uAtmosphereSkyMultiScatter = uniform(0.28);
 
 // 0 = full day, 1 = full night. Drives the moon/night terms once added; for M1
 // it is computed from the sun elevation each frame.
@@ -48,17 +48,17 @@ export const uCloudThickness = uniform(1800);
 export const uCloudCoverage = uniform(0.5);
 export const uCloudDensity = uniform(0.02);          // extinction coefficient
 export const uCloudScatteringAlbedo = uniform(1);
-export const uCloudWeatherScale = uniform(6000);
-export const uCloudBaseScale = uniform(1800);
-export const uCloudErosionScale = uniform(720);
-export const uCloudBaseStrength = uniform(0.69);
-export const uCloudErosionStrengthBase = uniform(0.24);
-export const uCloudErosionStrengthPeak = uniform(2.15);
+export const uCloudWeatherScale = uniform(4600);
+export const uCloudBaseScale = uniform(1300);
+export const uCloudErosionScale = uniform(364);
+export const uCloudBaseStrength = uniform(0.6);
+export const uCloudErosionStrengthBase = uniform(0.42);
+export const uCloudErosionStrengthPeak = uniform(2.95);
 export const uCloudErosionShape = uniform(1);
-export const uCloudEdgeSoftness = uniform(0.095);
-export const uCloudEdgeSoftnessFalloff = uniform(1);
-export const uCloudPowderStrength = uniform(0.7);
-export const uCloudAmbientIntensity = uniform(0.48);
+export const uCloudEdgeSoftness = uniform(0.16);
+export const uCloudEdgeSoftnessFalloff = uniform(0.82);
+export const uCloudPowderStrength = uniform(0.65);
+export const uCloudAmbientIntensity = uniform(0.52);
 
 // Lighting helpers: sun transmittance to the cloud deck (tint) + an ambient
 // sky color. The provider sets these each frame (M2: from the LUT horizon

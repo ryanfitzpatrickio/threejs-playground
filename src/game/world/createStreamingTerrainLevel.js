@@ -38,6 +38,8 @@ import {
 } from '../../world/worldMap/roadProfile.js';
 import { buildRiverProfile, applyRiverCorridorHeight } from '../../world/worldMap/riverProfile.js';
 import { createTerrainBiomeMaterial } from '../materials/createTerrainBiomeMaterial.js';
+import { createTerrainHorizon } from './createTerrainHorizon.js';
+import { createTerrainParallaxLayers } from './createTerrainParallaxLayers.js';
 import { createZoneForest } from './createZoneForest.js';
 import { setForestLitterMask, clearForestLitterMask } from './forest/forestLitter.js';
 import { createRoadworks, ROAD_SURFACE_LIFT } from './createRoadworks.js';
@@ -371,6 +373,11 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
   // texture-overlay branch (and chunks know to bake the `bpTexMask` attribute).
   const bpTerrainTexture = collectBlueprintTerrainTexture(worldMap);
 
+  const terrainPom = qualityPreset.parallaxOcclusion?.enabled === true
+    && qualityPreset.parallaxOcclusion?.terrain !== false
+    ? qualityPreset.parallaxOcclusion
+    : null;
+
   // One shared material for every terrain chunk: a single render pipeline, so
   // streamed-in chunks reuse the already-compiled pipeline and never need to be
   // hidden-until-compiled (which was causing the chunk-edge flicker while moving).
@@ -378,7 +385,10 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
   // single blueprint terrain texture painted over merge footprints.
   const terrainMaterial = createTerrainBiomeMaterial({
     overlay: bpTerrainTexture,
-    hextile: qualityPreset.terrainHextile,
+    hextile: terrainPom ? null : qualityPreset.terrainHextile,
+    parallaxOcclusion: terrainPom,
+    macroDetail: qualityPreset.terrainMacroDetail,
+    cloudShadow: qualityPreset.terrainCloudShadow === true,
   });
 
   const liveChunks = new Map(); // chunkKey -> { handle, data, group, chunkKey, cx, cz }
@@ -484,6 +494,24 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
   // runtime shaping layer applied above.
   manager.setFallbackHeightSampler(sampleShapedHeight);
 
+  const loadedTerrainReach = (loadRadius + 0.5) * chunkSize;
+  const viewDistance = Math.max(96, Math.ceil(loadedTerrainReach * 1.1));
+  const horizonEnabled = qualityPreset.terrainHorizon !== false;
+  const horizon = horizonEnabled
+    ? createTerrainHorizon({
+      sampleHeight: sampleShapedHeight,
+      innerRadius: loadedTerrainReach * 0.78,
+      outerRadius: loadedTerrainReach * 1.02,
+    })
+    : null;
+  if (horizon) group.add(horizon.group);
+
+  const parallaxLayerCount = qualityPreset.terrainHorizonLayers ?? 0;
+  const parallax = parallaxLayerCount > 0
+    ? createTerrainParallaxLayers({ viewDistance, layerCount: parallaxLayerCount })
+    : null;
+  if (parallax) group.add(parallax.group);
+
   // Replace per-chunk computed normals (one-sided at edges → bright seam lines)
   // with normals from central differences of the continuous height field, so
   // adjacent chunks agree exactly on shared-edge normals.
@@ -550,8 +578,14 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
 
   const visualResolutionFor = (cx, cz, centerX, centerZ) => {
     const distance = Math.max(Math.abs(cx - centerX), Math.abs(cz - centerZ));
-    const level = distance <= lodRings[0] ? 0 : distance <= lodRings[1] ? 1 : 2;
-    return Math.min(TERRAIN_PARAMS.resolution, lodResolutions[level] ?? TERRAIN_PARAMS.resolution);
+    let level = lodRings.length;
+    for (let i = 0; i < lodRings.length; i += 1) {
+      if (distance <= lodRings[i]) {
+        level = i;
+        break;
+      }
+    }
+    return Math.min(TERRAIN_PARAMS.resolution, lodResolutions[level] ?? lodResolutions.at(-1) ?? TERRAIN_PARAMS.resolution);
   };
 
   const createVisualHandle = (data, visualResolution) => {
@@ -560,6 +594,7 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
       castShadow: visualResolution === data.resolution,
       receiveShadow: true,
       visualResolution,
+      computeTangents: terrainPom != null,
     });
     if (visualResolution === data.resolution && !(manager.hasAuthored?.(data.cx, data.cz) ?? false)) {
       applySeamlessNormals(handle.geometry, data);
@@ -869,6 +904,8 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
     const distance = Math.max(Math.abs(entry.cx - initialCenterX), Math.abs(entry.cz - initialCenterZ));
     entry.physicsActive = distance <= physicsRadius;
   }
+  horizon?.update(worldMap?.spawn?.x ?? 0, worldMap?.spawn?.z ?? 0);
+  parallax?.update(worldMap?.spawn?.x ?? 0, worldMap?.spawn?.z ?? 0);
 
   return {
     name: worldMap ? `World Map: ${worldMap.name ?? 'Untitled'}` : 'Streaming Terrain',
@@ -876,10 +913,8 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
     // The generic camera distance includes 284 m city chunks and can exceed
     // this 32 m terrain streamer's guaranteed coverage by more than a kilometre.
     // Terrain-only levels use this reach so unloaded ground is never exposed.
-    viewDistance: Math.max(
-      96,
-      loadRadius * TERRAIN_PARAMS.chunkSize - TERRAIN_PARAMS.chunkSize * 0.5,
-    ),
+    viewDistance,
+    terrainReach: loadedTerrainReach,
     // Bridge deck colliders (static; built once) + blueprint platform/object
     // colliders. PhysicsSystem builds these and getGroundHeightAt stands the
     // player on them.
@@ -920,6 +955,8 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
       const lodCenter = options.viewPosition ?? position;
       if (forest && lodCenter) forest.setCameraPosition(lodCenter);
       if (forestZone && lodCenter) forestZone.setCameraPosition(lodCenter);
+      if (horizon && lodCenter) horizon.update(lodCenter.x, lodCenter.z);
+      if (parallax && lodCenter) parallax.update(lodCenter.x, lodCenter.z);
       roadworks?.updateLOD?.(position);
       trackside?.updateLOD?.(position);
       const current = {

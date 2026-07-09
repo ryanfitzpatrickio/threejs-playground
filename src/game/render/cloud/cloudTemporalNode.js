@@ -45,6 +45,7 @@ import {
   texture,
 } from 'three/tsl';
 import { uCloudAltitude } from './cloudUniforms.js';
+import { uCloudMaxMarchDist } from './cloudReachUniforms.js';
 
 const _quadMesh = /*@__PURE__*/ new QuadMesh();
 let _rendererState;
@@ -52,7 +53,7 @@ const _sizeScratch = /*@__PURE__*/ new Vector2();
 const _currentVP = /*@__PURE__*/ new Matrix4();
 
 class CloudTemporalNode extends TempNode {
-  constructor({ camera, marchNode, renderScale = 0.5, blend = 0.12 }) {
+  constructor({ camera, marchNode, renderScale = 0.5, blend = 0.24 }) {
     super('vec4');
     this.updateBeforeType = NodeUpdateType.FRAME;
     this.camera = camera;
@@ -71,8 +72,10 @@ class CloudTemporalNode extends TempNode {
     this._projectionMatrixInverse = uniform(camera.projectionMatrixInverse);
     this._prevViewProjection = uniform(new Matrix4());
     this._marchTexelSize = uniform(new Vector2(1, 1));
+    this._settleBlend = uniform(1);
 
     this._firstFrame = true;
+    this._settleFrames = 0;
     this._size = new Vector2(1, 1);
 
     this._material = new NodeMaterial();
@@ -94,6 +97,7 @@ class CloudTemporalNode extends TempNode {
 
   clearHistory() {
     this._firstFrame = true;
+    this._settleFrames = 5;
   }
 
   setSize(width, height) {
@@ -115,6 +119,10 @@ class CloudTemporalNode extends TempNode {
       1 / Math.max(1, Math.round(size.width * this.renderScale)),
       1 / Math.max(1, Math.round(size.height * this.renderScale)),
     );
+    this._settleBlend.value = this._settleFrames > 0
+      ? Math.min(0.62, 0.28 + (5 - this._settleFrames) * 0.08)
+      : this.blend;
+    if (this._settleFrames > 0) this._settleFrames -= 1;
 
     _rendererState = RendererUtils.resetRendererState(renderer, _rendererState);
 
@@ -166,9 +174,8 @@ class CloudTemporalNode extends TempNode {
     const historyTexture = texture(this._history.texture);
     const hitHistoryTexture = texture(this._hitHistory.texture);
     const hitTexture = this.marchNode.getHitDistanceNode();
-    const maxMarchDist = this.marchNode.maxMarchDist;
     const texel = this._marchTexelSize;
-    const blend = this.blend;
+    const blend = this._settleBlend;
 
     return Fn(() => {
       const uv = screenUV;
@@ -196,7 +203,7 @@ class CloudTemporalNode extends TempNode {
       const dir = cameraMatrixWorld.mul(vec4(normalize(viewPos), 0)).xyz;
       const origin = cameraMatrixWorld.mul(vec4(0, 0, 0, 1)).xyz;
       const slabDist = uCloudAltitude.sub(origin.y).div(max(dir.y, 0.0001));
-      const dist = select(currentHit.lessThan(0.999), currentHit.mul(maxMarchDist), slabDist);
+      const dist = select(currentHit.lessThan(0.999), currentHit.mul(uCloudMaxMarchDist), slabDist);
       const worldPos = origin.add(dir.mul(dist));
 
       // Project into the previous frame's screen space (WebGPU y-flip).
@@ -204,7 +211,7 @@ class CloudTemporalNode extends TempNode {
       const prevUV = vec2(prevClip.x.div(prevClip.w), prevClip.y.div(prevClip.w).negate())
         .mul(0.5)
         .add(0.5);
-      const lowAngle = abs(dir.y).lessThan(0.12);
+      const lowAngle = abs(dir.y).lessThan(0.045);
       const reprojectedUV = select(lowAngle, uv, prevUV);
       const onScreen = lowAngle.or(prevClip.w
         .greaterThan(0)
@@ -224,11 +231,10 @@ class CloudTemporalNode extends TempNode {
       const hasCloudSample = currentHit.lessThan(0.999).or(previousHit.lessThan(0.999));
       const contentValid = hitMismatch.and(hasCloudSample).not().and(opacityMismatch.not());
       const historyValid = onScreen.and(lowAngle.or(contentValid));
-      // Near-horizon uses same-pixel (no motion-compensated) history, so a very
-      // low new-frame weight smears the freshly-un-melted low clouds on camera
-      // motion. Keep enough history to damp the coarse-step flicker, but not so
-      // much that panning ghosts.
-      const historyWeight = select(lowAngle, float(0.12), float(blend));
+      // Near-horizon: favour the live march so camera motion does not smear
+      // blocky half-res noise for dozens of frames.
+      const lowAngleBlend = min(float(blend).mul(1.85), float(0.55));
+      const historyWeight = select(lowAngle, lowAngleBlend, float(blend));
       const a = select(historyValid, historyWeight, float(1));
       return mix(history, current, a);
     });

@@ -75,18 +75,27 @@ const PRESETS = {
       weather: 'clear',
       aerialPerspective: true,
       aerialStart: 550,
-      aerialEnd: 1600,
-      aerialMaxOpacity: 0.22,
-      // Default sky is the simple SkyMesh dome-cloud layer. The experimental
-      // volumetric pipeline (CloudSkyProvider) is opt-in via the debug panel
-      // checkbox (localStorage `dreamfall:clouds` = 'volumetric'); the
-      // volumetricClouds config below still drives it when enabled.
+      aerialEnd: 1700,
+      aerialMaxOpacity: 0.24,
+      aerialHazeColor: [0.62, 0.72, 0.78],
+      terrainAerial: {
+        desat: 0.74,
+        contrast: 0.5,
+      },
+      // Default sky is the simple SkyMesh dome-cloud layer on low/high. Ultra
+      // uses volumetric LUT sky + raymarched clouds unless overridden in Settings
+      // (localStorage `dreamfall:clouds`). The volumetricClouds block below
+      // drives march quality when volumetric is active.
       clouds: 'dome',
       cloudCoverage: 0.5,
       cloudDensity: 0.88,
       volumetricClouds: {
         renderScale: 0.5,
         marchSteps: 96,
+        maxMarchDist: 18000,
+        reachScale: 2.1,
+        fadeStart: 0.52,
+        fadeEnd: 0.94,
         lightTaps: 5,
         shadowResolution: 512,
         godRays: false,
@@ -107,6 +116,10 @@ const PRESETS = {
       dynamicDay: false,
       dayLengthSeconds: 900,
     },
+
+    exteriorDistanceFog: true,
+    terrainHorizon: true,
+    terrainHorizonLayers: 1,
 
     // SceneSystem
     shadows: false,
@@ -158,6 +171,7 @@ const PRESETS = {
     terrainUnloadRadius: 8,
     terrainLodRings: [2, 4],
     terrainLodResolutions: [33, 17, 9],
+    terrainMacroDetail: { enabled: true, colorStrength: 0.08, frequency: 0.0045 },
 
     // WeatherSystem — max rain drop instances (a single InstancedMesh draw
     // call regardless of count; setIntensity can scale down live).
@@ -197,9 +211,14 @@ const PRESETS = {
       environmentIntensity: 0.45,
       weather: 'clear',
       aerialPerspective: true,
-      aerialStart: 480,
-      aerialEnd: 900,
+      aerialStart: 420,
+      aerialEnd: 820,
       aerialMaxOpacity: 0.2,
+      aerialHazeColor: [0.55, 0.65, 0.72],
+      terrainAerial: {
+        desat: 0.58,
+        contrast: 0.36,
+      },
       clouds: 'dome',
       cloudCoverage: 0.46,
       cloudDensity: 0.82,
@@ -209,6 +228,11 @@ const PRESETS = {
       dynamicDay: false,
       dayLengthSeconds: 900,
     },
+
+    exteriorDistanceFog: true,
+    terrainHorizon: false,
+    terrainHorizonLayers: 0,
+    terrainMacroDetail: { enabled: false },
 
     // SceneSystem
     shadows: false,
@@ -291,11 +315,10 @@ PRESETS.ultra = {
     ...PRESETS.high.ssao,
     resolutionScale: 0.33,
     samples: 8,
-    // AO every fourth frame: its normal/depth pre-pass is a full CPU-side scene
-    // re-render (~7 ms/frame at ultra draw counts — the single biggest main
-    // thread cost in the 2026-07 trace). AO is low-frequency ambient shading;
-    // a few frames of staleness are hard to see and this quarters the cost.
-    updateInterval: 4,
+    blur: true,
+    // Every other frame when the view is static; camera motion forces a refresh
+    // (see RendererSystem AO gate) so screen-space AO does not ghost while moving.
+    updateInterval: 2,
   },
   // Ultra-only: raymarched relief on rally dirt/mud roads. maxLayers is baked
   // into the shader's loop bound at compile time (it cannot be faded at runtime),
@@ -303,26 +326,52 @@ PRESETS.ultra = {
   // is relief depth in UV units (rally UV ≈ 1/3.2 per metre, so 0.02 ≈ 6 cm).
   parallaxOcclusion: {
     enabled: true,
-    // Relief depth in UV units (rally UV ≈ 1/3.2 per metre). POM on a flat road
-    // is subtle head-on and only reads at grazing angles, so this is set high
-    // enough to be clearly visible while driving; dial toward ~0.03 once tuned.
+    terrain: true,
     scale: 0.05,
+    terrainScale: 0.028,
     minLayers: 8,
-    maxLayers: 32,
+    maxLayers: 24,
   },
+  terrainMacroDetail: { enabled: true, colorStrength: 0.14, frequency: 0.0045 },
+  terrainHorizonLayers: 2,
+  terrainCloudShadow: true,
   environment: {
     ...PRESETS.high.environment,
     // Bloom is multiple full-screen passes. Keep Ultra's scene/detail quality,
     // but remove this command-heavy post branch from the gameplay hot path.
     bloom: false,
     environmentMapSize: 256,
-    aerialEnd: 1800,
+    aerialEnd: 1900,
+    aerialMaxOpacity: 0.26,
+    aerialHazeColor: [0.48, 0.64, 0.94],
+    cloudAtmosphere: {
+      rayleigh: 1.9,
+      turbidity: 1.45,
+      mieDirectionalG: 0.76,
+      mieScatteringStrength: 0.24,
+      skyMultipleScattering: 0.28,
+      multipleScattering: 0.22,
+    },
+    cloudSun: {
+      discSize: 0.0016,
+      intensity: 8.0,
+    },
+    cloudType: 'fair',
+    terrainAerial: {
+      desat: 0.78,
+      contrast: 0.52,
+    },
     cloudCoverage: 0.5,
     cloudDensity: 0.88,
+    clouds: 'volumetric',
       volumetricClouds: {
       ...PRESETS.high.environment.volumetricClouds,
-      marchSteps: 128,
-      lightTaps: 6,
+      marchSteps: 96,
+      maxMarchDist: 18000,
+      reachScale: 2.1,
+        fadeStart: 0.52,
+        fadeEnd: 0.94,
+      lightTaps: 5,
       shadowResolution: 1024,
       godRays: true,
       godRaySteps: 24,
@@ -330,8 +379,8 @@ PRESETS.ultra = {
         weatherMapResolution: 1024,
         shadowSteps: 16,
         shadowExtent: 4200,
-        coverage: 0.54,
-        density: 0.021,
+        coverage: 0.34,
+        density: 0.024,
     },
   },
   shadows: true,
@@ -385,14 +434,21 @@ PRESETS.ultra = {
   rainMaxDrops: 20000,
   terrainLoadRadius: 10,
   terrainUnloadRadius: 11,
-  terrainLodRings: [3, 6],
-  terrainLodResolutions: [33, 25, 13],
+  terrainLodRings: [2, 4, 6],
+  terrainLodResolutions: [33, 17, 9, 5],
   maxCutProps: 80,
   destructiblePropMaxCutProps: 64,
   staticCutPropLifetime: 12,
   rigRagdollPropLifetime: 32,
   destructiblePropCutLifetime: 60,
   cutColliderMode: 'hull',
+};
+
+// Max recovers the prior Ultra preset values. In city mode the cityPerformance
+// overrides deliberately step Ultra down (to old Medium) while Max retains the
+// old Ultra city density.
+PRESETS.max = {
+  ...PRESETS.ultra,
 };
 
 const STORAGE_KEY = 'dreamfall:quality';
@@ -438,11 +494,11 @@ export function resolveEffectivePostEffectMode(mode, qualityPreset = {}) {
   return requested;
 }
 
-/** Read the persisted quality level, defaulting to medium (`high` storage key). */
+/** Read the persisted quality level, defaulting to medium (`high` storage key). Supports low/high/ultra/max. */
 export function getQualityLevel() {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === 'low' || stored === 'high' || stored === 'ultra') {
+    if (stored === 'low' || stored === 'high' || stored === 'ultra' || stored === 'max') {
       return stored;
     }
   } catch (_) {
@@ -539,9 +595,9 @@ export function getRecommendedCameraFar(qualityPreset = {}) {
     terrainCenterDist + terrainHalfDiag
   );
 
-  // Add headroom for chase-camera offsets, vehicle speed lookahead, and
-  // to avoid popping right at the load/unload edge.
-  return Math.ceil(maxLoadedReach * 1.15);
+  // Add headroom for chase-camera offsets, vehicle speed lookahead, parallax
+  // horizon fakes (P2), and to avoid popping right at the load/unload edge.
+  return Math.ceil(maxLoadedReach * 1.18);
 }
 
 /**
@@ -560,5 +616,5 @@ export function getRecommendedSceneFog(qualityPreset = {}) {
  */
 export function getRecommendedFogMaxDistance(qualityPreset = {}) {
   const camFar = getRecommendedCameraFar(qualityPreset);
-  return Math.min(Math.floor(camFar * 0.28), 450);
+  return Math.min(Math.floor(camFar * 0.3), 480);
 }

@@ -23,6 +23,7 @@ import {
   smoothstep,
   clamp,
   min,
+  max,
   mix,
   float,
   vec3,
@@ -35,10 +36,26 @@ import {
   If,
 } from 'three/tsl';
 import { rainWetness, rainWind } from '../systems/weatherUniforms.js';
+import {
+  terrainAerialEnabled,
+  terrainAerialStart,
+  terrainAerialEnd,
+  terrainFadeRadius,
+  terrainLoadedReach,
+  terrainAerialStrength,
+  terrainAerialDesat,
+  terrainAerialContrast,
+  terrainHazeColor,
+  terrainNightFactor,
+} from '../systems/terrainAerialUniforms.js';
+import { uCloudAmbientColor, uSkyDarkness } from '../render/cloud/cloudUniforms.js';
+import { applyTerrainCloudShadow } from './terrainCloudShadowNodes.js';
 import { puddleMaskAt, puddleRippleNormal } from './wetSurfaceNodes.js';
 import { applyForestLitterTint } from '../world/forest/forestLitter.js';
 import { createHexTileGrid, hexHash2, hexBlendWeights } from './hexTilingNodes.js';
 import { disablePbrEnvironment } from './disablePbrEnvironment.js';
+import { parallaxOcclusionUV } from '../../three-addons/tsl/utils/ParallaxOcclusion.js';
+import { applyTerrainMacroTint } from './terrainMacroNodes.js';
 
 // Ground puddle parameters, ported from the reference repo's `puddleUniforms`
 // (src/main.js) — same constants, just with coverage driven by the live
@@ -137,17 +154,89 @@ function loadLayerArrayTex(kind, srgb) {
   return tex;
 }
 
+// Ultra terrain POM marches a single 2D height proxy (grass albedo luminance).
+// DataArray `.depth()` cannot feed the vendored marcher directly; one 2D map
+// keeps the sampler budget unchanged versus a third array texture.
+let grassHeightProxyTex = null;
+
+function loadGrassHeightProxyTex() {
+  if (grassHeightProxyTex) return grassHeightProxyTex;
+  const tex = new THREE.DataTexture(new Uint8Array([128, 128, 128, 255]), 1, 1);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.NoColorSpace;
+  tex.needsUpdate = true;
+  grassHeightProxyTex = tex;
+
+  imageLoader.loadAsync(`${TEX_BASE}/grass1-albedo.webp`).then((image) => {
+    const width = image.width;
+    const height = image.height;
+    const data = new Uint8Array(width * height * 4);
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.save();
+    ctx.translate(0, height);
+    ctx.scale(1, -1);
+    ctx.drawImage(image, 0, 0, width, height);
+    ctx.restore();
+    const pixels = ctx.getImageData(0, 0, width, height).data;
+    for (let i = 0; i < width * height; i += 1) {
+      const o = i * 4;
+      const lum = Math.round(pixels[o] * 0.299 + pixels[o + 1] * 0.587 + pixels[o + 2] * 0.114);
+      data[o] = lum;
+      data[o + 1] = lum;
+      data[o + 2] = lum;
+      data[o + 3] = 255;
+    }
+    tex.dispose();
+    tex.image = { data, width, height };
+    tex.needsUpdate = true;
+  }).catch((error) => {
+    console.error('Terrain grass height proxy failed to load', error);
+  });
+  return tex;
+}
+
 /**
  * @param {object} [opts]
  * @param {{url:string, tiling:number, blend:number}|null} [opts.overlay]
  * @param {{enabled?:boolean, falloffContrast?:number, exponent?:number}} [opts.hextile]
+ * @param {{enabled?:boolean, terrain?:boolean, scale?:number, minLayers?:number, maxLayers?:number}|null} [opts.parallaxOcclusion]
+ * @param {{enabled?:boolean, frequency?:number, colorStrength?:number}|null} [opts.macroDetail]
  *   Optional single blueprint terrain texture painted over the biome inside
  *   placed-blueprint footprints. Blended per-vertex by the `bpTexMask` geometry
  *   attribute (0 outside footprints → 1 inside), so chunks must carry that
  *   attribute when an overlay is supplied (createStreamingTerrainLevel does this).
  */
-export function createTerrainBiomeMaterial({ overlay = null, hextile = null } = {}) {
+export function createTerrainBiomeMaterial({
+  overlay = null,
+  hextile = null,
+  parallaxOcclusion = null,
+  macroDetail = null,
+  cloudShadow = false,
+} = {}) {
   const uv = positionWorld.xz.mul(TILES_PER_METRE);
+  const hexEnabled = hextile?.enabled === true;
+  const pomEnabled = parallaxOcclusion?.enabled === true
+    && parallaxOcclusion?.terrain !== false;
+  const pomDist = positionWorld.xz.sub(cameraPosition.xz).length();
+  const pomScale = pomEnabled
+    ? float(parallaxOcclusion.terrainScale ?? parallaxOcclusion.scale ?? 0.028)
+      .mul(smoothstep(float(95), float(22), pomDist))
+    : null;
+  const makePom = () => parallaxOcclusionUV(loadGrassHeightProxyTex(), {
+    uvNode: uv,
+    scale: pomScale,
+    minLayers: parallaxOcclusion.minLayers ?? 8,
+    maxLayers: parallaxOcclusion.maxLayers ?? 24,
+    silhouette: false,
+  });
+  const pomColor = pomEnabled ? makePom() : null;
+  const pomNormal = pomEnabled ? makePom() : null;
+  const colorUv = pomColor ? pomColor.uv : uv;
+  const normalUv = pomNormal ? pomNormal.uv : uv;
 
   // Per-layer samples out of the two packed array textures (one sampler each —
   // see LAYER_FILES above). Roughness textures are intentionally dropped (a flat
@@ -157,7 +246,7 @@ export function createTerrainBiomeMaterial({ overlay = null, hextile = null } = 
   let albedo;
   let normalRaw;
 
-  if (hextile?.enabled === true) {
+  if (hexEnabled) {
     // positionWorld is not camera-relative yet, so the RWS offset is zero. The
     // explicit split in createHexTileGrid is ready for floating-origin support;
     // at today's world scale this retains the existing world-space precision.
@@ -196,8 +285,8 @@ export function createTerrainBiomeMaterial({ overlay = null, hextile = null } = 
       return n1.mul(weights.x).add(n2.mul(weights.y)).add(n3.mul(weights.z));
     };
   } else {
-    const albedoArray = texture(albedoTexture, uv);
-    const normalArray = texture(normalTexture, uv);
+    const albedoArray = texture(albedoTexture, colorUv);
+    const normalArray = texture(normalTexture, normalUv);
     albedo = (layer) => albedoArray.depth(layer).rgb;
     normalRaw = (layer) => normalArray.depth(layer).rgb; // raw [0,1]; normalMap unpacks
   }
@@ -226,6 +315,7 @@ export function createTerrainBiomeMaterial({ overlay = null, hextile = null } = 
   let biomeColor = applyForestLitterTint(
     blend(albedo(LAYERS.sand), albedo(LAYERS.grass), albedo(LAYERS.rock), albedo(LAYERS.snow)),
   );
+  biomeColor = applyTerrainMacroTint(biomeColor, positionWorld.xz, pomDist, macroDetail ?? {});
 
   // Blueprint terrain texture: blend a single overlay albedo over the biome
   // wherever the per-vertex footprint mask is non-zero (so a placed "all salt"
@@ -296,11 +386,42 @@ export function createTerrainBiomeMaterial({ overlay = null, hextile = null } = 
   const puddleMask = puddleResult.x;
   const rippleWorldNormal = puddleResult.yzw;
 
-  material.colorNode = mix(biomeColor, biomeColor.mul(float(1).sub(WATER_DARKNESS)), puddleMask);
+  // Distance aerial perspective: fade keyed to the live view distance (not the
+  // post-pass kilometre-scale aerial* defaults). Horizontal XZ distance so hills
+  // don't skew the fade. At the load / far-plane edge the albedo should match
+  // the sky haze so the geometric cutoff disappears.
+  const aerialColor = Fn(() => {
+    const color = biomeColor.toVar();
+    const delta = positionWorld.xz.sub(cameraPosition.xz);
+    const dist = delta.length();
+    const fadeEnd = min(terrainAerialEnd, terrainFadeRadius.mul(0.96));
+    const aerialT = smoothstep(terrainAerialStart, fadeEnd, dist)
+      .mul(terrainAerialStrength)
+      .mul(terrainAerialEnabled);
+    // Push loaded-ring edge to full haze so the geometric cutoff vanishes.
+    const edgePush = smoothstep(terrainLoadedReach.mul(0.82), terrainLoadedReach.mul(0.98), dist);
+    const aerialMix = min(float(1), aerialT.add(edgePush.mul(0.55)));
+    const haze = mix(terrainHazeColor, uCloudAmbientColor, float(0.45));
+    const nightHaze = mix(haze, vec3(0.38, 0.44, 0.58), max(terrainNightFactor, uSkyDarkness).mul(0.65));
+    const luminance = color.dot(vec3(0.299, 0.587, 0.114));
+    color.assign(mix(color, vec3(luminance), aerialMix.mul(terrainAerialDesat)));
+    const softened = color.mul(float(1).sub(aerialMix.mul(terrainAerialContrast).mul(0.55))).add(
+      aerialMix.mul(terrainAerialContrast).mul(0.28),
+    );
+    color.assign(mix(color, softened, aerialMix));
+    color.assign(mix(color, nightHaze, aerialMix));
+    if (cloudShadow) {
+      color.assign(applyTerrainCloudShadow(color, positionWorld.xz));
+    }
+    return color;
+  })();
+
+  material.colorNode = mix(aerialColor, aerialColor.mul(float(1).sub(WATER_DARKNESS)), puddleMask);
   material.roughnessNode = mix(float(0.95), float(PUDDLE_ROUGHNESS), puddleMask);
   const rippleViewNormal = normalize(cameraViewMatrix.mul(vec4(rippleWorldNormal, 0)).xyz);
   material.normalNode = normalize(mix(biomeNormal, rippleViewNormal, puddleMask));
   material.metalness = 0;
+  material.fog = true;
   disablePbrEnvironment(material);
   material.shadowSide = THREE.DoubleSide;
   material.name = 'Terrain Biome';

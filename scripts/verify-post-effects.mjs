@@ -96,8 +96,9 @@ assert.deepEqual(highSsaoPlan.ssao, {
 assert.equal(highSsaoPlan.ssao.updateInterval, 2, 'high renders AO every other frame');
 const ultraSsaoPlan = buildPostPipelinePlan({ requestedMode: 'ssao', qualityPreset: ultra, backend: 'webgpu' });
 assert.deepEqual(ultraSsaoPlan.ssao, {
-  resolutionScale: 0.33, samples: 8, radius: 1.5, intensity: 4, blur: false, updateInterval: 4,
+  resolutionScale: 0.33, samples: 8, radius: 1.5, intensity: 4, blur: true, updateInterval: 2,
 });
+assert.equal(ultraSsaoPlan.ssao.updateInterval, 2, 'ultra renders AO every other frame when static');
 assert.equal(ultraSsaoPlan.bloom, null, 'ultra omits the bloom pass');
 
 const interiorUltraPlan = buildPostPipelinePlan({

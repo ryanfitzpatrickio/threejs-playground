@@ -83,6 +83,32 @@ export function createProceduralSampler(options = {}) {
   };
 }
 
+const MACRO_DEFAULTS = {
+  seed: 4242,
+  amplitude: 1.0,
+  octaves: 3,
+  lacunarity: 2.0,
+  gain: 0.55,
+  frequency: 0.0032,
+};
+
+/**
+ * Very low-frequency fBm for distant terrain colour/height variation. Seeded from
+ * world XZ only (no time) so streaming chunks and macro shader noise stay aligned.
+ */
+export function createMacroFbmSampler(options = {}) {
+  return createProceduralSampler({ ...MACRO_DEFAULTS, ...options });
+}
+
+/**
+ * Sample macro fBm at a world position (metres). Convenience wrapper used by
+ * tooling and verification scripts.
+ */
+export function sampleMacroFbm(worldX, worldZ, options = {}) {
+  const sampler = createMacroFbmSampler(options);
+  return sampler(worldX, worldZ);
+}
+
 /**
  * Convenience: create a sampler and immediately sample an entire chunk grid.
  * heights will be a Float32Array laid out row-major: index = j * resolution + i

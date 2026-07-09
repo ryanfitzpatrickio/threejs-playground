@@ -18,7 +18,9 @@ import {
   GARAGE_QUAD_DEFAULT_WHEELS,
   GARAGE_VEHICLE_TYPES,
   createGarageBuild,
+  createFallbackGarageChassisOption,
   deleteGarageBuild,
+  getActiveGarageBuild,
   getGarageFramePreset,
   loadGarageBuilds,
   saveGarageBuild,
@@ -169,7 +171,18 @@ export function GarageScene(props) {
   const refreshChassisOptions = async () => {
     const options = await loadGarageChassisOptions({ force: true });
     setChassisOptions(options);
+    return options;
   };
+
+  const displayChassisOptions = createMemo(() => {
+    const options = chassisOptions();
+    const currentId = draft().chassisId;
+    if (!currentId || currentId === 'bare' || options.some((option) => option.id === currentId)) {
+      return options;
+    }
+    const fallback = createFallbackGarageChassisOption(currentId);
+    return fallback ? [...options, fallback] : options;
+  });
 
   createEffect(() => {
     props.chassisRefreshToken;
@@ -234,7 +247,17 @@ export function GarageScene(props) {
   });
 
   onMount(async () => {
-    const instance = await createGaragePreview(canvas, draft(), {
+    await refreshChassisOptions();
+    const builds = loadGarageBuilds();
+    setSavedBuilds(builds);
+    const active = getActiveGarageBuild();
+    if (active) {
+      const copy = structuredClone(active);
+      setDraft(copy);
+      setVehicleTab(copy.vehicleType === 'car' ? 'cars' : 'rideables');
+    }
+
+    const instance = await createGaragePreview(canvas, active ?? draft(), {
       onMeshPartPicked: (key) => {
         setMeshPartPickMode(false);
         applyPartHighlight(key);
@@ -514,7 +537,7 @@ export function GarageScene(props) {
 
         <div class="garage-section-title garage-section-title--saved"><span>02</span> Choose a chassis</div>
         <div class="garage-chassis-list">
-          <For each={chassisOptions()}>
+          <For each={displayChassisOptions()}>
             {(chassis) => (
               <button
                 class={`garage-chassis-card ${draft().chassisId === chassis.id ? 'active' : ''}`}

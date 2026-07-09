@@ -17,6 +17,7 @@ import * as THREE from 'three';
 import { createStreamingTerrainLevel } from './createStreamingTerrainLevel.js';
 import { createInfiniteCityLevel } from './createInfiniteCityLevel.js';
 import { getCityStride } from './createGeneratorCityLevel.js';
+import { getRecommendedCameraFar } from '../config/qualityPresets.js';
 import { getGroundHeightAt as colliderGroundHeightAt, getBlockingColliderAt as colliderBlockingAt, getColliderRoadSurfaceAt } from './createBaseLevel.js';
 import { zoneIntersectsRect } from '../../world/worldMap/zoneGeometry.js';
 import { zoneContains } from '../../world/worldMap/zoneGeometry.js';
@@ -67,6 +68,8 @@ export function createComposedWorldLevel(qualityPreset = {}, { worldMap = null, 
   return {
     name: worldMap ? `World: ${worldMap.name ?? 'Untitled'}` : 'Composed World',
     group,
+    viewDistance: terrain.viewDistance ?? getRecommendedCameraFar(qualityPreset),
+    terrainReach: terrain.terrainReach,
     // City owns the traversal arrays; terrain contributes road bridge-deck colliders.
     get colliders() { return [...terrain.colliders, ...city.colliders]; },
     get ledges() { return city.ledges; },

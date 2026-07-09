@@ -65,6 +65,10 @@ export class CloudShadowNode extends TempNode {
     return this._textureNode;
   }
 
+  getShadowTexture() {
+    return this._target.texture;
+  }
+
   setCenter(position) {
     this.center.value.set(position.x, position.z);
   }

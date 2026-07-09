@@ -30,6 +30,45 @@ export function prepareBodyshopGltfMaterials(root) {
   });
 }
 
+export function setBodyshopMeshWireframe(root, enabled = false) {
+  if (!root) return;
+  root.traverse((child) => {
+    if (!child.isMesh || child.userData._builderHelper || child.userData._frameReference) return;
+
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    for (const material of materials) {
+      if (!material) continue;
+      if (enabled) {
+        if (material.userData._bodyshopWireframeSaved == null) {
+          material.userData._bodyshopWireframeSaved = {
+            wireframe: material.wireframe === true,
+            transparent: material.transparent === true,
+            opacity: material.opacity ?? 1,
+            depthWrite: material.depthWrite !== false,
+          };
+        }
+        material.wireframe = true;
+        material.transparent = true;
+        material.opacity = 0.42;
+        material.depthWrite = false;
+      } else if (material.userData._bodyshopWireframeSaved) {
+        const saved = material.userData._bodyshopWireframeSaved;
+        material.wireframe = saved.wireframe;
+        material.transparent = saved.transparent;
+        material.opacity = saved.opacity;
+        material.depthWrite = saved.depthWrite;
+        delete material.userData._bodyshopWireframeSaved;
+      } else {
+        material.wireframe = false;
+        material.transparent = false;
+        material.opacity = 1;
+        material.depthWrite = true;
+      }
+      material.needsUpdate = true;
+    }
+  });
+}
+
 export async function installBodyshopEnvironment(renderer, scene, {
   intensity = 0.9,
 } = {}) {

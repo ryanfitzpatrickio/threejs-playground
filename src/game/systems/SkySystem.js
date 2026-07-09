@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { SkyMesh } from 'three/examples/jsm/objects/SkyMesh.js';
 import { CloudSkyProvider } from '../render/cloud/cloudSkyProvider.js';
-import { DEFAULT_CLOUD_TYPE, normalizeCloudMode } from '../render/cloud/cloudConfig.js';
+import { DEFAULT_CLOUD_TYPE, resolveCloudMode } from '../render/cloud/cloudConfig.js';
 
 const DEFAULT_TIME_OF_DAY = 0.72;
 const DEFAULT_SKY_SCALE = 450000;
@@ -92,16 +92,9 @@ function resolveHemisphereSkyColor(weather, config = {}) {
   return HEMISPHERE_SKY_COLOR[weather] ?? config.hemisphereSkyColor ?? 0xb9d8ff;
 }
 
-// Accepted cloud modes. `volumetric` selects the new sky reference source pipeline
-// (CloudSkyProvider); `dome`/`off` keep the existing SkyMesh path.
-function readCloudsOverride() {
-  try {
-    const v = localStorage.getItem('dreamfall:clouds');
-    return v === 'volumetric' || v === 'dome' || v === 'off' ? v : null;
-  } catch (_) {
-    return null;
-  }
-}
+// Fallback WebGPU clear when the LUT sky sphere misses a pixel (pipeline rebuild,
+// fast camera motion). Matches a midday zenith blue — not black.
+export const VOLUMETRIC_SKY_CLEAR = 0x5a8ec8;
 
 export class SkySystem {
   initialize(scene, { sun, hemisphere, qualityPreset = {} } = {}) {
@@ -115,14 +108,14 @@ export class SkySystem {
     this.dayLengthSeconds = Math.max(60, this.config.dayLengthSeconds ?? 900);
     this._lastEnvironmentBucket = null;
     this.sunDirection = new THREE.Vector3();
-    // Default sky is the simple SkyMesh dome clouds (preset `clouds: 'dome'`).
-    // The experimental volumetric pipeline is opt-in: the debug-panel checkbox
-    // sets the `dreamfall:clouds` localStorage override to 'volumetric' (and
-    // reloads), which wins over the preset here.
-    this.cloudMode = normalizeCloudMode(readCloudsOverride() ?? this.config.clouds);
+    // localStorage `dreamfall:clouds` overrides the quality preset when set.
+    this.cloudMode = resolveCloudMode(qualityPreset);
 
     if (this.cloudMode === 'volumetric') {
       this.provider = new CloudSkyProvider().initialize(scene, { sun, hemisphere, qualityPreset });
+      // Fallback clear colour when the LUT sky pass misses a pixel (e.g. during
+      // pipeline rebuild). null reads as black in WebGPU.
+      scene.background = new THREE.Color(VOLUMETRIC_SKY_CLEAR);
     } else {
       this.sky = createConfiguredSky(this.config, true);
       this.sky.name = 'Physical Atmosphere Sky';

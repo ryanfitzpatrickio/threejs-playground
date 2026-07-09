@@ -25,6 +25,8 @@
     "verify:rally-mud-surface": "node scripts/verify-rally-mud-surface.mjs",
     "verify:rally-mud-field": "node scripts/verify-rally-mud-field.mjs",
     "verify:rally-pom": "node scripts/verify-rally-pom.mjs",
+    "verify:terrain-pom": "node scripts/verify-terrain-pom.mjs",
+    "verify:terrain-infinite": "node scripts/verify-terrain-infinite.mjs",
     "verify:hextile-math": "node scripts/verify-hextile-math.mjs",
     "verify:crowd-asset": "node scripts/verify-crowd-asset.mjs",
     "verify:spectator-crowd": "node scripts/verify-spectator-crowd.mjs",

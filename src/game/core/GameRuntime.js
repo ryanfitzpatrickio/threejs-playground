@@ -1,5 +1,9 @@
 import * as THREE from 'three';
 import { rainWind } from '../systems/weatherUniforms.js';
+import { syncTerrainViewDistance, syncTerrainAtmosphereFromSky } from '../systems/terrainAerialUniforms.js';
+import { syncTerrainCloudShadow } from '../systems/terrainCloudShadowUniforms.js';
+import { syncCloudReach } from '../render/cloud/cloudReachUniforms.js';
+import { advanceTerrainParallaxWind, syncTerrainParallaxOffset } from '../systems/terrainParallaxUniforms.js';
 import { FrameStats } from './FrameStats.js';
 import { FrameLoop } from './FrameLoop.js';
 import { AllocationSampler } from './AllocationSampler.js';
@@ -269,6 +273,24 @@ export class GameRuntime {
     this.rendererSystem.installEnvironment(this.sceneSystem.scene, this.sceneSystem.skySystem);
   }
 
+  _syncTerrainEnvironment(delta = 0) {
+    const env = this.qualityPreset.environment ?? {};
+    const viewDistance = this.levelSystem.level?.viewDistance
+      ?? this.rendererSystem.viewDistance
+      ?? this.cameraSystem?.camera?.far;
+    if (this.rendererSystem.cloudSkyProvider) {
+      syncCloudReach({
+        viewDistance,
+        fogMaxDistance: this.rendererSystem.fogMaxDistance,
+        environmentPreset: env,
+      });
+    }
+    if (!this.levelSystem.level?.terrainReach) return;
+    syncTerrainAtmosphereFromSky(this.sceneSystem.skySystem, env);
+    syncTerrainCloudShadow(this.rendererSystem.cloudSkyProvider?.cloudShadow ?? null);
+    advanceTerrainParallaxWind(delta);
+  }
+
   getCutTargets() {
     return [
       ...this.enemySystem.enemies,
@@ -288,6 +310,25 @@ export class GameRuntime {
       this.cameraSystem.camera.far = levelViewDistance;
       this.cameraSystem.camera.updateProjectionMatrix();
       this.sceneSystem.setViewDistance?.(levelViewDistance);
+      syncTerrainViewDistance(
+        levelViewDistance,
+        {
+          ...(this.qualityPreset.environment ?? {}),
+          terrainReach: this.levelSystem.level?.terrainReach,
+        },
+      );
+      syncTerrainAtmosphereFromSky(
+        this.sceneSystem.skySystem,
+        this.qualityPreset.environment ?? {},
+      );
+      this.rendererSystem.setViewDistance?.(levelViewDistance);
+      if (this.rendererSystem.cloudSkyProvider) {
+        syncCloudReach({
+          viewDistance: levelViewDistance,
+          fogMaxDistance: this.rendererSystem.fogMaxDistance,
+          environmentPreset: this.qualityPreset.environment ?? {},
+        });
+      }
     }
 
     await this.characterSystem.loadMara(this.sceneSystem.scene);
@@ -1123,6 +1164,7 @@ export class GameRuntime {
     if (!this.insideBuilding && this.sceneSystem.skySystem?.update(delta, this.cameraSystem?.camera)) {
       this.rendererSystem.installEnvironment(this.sceneSystem.scene, this.sceneSystem.skySystem);
     }
+    this._syncTerrainEnvironment(delta);
 
     const spectatorCrowd = this.levelSystem.level?.spectatorCrowd;
     if (spectatorCrowd?.update) {
