@@ -513,7 +513,8 @@ export class RendererSystem {
           // During streaming/compile deferral, reuse AO only while the view is
           // static — otherwise stale screen-space AO ghosts across the terrain.
           if (this.deferExpensivePasses && !motionStale) return;
-          if (motionStale || (this.pipelineFrameIndex ?? 0) % aoInterval === 0) {
+          const refreshForMotion = plan.ssao.updateOnCameraMotion !== false && motionStale;
+          if (refreshForMotion || (this.pipelineFrameIndex ?? 0) % aoInterval === 0) {
             originalUpdateBefore(frame);
             this._snapshotAoCamera(this._renderCamera);
           }

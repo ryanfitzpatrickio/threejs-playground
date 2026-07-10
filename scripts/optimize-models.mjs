@@ -45,6 +45,7 @@ const MODELS = {
   neonblade: 'neonblade.glb',
   climber: 'climber.fbx', // legacy Tripo body (kept as ?playerModel=climber)
   player: 'player-tpose.fbx', // default Mixamo-compatible T-pose player; → player-tpose.glb
+  newplayerv3: 'newplayerv3.fbx', // replacement default Mixamo-compatible player
   playernew: 'playernew.fbx', // earlier Mixamo player mesh; produces playernew.glb in public
   mesh2motionplayer: 'playernew-mesh2motion.glb',
   car: 'car-prop.glb',
@@ -65,6 +66,7 @@ const TARGET_SIZES = {
   neonblade: [512, 512],
   climber: [1024, 1024], // Tripo body/face textures
   player: [1024, 1024],
+  newplayerv3: [1024, 1024],
   playernew: [1024, 1024],
   mesh2motionplayer: [1024, 1024],
   car: [1024, 1024], // street prop — viewed at distance, 1K is plenty
@@ -281,8 +283,10 @@ async function convertFbxToGlbInProcess(fbxPath, outputGlbPath) {
 async function main() {
   const args = process.argv.slice(2);
   const filterArg = args.find((a) => a.startsWith('--models='));
-  const selected = filterArg
-    ? filterArg.split('=')[1].split(',').map((s) => s.trim().toLowerCase())
+  const filterIndex = args.indexOf('--models');
+  const filterValue = filterArg?.split('=')[1] ?? (filterIndex >= 0 ? args[filterIndex + 1] : null);
+  const selected = filterValue
+    ? filterValue.split(',').map((s) => s.trim().toLowerCase())
     : Object.keys(MODELS);
 
   console.log('=== Dreamfall model optimizer ===');

@@ -129,10 +129,15 @@ export class CombatSystem {
 
   start({ character }) {
     this.character = character;
+    // Sword is first in the weapon loadout and starts drawn (WeaponSystem.holstered = false).
+    const sword = character?.sword ?? null;
+    if (sword?.group) {
+      sword.group.visible = true;
+    }
     this.combat = {
       // 'sheathed' | 'drawing' | 'armed' | 'sheathing'
-      weapon: 'sheathed',
-      armed: false,
+      weapon: 'armed',
+      armed: true,
       animationOverride: null,
       comboStep: 0,
       // active attack: { name, kind, hitEnemies:Set, prevTip:Vector3, finisher:boolean } | null
@@ -140,7 +145,10 @@ export class CombatSystem {
       lockMovement: false,
       // buffered light-attack press queued during the active swing
       bufferedLight: false,
-      sword: character?.sword ?? null,
+      sword,
+      equippedWeaponId: 'sword',
+      weaponHolstered: false,
+      equippedWeaponKind: 'sword',
     };
 
     if (character) {
@@ -154,13 +162,84 @@ export class CombatSystem {
       return input;
     }
 
-    if (input.drawSheathePressed && isFreeToAct(character)) {
-      this.toggleWeapon({ combat });
+    // Firearm drawn (FP gun stance) owns LMB/RMB — no sword attacks.
+    // Z holster is owned by WeaponSystem.processLoadout (unified sword + guns).
+    if (combat.fpWeaponStance) {
+      return this.patchInputForCombat({ input, combat });
+    }
+
+    // Only the sword loadout can attack; other weapons / holstered = unarmed specials only.
+    if (combat.equippedWeaponId && combat.equippedWeaponId !== 'sword') {
+      // Gun selected (even holstered): skip sword swings; unarmed G/R still ok when sheathed.
+      if (combat.weapon === 'armed' || combat.weapon === 'drawing') {
+        // Should already be sheathed by loadout sync; don't attack with a phantom blade.
+      }
     }
 
     this.processAttacks({ input, character, combat, enemies });
 
     return this.patchInputForCombat({ input, combat });
+  }
+
+  /** Animated draw (Z / loadout). No-op if already armed or mid-transition. */
+  requestDraw({ character } = {}) {
+    const combat = character?.combat ?? this.combat;
+    if (!combat || combat.attack) return;
+    if (combat.weapon === 'armed' || combat.weapon === 'drawing') return;
+    if (!isFreeToAct(character ?? this.character)) {
+      this.forceDraw({ character, silent: true });
+      return;
+    }
+    this.toggleWeapon({ combat }); // sheathed → drawing
+  }
+
+  /** Animated sheathe (Z / loadout). */
+  requestSheathe({ character } = {}) {
+    const combat = character?.combat ?? this.combat;
+    if (!combat || combat.attack) return;
+    if (combat.weapon === 'sheathed' || combat.weapon === 'sheathing') return;
+    if (combat.weapon === 'armed') {
+      this.toggleWeapon({ combat });
+      return;
+    }
+    // Mid-draw: snap sheathed.
+    this.forceSheathe({ character, silent: true });
+  }
+
+  /** Instant draw without clip (weapon switch). */
+  forceDraw({ character, silent = true } = {}) {
+    const combat = character?.combat ?? this.combat;
+    if (!combat) return;
+    combat.weapon = 'armed';
+    combat.armed = true;
+    if (silent || !combat.animationOverride) {
+      if (combat.animationOverride === 'drawSword' || combat.animationOverride === 'sheatheSword') {
+        combat.animationOverride = null;
+      }
+    }
+    if (combat.sword?.group) {
+      combat.sword.group.visible = true;
+    }
+  }
+
+  /** Instant sheathe without clip (switch to gun / holster). */
+  forceSheathe({ character, silent = true } = {}) {
+    const combat = character?.combat ?? this.combat;
+    if (!combat) return;
+    combat.weapon = 'sheathed';
+    combat.armed = false;
+    if (silent) {
+      if (combat.animationOverride === 'drawSword' || combat.animationOverride === 'sheatheSword') {
+        combat.animationOverride = null;
+      }
+    }
+    if (combat.sword?.group) {
+      combat.sword.group.visible = false;
+    }
+    const controller = (character ?? this.character)?.animationController;
+    if (controller?.setUpperBodyState) {
+      controller.setUpperBodyState(null);
+    }
   }
 
   // Armed (sword drawn): light = left-click (combo slash1->2->3, finisher cuts),

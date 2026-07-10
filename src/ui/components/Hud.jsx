@@ -30,12 +30,30 @@ export function Hud(props) {
   const swayDegrees = () => `${(snapshot().character?.sway ?? 0) * 12}deg`;
 
   const combat = () => snapshot().combat;
+  const fpWeapon = () => snapshot().firstPersonWeapon;
+  const gunHud = () => {
+    const fp = fpWeapon();
+    const gun = fp?.gun;
+    if (!fp?.active || !fp?.weaponVisible || !gun) return null;
+    return gun;
+  };
   const combatLabel = () => {
     const c = combat();
     if (!c?.active) return null;
-    const mode = c.armed ? 'SWORD' : 'UNARMED';
+    const w = snapshot().weapon;
+    const gun = gunHud();
+    const holstered = Boolean(w?.holstered);
+    const short = w?.equippedShortLabel
+      || (gun ? (gun.label || gun.id || 'GUN').toUpperCase().slice(0, 14) : null)
+      || (c.armed ? 'SWORD' : 'UNARMED');
+    const mode = holstered ? `${short} · STOW` : short;
     let act = '';
-    if (c.animationOverride) {
+    if (gun && !holstered) {
+      if (gun.state === 'reloading') act = 'RELOAD';
+      else if ((w?.inspectBlend ?? 0) > 0.4) act = 'INSPECT';
+      else if (gun.ads > 0.5) act = 'ADS';
+      else if (gun.state === 'firing') act = 'FIRE';
+    } else if (c.animationOverride) {
       const raw = c.animationOverride;
       // Short human friendly labels for the common ones
       if (raw === 'unarmedLight') act = 'LIGHT';
@@ -43,6 +61,8 @@ export function Hud(props) {
       else if (raw.startsWith('lightSlash')) act = 'SLASH';
       else if (raw === 'heavyAttack') act = 'HEAVY';
       else if (raw === 'dropKick') act = 'KICK';
+      else if (raw === 'drawSword') act = 'DRAW';
+      else if (raw === 'sheatheSword') act = 'SHEATH';
       else act = formatState(raw).slice(0, 8).toUpperCase();
     } else if (c.attack?.kind) {
       act = c.attack.kind.toUpperCase();
@@ -70,8 +90,80 @@ export function Hud(props) {
     return Math.max(0, Math.min(1, ms / GROUND_VEHICLE_MAX_SPEED_MS));
   };
 
+  const range = () => snapshot().shootingRange;
+
   return (
     <section class="hud" aria-live="polite">
+      <Show when={range()?.active}>
+        <div class="hud__range" role="status" aria-label="Shooting range status">
+          <Show when={range().phase === 'countdown'}>
+            <div class="hud__range-banner hud__range-banner--countdown">
+              <span class="hud__range-title">Breach course</span>
+              <span class="hud__range-big">{Math.ceil(range().countdownLeft || 0) || 'GO'}</span>
+              <span class="hud__range-hint">Red = hostile · Blue = friendly · Scroll to switch guns</span>
+            </div>
+          </Show>
+          <Show when={range().phase === 'running'}>
+            <div class="hud__range-strip">
+              <div class="hud__range-timer">
+                <span class="hud__range-label">Time</span>
+                <span class="hud__range-value">{formatRangeTime(range().timeLeft)}</span>
+              </div>
+              <div class="hud__range-score">
+                <span class="hud__range-label">Score</span>
+                <span class="hud__range-value">{range().score ?? 0}</span>
+              </div>
+              <div class="hud__range-hits">
+                <span class="hud__range-hostile">
+                  {range().hostileHits ?? 0}/{range().hostilesTotal ?? 0}
+                </span>
+                <span class="hud__range-sep">·</span>
+                <span class="hud__range-friendly">
+                  FF {range().friendlyHits ?? 0}
+                </span>
+              </div>
+              <Show when={(range().bestForGun ?? 0) > 0}>
+                <div class="hud__range-best">
+                  Best {range().bestForGun}
+                </div>
+              </Show>
+            </div>
+            <Show when={(range().hitFlash ?? 0) > 0.05}>
+              <div
+                classList={{
+                  'hud__range-flash': true,
+                  'hud__range-flash--friendly': range().lastHitKind === 'friendly',
+                  'hud__range-flash--head': range().lastHitKind === 'head',
+                }}
+              >
+                {range().lastHitKind === 'friendly'
+                  ? 'FRIENDLY FIRE'
+                  : range().lastHitKind === 'head'
+                    ? 'HEADSHOT'
+                    : 'HIT'}
+              </div>
+            </Show>
+          </Show>
+          <Show when={range().phase === 'finished' && range().result}>
+            <div class="hud__range-banner hud__range-banner--results">
+              <span class="hud__range-title">Course complete</span>
+              <span class="hud__range-big">{range().result.score}</span>
+              <Show when={range().result.isNewBest}>
+                <span class="hud__range-new-best">New best for this gun</span>
+              </Show>
+              <span class="hud__range-hint">
+                Hostiles {range().result.hostileHits}/{range().result.hostilesTotal}
+                {' · '}
+                Friendly fire {range().result.friendlyHits}
+                {' · '}
+                Best {range().result.best}
+              </span>
+              <span class="hud__range-restart">Space or E to run again</span>
+            </div>
+          </Show>
+        </div>
+      </Show>
+
       <Show when={snapshot().buildingEntry?.prompt}>
         <div
           class="hud__enter-prompt"
@@ -160,6 +252,36 @@ export function Hud(props) {
       <Show when={snapshot().camera?.focusReticle}>
         <div class="hud__focus-reticle" aria-hidden="true" />
       </Show>
+
+      <Show when={gunHud()}>
+        {(() => {
+          const gun = gunHud();
+          const ads = gun.ads > 0.55;
+          return (
+            <>
+              <div
+                class={ads ? 'hud__crosshair hud__crosshair--ads' : 'hud__crosshair'}
+                aria-hidden="true"
+              >
+                <span class="hud__crosshair-h" />
+                <span class="hud__crosshair-v" />
+                <span class="hud__crosshair-dot" />
+              </div>
+              <div class="hud__ammo" role="status" aria-label={`Ammo ${gun.ammoInMag} of ${gun.magazineSize}, reserve ${gun.reserveAmmo}`}>
+                <span class="hud__ammo-mag">{gun.ammoInMag}</span>
+                <span class="hud__ammo-sep">/</span>
+                <span class="hud__ammo-reserve">{gun.reserveAmmo}</span>
+                <Show when={gun.state === 'reloading'}>
+                  <span class="hud__ammo-state">RELOAD</span>
+                </Show>
+                <Show when={gun.ammoInMag <= 0 && gun.state !== 'reloading'}>
+                  <span class="hud__ammo-state hud__ammo-state--empty">EMPTY</span>
+                </Show>
+              </div>
+            </>
+          );
+        })()}
+      </Show>
       <Show when={snapshot().timing?.showHud}>
         <div class="hud__timing" role="status">
           sim {Number(snapshot().timing?.simTime ?? 0).toFixed(2)}s · steps {snapshot().timing?.stepsPerFrame ?? 0} · α {Number(snapshot().timing?.alpha ?? 0).toFixed(2)}
@@ -183,6 +305,14 @@ export function Hud(props) {
         <div class="hud__readout">
           <span>{combatLabel() || snapshot().level?.name || 'Base Level'}</span>
           <span>{formatState(snapshot().animation?.state)}</span>
+          <Show when={snapshot().ability?.shortLabel && (snapshot().weapon?.holstered || !gunHud())}>
+            <span
+              style={{ color: '#c8e6c9', marginLeft: '8px', fontSize: '11px' }}
+              title="F to use ability · Z holsters weapon"
+            >
+              [F] {snapshot().ability.shortLabel}
+            </span>
+          </Show>
           <Show when={snapshot().character?.district}>
             <span style={{ color: '#a0d0ff', marginLeft: '8px', fontSize: '11px' }}>📍 {snapshot().character.district}</span>
           </Show>
@@ -201,4 +331,11 @@ function formatState(state) {
   const label = state.replace(/([a-z])([A-Z])/g, '$1 $2');
 
   return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+function formatRangeTime(seconds) {
+  const s = Math.max(0, Number(seconds) || 0);
+  const m = Math.floor(s / 60);
+  const r = Math.floor(s % 60);
+  return `${m}:${String(r).padStart(2, '0')}`;
 }

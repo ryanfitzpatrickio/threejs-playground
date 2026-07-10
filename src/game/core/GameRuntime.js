@@ -13,6 +13,10 @@ import { CameraSystem } from '../systems/CameraSystem.js';
 import { CharacterSystem } from '../systems/CharacterSystem.js';
 import { resolveJacketMode } from '../characters/mara/jacketConfig.js';
 import { CombatSystem } from '../systems/CombatSystem.js';
+import { FirstPersonWeaponSystem } from '../systems/FirstPersonWeaponSystem.js';
+import { WeaponSystem } from '../systems/WeaponSystem.js';
+import { ShootingRangeSystem } from '../systems/ShootingRangeSystem.js';
+import { defaultGunIdFromQuery } from '../weapons/loadGunView.js';
 import { EnemySystem } from '../systems/EnemySystem.js';
 import { CrowdSystem } from '../systems/CrowdSystem.js';
 import { EnemyCutSystem } from '../systems/EnemyCutSystem.js';
@@ -23,6 +27,7 @@ import { LevelSystem } from '../systems/LevelSystem.js';
 import { BuildingEntrySystem } from '../systems/BuildingEntrySystem.js';
 import { createOfficeInteriorLevel } from '../world/office/createOfficeInteriorLevel.js';
 import { installInteriorEnvironment } from '../world/office/officeInteriorEnv.js';
+import { installRangeEnvironment } from '../world/installRangeEnvironment.js';
 import { floorCountFromBuilding } from '../world/office/generateOfficeLayout.js';
 import { LedgeHangSystem } from '../systems/LedgeHangSystem.js';
 import { LedgeTraversalSystem } from '../systems/LedgeTraversalSystem.js';
@@ -42,6 +47,7 @@ import { TelekinesisSystem } from '../systems/TelekinesisSystem.js';
 import { HookSwingSystem } from '../systems/HookSwingSystem.js';
 import { WingsuitSystem } from '../systems/WingsuitSystem.js';
 import { WingsuitFlightSystem } from '../systems/WingsuitFlightSystem.js';
+import { AbilitySystem } from '../systems/AbilitySystem.js';
 import { RallyCinematicDemo } from '../systems/RallyCinematicDemo.js';
 import { VehicleSystem } from '../systems/VehicleSystem.js';
 import { VehicleDamageSystem } from '../systems/VehicleDamageSystem.js';
@@ -53,6 +59,7 @@ import { spawnVehicleOptions } from '../vehicles/garageBuilds.js';
 import { getActiveWorldMapSync } from '../../world/worldMap/worldMapScenes.js';
 import { sanitizeWebGPUVertexBuffers } from '../geometry/prepareWebGPUGeometry.js';
 import { applyCityLevelOverrides } from '../config/cityPerformance.js';
+import { applyRangeLevelOverrides } from '../config/rangePerformance.js';
 import {
   getPhotorealismPresetId,
   mergePhotorealismEnvironment,
@@ -104,9 +111,12 @@ function buildingSeed(building) {
 export class GameRuntime {
   constructor({ canvas, qualityPreset = {}, qualityLevel = 'high', onSnapshot, levelMode = 'city' }) {
     this.canvas = canvas;
-    this.levelMode = ['world', 'wilds', 'rally'].includes(levelMode) ? levelMode : 'city';
+    this.levelMode = ['world', 'wilds', 'rally', 'range'].includes(levelMode) ? levelMode : 'city';
     this.qualityLevel = qualityLevel;
-    this.qualityPreset = applyCityLevelOverrides(qualityPreset, qualityLevel, this.levelMode);
+    this.qualityPreset = applyRangeLevelOverrides(
+      applyCityLevelOverrides(qualityPreset, qualityLevel, this.levelMode),
+      this.levelMode,
+    );
     this.baseEnvironment = { ...this.qualityPreset.environment };
     this.photorealismPresetId = getPhotorealismPresetId();
     if (this.photorealismPresetId) {
@@ -165,6 +175,9 @@ export class GameRuntime {
     this._interiorSlotCount = 0;
     this.characterSystem = new CharacterSystem();
     this.combatSystem = new CombatSystem();
+    this.firstPersonWeaponSystem = new FirstPersonWeaponSystem();
+    this.weaponSystem = new WeaponSystem();
+    this.shootingRangeSystem = new ShootingRangeSystem();
     this.enemySystem = new EnemySystem();
     this.crowdSystem = new CrowdSystem();
     this.enemyCutSystem = new EnemyCutSystem();
@@ -192,6 +205,7 @@ export class GameRuntime {
     this.hookSwingSystem = new HookSwingSystem();
     this.wingsuitSystem = new WingsuitSystem();
     this.wingsuitFlightSystem = new WingsuitFlightSystem();
+    this.abilitySystem = new AbilitySystem();
     this.vehicleSystem = new VehicleSystem();
     this.rallyCinematicDemo = new RallyCinematicDemo();
     this.vehicleDamageSystem = new VehicleDamageSystem();
@@ -247,12 +261,19 @@ export class GameRuntime {
     // Rally starts at midday under rain. Bake sky + IBL with the overcast
     // profile before the first environment capture so startup matches the live
     // weather (setWeather below still wires rain VFX/audio).
+    // Range: clear morning sky so the open-roof warehouse gets strong env-map IBL.
     if (this.levelMode === 'rally' && !this.photorealismPresetId) {
       this.sceneSystem.skySystem?.setTimeOfDay?.(0.5);
       this.sceneSystem.skySystem?.setWeather?.('rain');
       this.sceneSystem.setWeather?.('rain');
       this.sceneSystem.setSceneFogEnabled?.(true);
       this.rendererSystem.setWeather?.('rain');
+    } else if (this.levelMode === 'range') {
+      this.sceneSystem.skySystem?.setTimeOfDay?.(0.42);
+      this.sceneSystem.skySystem?.setWeather?.('clear');
+      this.sceneSystem.setWeather?.('clear');
+      this.sceneSystem.setSceneFogEnabled?.(false);
+      this.rendererSystem.setWeather?.('clear');
     } else if (this.photorealismPresetId) {
       this.sceneSystem.skySystem?.setWeather?.('clear');
       this.sceneSystem.setWeather?.('clear');
@@ -260,6 +281,10 @@ export class GameRuntime {
       this.rendererSystem.setWeather?.('clear');
     }
     this.rendererSystem.installEnvironment(this.sceneSystem.scene, this.sceneSystem.skySystem);
+    if (this.levelMode === 'range' && this.sceneSystem.scene) {
+      // Stronger sky PMREM so timber materials read outdoors light through open roof.
+      this.sceneSystem.scene.environmentIntensity = 0.95;
+    }
     // Hand the volumetric sky/cloud provider (if active) to the renderer so its
     // cloud composite can be inserted into the post pipeline.
     this.rendererSystem.cloudSkyProvider = this.sceneSystem.skySystem?.provider ?? null;
@@ -269,10 +294,15 @@ export class GameRuntime {
       levelSystem: this.levelSystem,
       qualityPreset: this.qualityPreset,
     });
-    if (this.photorealismPresetId) {
+    if (this.photorealismPresetId || this.levelMode === 'range') {
       this.weatherSystem.setWeather('clear');
     } else if (this.levelMode === 'rally') {
       this.weatherSystem.setWeather('rain');
+    }
+    // setWeather resets environmentIntensity from the quality preset — restore
+    // the open-roof IBL boost after clear weather is applied.
+    if (this.levelMode === 'range' && this.sceneSystem.scene) {
+      this.sceneSystem.scene.environmentIntensity = 0.95;
     }
 
     this.cameraSystem.initialize(this.sceneSystem.scene, this.qualityPreset);
@@ -549,9 +579,8 @@ export class GameRuntime {
 
     this._setLoadProgress({ phase: 'systems', label: 'Loading systems…', sub: { systems: 0.05 } });
 
-    // Rally has purpose-built roadside crowds and starts focused on driving;
-    // omit the horse, combat enemies, ambient ring, and destructible city props.
-    if (this.levelMode !== 'rally') {
+    // Rally / range are purpose-built scenes — skip open-world ambient systems.
+    if (this.levelMode !== 'rally' && this.levelMode !== 'range') {
       await this.horseSystem.load(this.sceneSystem.scene, {
         position: horseSpawnPosition(character?.group.position, this.levelSystem),
         getGroundHeightAt: (position) => horseGroundHeight(this.levelSystem, position),
@@ -613,41 +642,44 @@ export class GameRuntime {
 
     // One garage build beside the player on every map except the collision test
     // track, which spawns two autopilot chassis cars from opposite directions.
-    const worldMap = getActiveWorldMapSync();
-    if (isCollisionTestMap(worldMap)) {
-      await spawnCollisionTestVehicles(this.vehicleSystem);
-    } else {
-      const carPosition = this.levelMode === 'rally'
-        ? new THREE.Vector3(-129, 0, 136)
-        : carSpawnPosition(this.horseSystem, character?.group.position);
-      const carYaw = this.levelMode === 'rally'
-        ? -Math.PI / 4
-        : (this.horseSystem.group?.rotation.y ?? 0);
-      const garageVehicleOptions = spawnVehicleOptions(this.levelMode);
-      const VehicleConstructor = garageVehicleOptions.vehicleKind === 'quad'
-        ? QuadBikeVehicle
-        : BaseVehicle;
-      const spawnCar = await this.vehicleSystem.spawnVehicle({
-        vehicle: new VehicleConstructor({
-          ...garageVehicleOptions,
-          name: 'Spawn Car',
-          position: carPosition,
-          rotationY: carYaw,
-        }),
-      });
-      if (this.levelMode === 'rally' && character && spawnCar) {
-        await this.vehicleSystem.enterVehicle(character, spawnCar, { warmup: true });
-      }
-      if (this.levelMode === 'rally') {
-        const quadSpawns = [
-          { name: 'Rally Quad 1', position: new THREE.Vector3(-124.5, 0, 132.5), rotationY: -Math.PI / 4 },
-          { name: 'Rally Quad 2', position: new THREE.Vector3(-121.5, 0, 136), rotationY: -Math.PI / 4 },
-        ];
-        const parkedQuadSpawns = garageVehicleOptions.vehicleKind === 'quad'
-          ? quadSpawns.slice(1)
-          : quadSpawns;
-        for (const spec of parkedQuadSpawns) {
-          await this.vehicleSystem.spawnVehicle({ vehicle: new QuadBikeVehicle(spec) });
+    // Indoor range has no vehicles.
+    if (this.levelMode !== 'range') {
+      const worldMap = getActiveWorldMapSync();
+      if (isCollisionTestMap(worldMap)) {
+        await spawnCollisionTestVehicles(this.vehicleSystem);
+      } else {
+        const carPosition = this.levelMode === 'rally'
+          ? new THREE.Vector3(-129, 0, 136)
+          : carSpawnPosition(this.horseSystem, character?.group.position);
+        const carYaw = this.levelMode === 'rally'
+          ? -Math.PI / 4
+          : (this.horseSystem.group?.rotation.y ?? 0);
+        const garageVehicleOptions = spawnVehicleOptions(this.levelMode);
+        const VehicleConstructor = garageVehicleOptions.vehicleKind === 'quad'
+          ? QuadBikeVehicle
+          : BaseVehicle;
+        const spawnCar = await this.vehicleSystem.spawnVehicle({
+          vehicle: new VehicleConstructor({
+            ...garageVehicleOptions,
+            name: 'Spawn Car',
+            position: carPosition,
+            rotationY: carYaw,
+          }),
+        });
+        if (this.levelMode === 'rally' && character && spawnCar) {
+          await this.vehicleSystem.enterVehicle(character, spawnCar, { warmup: true });
+        }
+        if (this.levelMode === 'rally') {
+          const quadSpawns = [
+            { name: 'Rally Quad 1', position: new THREE.Vector3(-124.5, 0, 132.5), rotationY: -Math.PI / 4 },
+            { name: 'Rally Quad 2', position: new THREE.Vector3(-121.5, 0, 136), rotationY: -Math.PI / 4 },
+          ];
+          const parkedQuadSpawns = garageVehicleOptions.vehicleKind === 'quad'
+            ? quadSpawns.slice(1)
+            : quadSpawns;
+          for (const spec of parkedQuadSpawns) {
+            await this.vehicleSystem.spawnVehicle({ vehicle: new QuadBikeVehicle(spec) });
+          }
         }
       }
     }
@@ -660,6 +692,64 @@ export class GameRuntime {
     this.combatSystem.start({
       character: this.characterSystem.character,
     });
+    this.firstPersonWeaponSystem.start({
+      character: this.characterSystem.character,
+    });
+    this.weaponSystem.initialize(this.sceneSystem.scene);
+
+    // Shooting range: force first-person + equip a gun for the session (training focus).
+    if (this.levelMode === 'range') {
+      this.cameraSystem.setOnFootFirstPerson(true);
+      this.weaponSystem.equipAndDraw(defaultGunIdFromQuery(), {
+        character: this.characterSystem.character,
+        combatSystem: this.combatSystem,
+        firstPersonWeaponSystem: this.firstPersonWeaponSystem,
+      });
+      this.shootingRangeSystem.start(this.sceneSystem.scene, {
+        spawns: this.levelSystem.level?.rangeTargets ?? [],
+      });
+      const spawnYaw = this.levelSystem.level?.spawnYaw;
+      if (Number.isFinite(spawnYaw) && this.characterSystem.character) {
+        this.characterSystem.character.yaw = spawnYaw;
+        this.cameraSystem.yaw = spawnYaw;
+      }
+      // Clear outdoor sky for open roof + warehouse HDR as scene.environment IBL.
+      const rangeEnv = this.levelSystem.level?.rangeEnvironment ?? {};
+      if (Number.isFinite(rangeEnv.timeOfDay)) {
+        this.sceneSystem.skySystem?.setTimeOfDay?.(rangeEnv.timeOfDay);
+      }
+      this.sceneSystem.skySystem?.setWeather?.(rangeEnv.weather ?? 'clear');
+      this.sceneSystem.setWeather?.(rangeEnv.weather ?? 'clear');
+      this.sceneSystem.setSceneFogEnabled?.(rangeEnv.fogEnabled === true);
+      this.rendererSystem.setWeather?.(rangeEnv.weather ?? 'clear');
+      try {
+        await installRangeEnvironment(
+          this.sceneSystem.scene,
+          this.rendererSystem.renderer,
+          {
+            intensity: rangeEnv.intensity ?? 1.05,
+            rotationY: rangeEnv.environmentRotationY ?? 0.35,
+            asBackground: rangeEnv.asBackground === true,
+          },
+        );
+      } catch (err) {
+        console.warn('[GameRuntime] warehouse environment failed; keeping sky PMREM', err);
+        this.rendererSystem.installEnvironment(this.sceneSystem.scene, this.sceneSystem.skySystem);
+        if (Number.isFinite(rangeEnv.intensity)) {
+          this.sceneSystem.scene.environmentIntensity = rangeEnv.intensity;
+        }
+      }
+    }
+
+    // ?fp=1 forces on-foot first person for M3 checks / playground.
+    try {
+      if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('fp') === '1') {
+        setOnFootFirstPerson(true);
+        this.cameraSystem.setOnFootFirstPerson(true);
+      }
+    } catch {
+      // ignore
+    }
 
     this._systemsReady = true;
     this._setLoadProgress({ phase: 'systems', label: 'Systems ready', sub: { systems: 1 } });
@@ -860,6 +950,9 @@ export class GameRuntime {
         telekinesisPressed: false,
         hookFirePressed: false,
         hookAimHeld: false,
+        abilityPressed: false,
+        abilityDoubleTapped: false,
+        wingsuitTogglePressed: false,
         dodgeDirection: null,
         mountPressed: false,
         lookX: 0,
@@ -894,10 +987,10 @@ export class GameRuntime {
       this.emitSnapshot(timeMs);
       return;
     }
-    // Building enter/exit. Handled before the movement/hook pipeline so the E
-    // press is consumed here (returning early skips the hook fire this frame; the
-    // input edge is already cleared by getState()). `prompt` is last frame's
-    // detection — one frame stale is imperceptible.
+    // Building enter/exit. Handled before the movement/ability pipeline so the E
+    // (mount/interact) press is consumed here (returning early skips vehicle mount
+    // and ability use this frame; the input edge is already cleared by getState()).
+    // `prompt` is last frame's detection — one frame stale is imperceptible.
     if (this.insideBuilding) {
       if (this._elevatorTransition) {
         this._tickElevatorTransition(delta, character);
@@ -908,7 +1001,7 @@ export class GameRuntime {
       this.insideBuilding.atElevator = this._isAtElevator(character);
       this.insideBuilding.interior.updateDoors?.(delta);
       this.insideBuilding.nearbyDoor = this.insideBuilding.interior.getNearbyDoor?.(character.group.position) ?? null;
-      if (this.insideBuilding.atDoor && input.hookFirePressed) {
+      if (this.insideBuilding.atDoor && input.mountPressed) {
         this._exitBuilding(character);
         this.emitSnapshot();
         return;
@@ -921,7 +1014,7 @@ export class GameRuntime {
           this.emitSnapshot();
           return;
         }
-        if (input.hookFirePressed) {
+        if (input.mountPressed) {
           const fc = this.insideBuilding.interior.floorCount;
           const next = (this.insideBuilding.currentFloor + 1) % fc;
           this._startElevatorRide(character, next);
@@ -937,7 +1030,7 @@ export class GameRuntime {
         }
       }
       if (!this.insideBuilding.atDoor && !this.insideBuilding.atElevator
-        && this.insideBuilding.nearbyDoor && input.hookFirePressed) {
+        && this.insideBuilding.nearbyDoor && input.mountPressed) {
         this.insideBuilding.interior.toggleDoor(
           this.insideBuilding.nearbyDoor.door,
           character.group.position,
@@ -945,7 +1038,7 @@ export class GameRuntime {
         this.emitSnapshot();
         return;
       }
-    } else if (this.buildingEntrySystem.state.prompt && input.hookFirePressed) {
+    } else if (this.buildingEntrySystem.state.prompt && input.mountPressed) {
       this._enterBuilding(character);
       this.emitSnapshot();
       return;
@@ -1114,6 +1207,9 @@ export class GameRuntime {
         telekinesisPressed: false,
         hookFirePressed: false,
         hookAimHeld: false,
+        abilityPressed: false,
+        abilityDoubleTapped: false,
+        wingsuitTogglePressed: false,
         dodgeDirection: null,
         mountPressed: false,
         lookX: 0,
@@ -1132,6 +1228,23 @@ export class GameRuntime {
         drawSheathePressed: false,
       };
     }
+
+    // Weapon loadout first: scroll cycles sword/guns, Z holsters/draws equipped.
+    // Sword starts drawn; guns join the same list after the great sword.
+    gameplayInput = this.weaponSystem.processLoadout({
+      input: gameplayInput,
+      character,
+      combatSystem: this.combatSystem,
+      firstPersonWeaponSystem: this.firstPersonWeaponSystem,
+    }) ?? gameplayInput;
+
+    // Equip/activate traversal abilities (swing, wingsuit) before vehicle/mount/FP.
+    // F maps onto hook/wingsuit flags for the equipped ability.
+    gameplayInput = this.abilitySystem.processInput({
+      input: gameplayInput,
+      firstPersonWeaponSystem: this.firstPersonWeaponSystem,
+      weaponSystem: this.weaponSystem,
+    }) ?? gameplayInput;
 
     this.horseSystem.update({ delta: scaledDelta });
     // Advance damage timers / regen BEFORE enemies deal damage this frame (so a
@@ -1177,6 +1290,15 @@ export class GameRuntime {
       horseSystem: this.horseSystem,
       level: this.levelSystem,
     });
+
+    // FP weapon stance gates traversal intent before the router / combat consume it.
+    // Only active when the loadout firearm is drawn (not sword / not holstered).
+    gameplayInput = this.firstPersonWeaponSystem.processInput({
+      input: gameplayInput,
+      character,
+      cameraSystem: this.cameraSystem,
+      weaponSystem: this.weaponSystem,
+    }) ?? gameplayInput;
 
     const routedTraversal = this.traversalRouterSystem.update({
       input: gameplayInput,
@@ -1277,6 +1399,16 @@ export class GameRuntime {
     });
     this.frameStats.endSection();
 
+    // FP weapon locomotion override (M3) — sets animationOverride before anim system.
+    this.firstPersonWeaponSystem.update({
+      delta: scaledDelta,
+      input: gameplayInput,
+      movement,
+      character,
+      cameraSystem: this.cameraSystem,
+      weaponSystem: this.weaponSystem,
+    });
+
     this.frameStats.start('animation');
     this.animationStateSystem.update({
       delta: scaledDelta,
@@ -1286,6 +1418,12 @@ export class GameRuntime {
       level: this.levelSystem,
     });
     this.frameStats.endSection();
+
+    // Spine aim → weapon anchor → hand IK (same order as dust-and-bullets playerBody).
+    this.firstPersonWeaponSystem.postAnimation({
+      character,
+      cameraSystem: this.cameraSystem,
+    });
 
     // Bone-driven visuals read final bone poses after animation has settled.
     this.frameStats.start('wingsuit');
@@ -1376,7 +1514,7 @@ export class GameRuntime {
 
     const cameraInput = { ...input };
     const inVehicle = Boolean(this.vehicleSystem?.activeVehicle);
-    cameraInput.rearViewHeld = inVehicle && input.wingsuitHeld;
+    cameraInput.rearViewHeld = inVehicle && Boolean(input.rearViewHeld || input.wingsuitHeld);
     if (this.enemyCutSystem.state === 'aiming' || inVehicle) {
       cameraInput.lookX = 0;
       cameraInput.lookY = 0;
@@ -1397,6 +1535,44 @@ export class GameRuntime {
         rootMotionActive: isRootMotionCameraSmoothingActive(character),
         character,
         vehicle: this.vehicleSystem?.activeVehicle ?? null,
+      });
+    }
+
+    // FP body yaw after look input: turn torso past neck limit so the camera
+    // never stares into chest/shoulder interiors; forward move straightens body.
+    this.firstPersonWeaponSystem.postCamera({
+      character,
+      cameraSystem: this.cameraSystem,
+      input: cameraInput,
+      delta: scaledDelta,
+    });
+
+    // M5–M7 hitscan fire / ADS / damage after camera so the ray matches look.
+    this.frameStats.start('weapon');
+    this.weaponSystem.update({
+      delta: scaledDelta,
+      input: gameplayInput,
+      character,
+      cameraSystem: this.cameraSystem,
+      physicsSystem: this.physicsSystem,
+      enemySystem: this.enemySystem,
+      enemyCutSystem: this.enemyCutSystem,
+      propSystem: this.propSystem,
+      firstPersonWeaponSystem: this.firstPersonWeaponSystem,
+      vehicleDamageSystem: this.vehicleDamageSystem,
+      vehicleSystem: this.vehicleSystem,
+      shootingRangeSystem: this.shootingRangeSystem,
+    });
+    this.frameStats.endSection();
+
+    if (this.shootingRangeSystem.enabled) {
+      this.shootingRangeSystem.update({
+        delta: scaledDelta,
+        input: gameplayInput,
+        gunId: this.firstPersonWeaponSystem.equippedGunId,
+        character,
+        level: this.levelSystem.level,
+        cameraSystem: this.cameraSystem,
       });
     }
 
@@ -1992,6 +2168,52 @@ export class GameRuntime {
     return this.snapshot();
   }
 
+  /** Equip a catalog gun immediately (debug pane / console) and draw it. */
+  async equipGun(gunId) {
+    this.weaponSystem.equipAndDraw(gunId, {
+      character: this.characterSystem.character,
+      combatSystem: this.combatSystem,
+      firstPersonWeaponSystem: this.firstPersonWeaponSystem,
+    });
+    const view = await this.firstPersonWeaponSystem.equipGun(gunId);
+    this.emitSnapshot();
+    return view?.id ?? null;
+  }
+
+  /** Equip sword or gun by loadout id (debug). Holstered stays as-is unless draw=true. */
+  equipWeapon(weaponId, { draw = true } = {}) {
+    if (draw) {
+      this.weaponSystem.equipAndDraw(weaponId, {
+        character: this.characterSystem.character,
+        combatSystem: this.combatSystem,
+        firstPersonWeaponSystem: this.firstPersonWeaponSystem,
+      });
+    } else {
+      this.weaponSystem.equip(weaponId);
+      this.weaponSystem.processLoadout({
+        input: { zoomDelta: 0, drawSheathePressed: false },
+        character: this.characterSystem.character,
+        combatSystem: this.combatSystem,
+        firstPersonWeaponSystem: this.firstPersonWeaponSystem,
+      });
+    }
+    this.emitSnapshot();
+    return this.weaponSystem.equippedId;
+  }
+
+  /** Equip a traversal ability (swing / wingsuit). */
+  equipAbility(abilityId) {
+    const id = this.abilitySystem.equip(abilityId);
+    this.emitSnapshot();
+    return id;
+  }
+
+  cycleAbility(dir = 1) {
+    const id = this.abilitySystem.cycle(dir);
+    this.emitSnapshot();
+    return id;
+  }
+
   cycleCameraFeel() {
     const next = cycleCameraFeel(getCameraFeel());
     return this.setCameraFeel(next);
@@ -2075,6 +2297,10 @@ export class GameRuntime {
         photorealismPreset: this.photorealismPresetId,
         animation: this.animationStateSystem.snapshot(),
         combat: this.combatSystem.snapshot(),
+        firstPersonWeapon: this.firstPersonWeaponSystem.snapshot(),
+        weapon: this.weaponSystem.snapshot(),
+        ability: this.abilitySystem.snapshot(),
+        shootingRange: this.shootingRangeSystem.snapshot(),
         character: this.characterSystem.snapshot(),
         vehicles: this.vehicleSystem.snapshot(),
         camera: this.cameraSystem.snapshot(),
@@ -2111,8 +2337,12 @@ export class GameRuntime {
       hookSwing: this.hookSwingSystem.snapshot(this.characterSystem.character),
       vault: this.vaultSystem.snapshot(this.characterSystem.character),
       mount: this.mountSystem.snapshot(),
+      ability: this.abilitySystem.snapshot(),
       animation: this.animationStateSystem.snapshot(),
       combat: this.combatSystem.snapshot(),
+      firstPersonWeapon: this.firstPersonWeaponSystem.snapshot(),
+      weapon: this.weaponSystem.snapshot(),
+      shootingRange: this.shootingRangeSystem.snapshot(),
       character: this.characterSystem.snapshot(),
       crowd: this.crowdSystem?.snapshot?.() ?? null,
       spectatorCrowd: this.levelSystem.level?.spectatorCrowd?.snapshot?.() ?? null,
@@ -3099,6 +3329,13 @@ export class GameRuntime {
         this.sceneSystem.skySystem?.setCloudPreset?.(name);
         return this.snapshot();
       },
+      equipGun: (gunId) => this.equipGun(gunId),
+      equipWeapon: (weaponId, opts) => this.equipWeapon(weaponId, opts),
+      equipAbility: (abilityId) => this.equipAbility(abilityId),
+      cycleAbility: (dir) => this.cycleAbility(dir),
+      ability: () => this.abilitySystem.snapshot(),
+      firstPersonWeapon: () => this.firstPersonWeaponSystem.snapshot(),
+      weapon: () => this.weaponSystem.snapshot(),
     };
     globalThis.__DREAMFALL_DEBUG__ = this.debugBridge;
   }
@@ -3115,6 +3352,9 @@ export class GameRuntime {
     this.vaultSystem.dispose();
     this.mountSystem.dispose();
     this.combatSystem.dispose();
+    this.firstPersonWeaponSystem.dispose();
+    this.weaponSystem.dispose();
+    this.shootingRangeSystem.dispose();
     this.enemySystem.dispose();
     this.crowdSystem.dispose?.();
     this.propSystem.dispose();

@@ -826,7 +826,11 @@ function lockedInput(input) {
     cutModePressed: false,
     telekinesisPressed: false,
     hookFirePressed: false,
+    hookFire: false,
+    hookFireDoubleTapped: false,
     hookAimHeld: false,
+    wingsuitTogglePressed: false,
+    abilityPressed: false,
     dodgeDirection: null,
   };
 }

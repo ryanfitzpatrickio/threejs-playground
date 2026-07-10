@@ -26,11 +26,42 @@ export const GAME_CONFIG = {
     targetSmoothing: 16,
     rootMotionTargetSmoothing: 3.2,
     maxTargetLag: 8,
+    // On-foot third person FOV (was reusing vehicle.defaultFov). Live-tunable via debug panel.
+    thirdPersonFov: 48,
     // On-foot first person (interiors always use this regardless of the toggle).
-    onFootEyeHeight: 1.62,
-    onFootEyeForward: 0.06,
-    onFootFirstPersonFov: 74,
-    onFootFirstPersonSmoothing: 28,
+    // Defaults tuned live via the First Person debug folder (2026-07).
+    onFootEyeHeight: 1.705,
+    // Resting eye slightly behind the neck so the mount sits inside the head volume.
+    onFootEyeForward: -0.16,
+    onFootFirstPersonFov: 81,
+    onFootFirstPersonSmoothing: 31,
+    // The FP camera is position-smoothed. At sprint speed that otherwise leaves
+    // it ~0.22m behind the body, exposing the hidden-head neck seam. Lead only
+    // the component of velocity travelling into the view direction; the scale
+    // slightly overcompensates the discrete spring, while the cap prevents a
+    // traversal impulse from throwing the eye through the weapon.
+    onFootFirstPersonMotionLeadScale: 1.2,
+    onFootFirstPersonMotionLeadMax: 0.39,
+    // Extra framing push while travelling forward. Unlike motion lead this is
+    // deliberate composition: it eases the gun/body lower into frame, then goes
+    // back to zero at idle so the resting eye remains centred on the neck.
+    onFootFirstPersonMotionFramingPush: 0.08,
+    onFootFirstPersonMotionFramingSpeed: 4.1,
+    // Pitch shifts the eye vertically around the neck: looking down raises it so
+    // the torso/gun stay in view; looking up lowers it by the same amount.
+    onFootFirstPersonPitchHingeHeight: 0.07,
+    onFootFirstPersonEyePush: 0,
+    onFootFirstPersonEyeLift: -0.01,
+    onFootFirstPersonEyePushLookDown: 0.72,
+    onFootFirstPersonEyeLiftLookDown: 0.15,
+    // FP look range (radians). Wider than third-person orbit clamps.
+    onFootFirstPersonMinPitch: -1.23,
+    onFootFirstPersonMaxPitch: 1.13,
+    // Max camera–body yaw offset before the torso auto-rotates (radians).
+    // Past this the body turns so FP never looks into chest/shoulder interiors.
+    onFootFirstPersonMaxNeckYaw: 1.39,
+    // How fast the body snaps onto look yaw when walking/running forward (1/s).
+    onFootFirstPersonStraightenSmoothing: 10.5,
     // Chase / cockpit camera while driving. Comfort-first defaults; per-feel overrides
     // in `vehicle.feels` restore older dramatic tuning when requested.
     // Springs stay soft so the chase cam is a smooth follow, not a stiff mount that
@@ -178,6 +209,8 @@ export const GAME_CONFIG = {
     jogSpeed: 4.1,
     sprintSpeed: 6.15,
     braceSpeed: 0.9,
+    // Crouch stance (weapon locomotion): fraction of ground speed while crouched.
+    crouchSpeedScale: 0.45,
     acceleration: 14,
     airAcceleration: 5.5,
     rotationSmoothing: 11,

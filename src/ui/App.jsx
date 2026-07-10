@@ -35,11 +35,20 @@ import {
 } from '../game/render/cloud/cloudConfig.js';
 import { GAME_CONFIG } from '../game/config/gameConfig.js';
 import { runSharedWarmup } from '../game/boot/sharedWarmup.js';
-import { createDevTools, BodyshopScene } from 'virtual:dreamfall-dev-tools';
+import { createDevTools, BodyshopScene, GunsmithScene } from 'virtual:dreamfall-dev-tools';
 import { mountShaderDebugPane } from 'virtual:dreamfall-shader-debug';
 import { loadGarageChassisOptions } from '../game/vehicles/bodyshopChassisRegistry.js';
 
-const LEVELS = new Set(['city', 'world', 'wilds', 'rally']);
+const LEVELS = new Set(['city', 'world', 'wilds', 'rally', 'range']);
+
+/** Resolve experience id from a remount key like `range:3` or `world:id:rev:1`. */
+function levelModeFromGameKey(key) {
+  if (typeof key !== 'string') return 'city';
+  if (key.startsWith('world')) return 'world';
+  if (key.startsWith('rally')) return 'rally';
+  const mode = key.split(':')[0];
+  return LEVELS.has(mode) ? mode : 'city';
+}
 
 function readStoredLevel() {
   try {
@@ -82,7 +91,7 @@ export function App() {
   const bootIntent = resolveBootIntent();
   const initialLevel = bootIntent.forcedLevel ?? bootIntent.preferredLevel;
 
-  const [viewMode, setViewMode] = createSignal('game'); // 'game' | 'garage' | 'bodyshop' | dev-tool views
+  const [viewMode, setViewMode] = createSignal('game'); // 'game' | 'garage' | 'bodyshop' | 'gunsmith' | dev-tool views
   const [appPhase, setAppPhase] = createSignal(
     bootIntent.skipMenu ? 'loading_experience' : 'booting',
   );
@@ -211,6 +220,7 @@ export function App() {
   const isGame = () => viewMode() === 'game';
   const isGarage = () => viewMode() === 'garage';
   const isBodyshop = () => viewMode() === 'bodyshop';
+  const isGunsmith = () => viewMode() === 'gunsmith';
   const isCutTest = () => viewMode() === 'cutTest';
 
   const gameKey = createMemo(() => {
@@ -281,7 +291,7 @@ export function App() {
 
   /**
    * Sole entry that mounts/remounts a playable experience.
-   * @param {'city'|'world'|'wilds'|'rally'} mode
+   * @param {'city'|'world'|'wilds'|'rally'|'range'} mode
    * @param {{ sceneId?: string|null }} [opts]
    */
   const enterExperience = (mode, opts = {}) => {
@@ -362,6 +372,7 @@ export function App() {
   onCleanup(() => globalThis.removeEventListener('keydown', onGlobalKey));
 
   let bodyshopApi = null;
+  let gunsmithApi = null;
 
   const devTools = createDevTools({
     viewMode,
@@ -464,7 +475,7 @@ export function App() {
             {(key) => (
               <>
                 <GameCanvas
-                  levelMode={key.startsWith('world') ? 'world' : key.startsWith('rally') ? 'rally' : key}
+                  levelMode={levelModeFromGameKey(key)}
                   onSnapshot={setGameSnapshot}
                   onRuntime={(runtime) => { gameRuntime = runtime; }}
                 />
@@ -536,6 +547,20 @@ export function App() {
             setChassisRefreshToken((value) => value + 1);
           }}
         />
+      )}
+
+      {isGunsmith() && (
+        <div style="position:absolute; inset:0; z-index:15;">
+          <GunsmithScene
+            onReady={(api) => {
+              gunsmithApi = api;
+            }}
+            onBack={async () => {
+              await gunsmithApi?.flushAutosave?.();
+              switchTo('game');
+            }}
+          />
+        </div>
       )}
 
       <devTools.Views />

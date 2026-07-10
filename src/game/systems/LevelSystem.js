@@ -3,6 +3,7 @@ import { createBaseLevel } from '../world/createBaseLevel.js';
 import { createStreamingTerrainLevel } from '../world/createStreamingTerrainLevel.js';
 import { createComposedWorldLevel } from '../world/createComposedWorldLevel.js';
 import { createWildsLevel } from '../world/createWildsLevel.js';
+import { createShootingRangeLevel } from '../world/createShootingRangeLevel.js';
 import { getActiveWorldMap, getRallyWorldMap } from '../../world/worldMap/worldMapScenes.js';
 
 const ledgeNormal = new THREE.Vector3();
@@ -94,9 +95,11 @@ export class LevelSystem {
 
   async loadBaseLevel(scene, qualityPreset = {}, mode = 'city', renderer = null) {
     this.status = 'loading';
-    this.mode = ['world', 'wilds', 'rally'].includes(mode) ? mode : 'city';
+    this.mode = ['world', 'wilds', 'rally', 'range'].includes(mode) ? mode : 'city';
     if (this.mode === 'wilds') {
       this.level = createWildsLevel(qualityPreset);
+    } else if (this.mode === 'range') {
+      this.level = createShootingRangeLevel(qualityPreset);
     } else if (this.mode === 'world' || this.mode === 'rally') {
       const worldMap = this.mode === 'rally' ? await getRallyWorldMap() : await getActiveWorldMap();
       const hasCity = (worldMap?.zones ?? []).some((zone) => zone.type === 'city');

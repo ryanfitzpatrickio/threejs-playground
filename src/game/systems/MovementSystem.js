@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GAME_CONFIG } from '../config/gameConfig.js';
 import { rainWetness } from './weatherUniforms.js';
+import { cameraYawToBodyYaw, shortestAngleDelta } from '../characters/player/firstPersonRig.js';
 
 const moveVector = new THREE.Vector3();
 const desiredVelocity = new THREE.Vector3();
@@ -104,8 +105,14 @@ export class MovementSystem {
     const groundMovementScale = isGrounded && !inWater && groundSurface === 'mud'
       ? MUD_ON_FOOT_SPEED_SCALE
       : 1;
+    // Crouch stance layer (weapon locomotion): hold Ctrl/X on the ground. Cannot
+    // sprint while crouched; caps ground speed and drives the crouch clip set.
+    const isCrouching = Boolean(input.crouchHeld) && isGrounded && !inWater;
+    if (character.combat) character.combat.stance = isCrouching ? 'crouch' : 'stand';
+    character.crouching = isCrouching;
+    const crouchSpeedScale = isCrouching ? GAME_CONFIG.character.crouchSpeedScale : 1;
     const isBracing = input.brace && isGrounded && !isTryingToMove;
-    const isSprinting = input.brace && isGrounded && isTryingToMove;
+    const isSprinting = input.brace && isGrounded && isTryingToMove && !isCrouching;
     const justJumped = input.jumpPressed && isGrounded && !isBracing && !inWater;
     const baseSpeed = (isBracing
       ? GAME_CONFIG.character.braceSpeed
@@ -113,7 +120,7 @@ export class MovementSystem {
         ? isSprinting
           ? GAME_CONFIG.character.sprintSpeed
           : GAME_CONFIG.character.jogSpeed
-        : 0) * swimSpeedScale * groundMovementScale;
+        : 0) * swimSpeedScale * groundMovementScale * crouchSpeedScale;
     const preserveAirMomentum = !isGrounded &&
       (character.airMomentumLockTimer ?? 0) > 0 &&
       !isTryingToMove;
@@ -371,7 +378,24 @@ export class MovementSystem {
       moving: isTryingToMove && character.speed > 0.08,
     });
 
-    if (character.speed > 0.04) {
+    // Body yaw. Three cases:
+    //  1. On-foot first person owns yaw (neck clamp vs camera) — set fpBodyYawLocked.
+    //  2. Third-person aiming a gun: body faces the camera/aim so the 8-way strafe
+    //     clips read correctly (hip-carry keeps velocity-facing forward loco).
+    //  3. Default: face the travel direction.
+    const aimFacing = Boolean(
+      character.combat?.weaponClass
+      && character.combat?.aiming
+      && Number.isFinite(character.aimYaw),
+    );
+    if (!character.fpBodyYawLocked && aimFacing) {
+      character.group.rotation.y = dampAngle(
+        character.group.rotation.y,
+        cameraYawToBodyYaw(character.aimYaw),
+        GAME_CONFIG.character.rotationSmoothing,
+        delta,
+      );
+    } else if (!character.fpBodyYawLocked && character.speed > 0.04) {
       const targetYaw = Math.atan2(character.velocity.x, character.velocity.z);
       character.group.rotation.y = dampAngle(
         character.group.rotation.y,
@@ -380,6 +404,16 @@ export class MovementSystem {
         delta,
       );
     }
+    character.fpBodyYawLocked = false;
+
+    // Turn-in-place (weapon stance): while a gun is out and the character is
+    // effectively stationary, a fast body-yaw sweep (from aim-facing catching up
+    // to the camera) triggers a turn-90 clip, held briefly so it plays out. Read
+    // by both the FP and TP locomotion resolvers via combat.turning.
+    updateWeaponTurnInPlace(character, {
+      delta,
+      stationary: isGrounded && !isTryingToMove && character.speed < 0.5,
+    });
 
     character.stamina = Math.max(0, Math.min(GAME_CONFIG.character.maxStamina, character.stamina + delta * 0.05));
 
@@ -543,6 +577,51 @@ function resolveCameraRelativeMoveVector({ input, cameraBasis, target }) {
 function dampAngle(current, target, smoothing, delta) {
   const deltaAngle = Math.atan2(Math.sin(target - current), Math.cos(target - current));
   return current + deltaAngle * (1 - Math.exp(-smoothing * delta));
+}
+
+// Turn-in-place: a stationary armed character whose body is being dragged around
+// fast (aim-facing catching up to the camera) plays a turn-90 step. The clips are
+// one-shot (clampWhenFinished), so this is edge-triggered and self-completing —
+// it plays once, blends back to idle, then may re-trigger on a continued sweep
+// (stepped turns). Latching it while the sweep continues would freeze the pose.
+const WEAPON_TURN_RATE = 1.7; // rad/s — a deliberate flick, not a slow aim adjust
+const WEAPON_TURN_DURATION = 0.6; // release before the ~1s clip clamps, so it blends out mid-turn
+const WEAPON_TURN_COOLDOWN = 0.12; // gap before the next step can start
+
+function updateWeaponTurnInPlace(character, { delta, stationary }) {
+  const combat = character.combat;
+  const bodyYaw = character.group?.rotation.y ?? 0;
+  const prevYaw = character._weaponTurnPrevYaw ?? bodyYaw;
+  const yawRate = delta > 0 ? shortestAngleDelta(prevYaw, bodyYaw) / delta : 0;
+  character._weaponTurnPrevYaw = bodyYaw;
+  if (!combat) return;
+
+  character._weaponTurnCooldown = Math.max(0, (character._weaponTurnCooldown ?? 0) - delta);
+
+  // A turn already in progress plays to (near) completion, then blends back.
+  if ((character._weaponTurnTimer ?? 0) > 0) {
+    character._weaponTurnTimer -= delta;
+    const canceled = !stationary || !combat.weaponClass;
+    if (canceled || character._weaponTurnTimer <= 0) {
+      character._weaponTurnTimer = 0;
+      combat.turning = null;
+      character._weaponTurnCooldown = WEAPON_TURN_COOLDOWN;
+    }
+    return;
+  }
+
+  // Idle: a deliberate fast body-yaw sweep starts a fresh turn step.
+  combat.turning = null;
+  if (
+    combat.weaponClass
+    && stationary
+    && character._weaponTurnCooldown <= 0
+    && Math.abs(yawRate) > WEAPON_TURN_RATE
+  ) {
+    // +Y is counter-clockwise (a left turn). Swap if it reads inverted.
+    combat.turning = yawRate > 0 ? 'left' : 'right';
+    character._weaponTurnTimer = WEAPON_TURN_DURATION;
+  }
 }
 
 function applyRootMotion({ character, desiredMovement, delta, inputDirection, wantsMove, locomotionScale = 1 }) {

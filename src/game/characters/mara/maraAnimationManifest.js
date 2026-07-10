@@ -4,6 +4,20 @@ export const MARA_MODEL_URL = '/assets/models/player-tpose.glb';
 
 const INJURED_PACK = '/assets/animation-packs/male-injured-pack';
 
+// The rifle pack drives the arm chains correctly but exports loose fingers.
+// Borrow only the closed finger tracks from the known-good great-sword grip;
+// wrist/arm transforms remain entirely owned by each rifle locomotion clip.
+const FP_RIFLE_GRIP_FINGER_PREFIXES = Object.freeze([
+  'mixamorigLeftHandThumb',
+  'mixamorigLeftHandIndex',
+  'mixamorigLeftHandMiddle',
+  'mixamorigLeftHandRing',
+  'mixamorigRightHandThumb',
+  'mixamorigRightHandIndex',
+  'mixamorigRightHandMiddle',
+  'mixamorigRightHandRing',
+]);
+
 function injuredLoop(file, { fadeIn = 0.18, timeScale = 1, movementScale = 1 } = {}) {
   return {
     url: `${INJURED_PACK}/${file}`,
@@ -34,7 +48,139 @@ function injuredPose(file, { loop = true, fadeIn = 0.18, timeScale = 1 } = {}) {
   };
 }
 
+// --- Hybrid FP/TP weapon locomotion families (Rifle 8-Way + Pistol packs) ---
+// Normalized clip dirs are produced by `npm run import:loco-packs`.
+// State keys are `${kind}_${slug}` (slug == clean filename), so the shared
+// resolver in weaponLocomotion.js builds keys directly from movement/stance.
+const RIFLE_LOCO_PACK = '/assets/animation-packs/weapon-rifle-8way';
+const PISTOL_LOCO_PACK = '/assets/animation-packs/weapon-pistol';
+const LOCO_DIRS_8 = ['fwd', 'fwd_left', 'fwd_right', 'bwd', 'bwd_left', 'bwd_right', 'left', 'right'];
+const LOCO_DIRS_6 = ['fwd', 'fwd_left', 'fwd_right', 'bwd', 'bwd_left', 'bwd_right'];
+
+// One weapon-locomotion clip. Moving clips drive locomotion root motion; still
+// clips (idle/aim/turn/jump/transition) lock the root. Fingers borrow the known
+// closed grip from armedIdle (these packs export loose fingers) like the fp_* set.
+function weaponLocoClip(pack, slug, {
+  loop = true,
+  moving = true,
+  movementScale = 1,
+  blend = 0.35,
+  fadeIn = 0.18,
+  timeScale = null,
+} = {}) {
+  const entry = {
+    url: `${pack}/${slug}.fbx`,
+    loop,
+    retarget: false,
+    useBakedClip: false,
+    rootPosition: 'locked',
+    fadeIn,
+    trackOverrideSourceState: 'armedIdle',
+    trackOverrideBonePrefixes: FP_RIFLE_GRIP_FINGER_PREFIXES,
+  };
+  if (timeScale != null) entry.timeScale = timeScale;
+  if (moving) {
+    entry.rootMotion = { horizontal: true, movementScale, blend, drive: 'locomotion' };
+  }
+  return entry;
+}
+
+function buildWeaponLocoStates(kind, pack, opts) {
+  const states = {};
+  const key = (suffix) => `${kind}_${suffix}`;
+  const still = (slug, o = {}) => weaponLocoClip(pack, slug, { moving: false, ...o });
+  const move = (slug, o = {}) => weaponLocoClip(pack, slug, { moving: true, ...o });
+
+  states[key('idle')] = still('idle', { fadeIn: 0.22 });
+  if (opts.aim) states[key('aim_idle')] = still('aim_idle', { fadeIn: 0.2 });
+  if (opts.crouch) {
+    states[key('crouch_idle')] = still('crouch_idle', { fadeIn: 0.2 });
+    if (opts.crouchAim) states[key('crouch_aim_idle')] = still('crouch_aim_idle', { fadeIn: 0.2 });
+  }
+
+  for (const tier of opts.tiers) {
+    const timeScale = tier === 'sprint' ? 1.18 : tier === 'run' ? 1.05 : 1;
+    const movementScale = tier === 'sprint' ? 1.2 : 1;
+    const blend = tier === 'walk' ? 0.4 : 0.35;
+    for (const dir of opts.dirs) {
+      states[key(`${tier}_${dir}`)] = move(`${tier}_${dir}`, { timeScale, movementScale, blend });
+    }
+  }
+  if (opts.crouchWalk) {
+    for (const dir of opts.dirs) states[key(`crouch_walk_${dir}`)] = move(`crouch_walk_${dir}`, { blend: 0.4 });
+  }
+  if (opts.strafe) {
+    states[key('strafe_left')] = move('strafe_left');
+    states[key('strafe_right')] = move('strafe_right');
+  }
+  if (opts.turn) {
+    states[key('turn_left')] = still('turn_left', { loop: false, fadeIn: 0.16 });
+    states[key('turn_right')] = still('turn_right', { loop: false, fadeIn: 0.16 });
+  }
+  if (opts.crouchTurn) {
+    states[key('crouch_turn_left')] = still('crouch_turn_left', { loop: false, fadeIn: 0.16 });
+    states[key('crouch_turn_right')] = still('crouch_turn_right', { loop: false, fadeIn: 0.16 });
+  }
+  if (opts.crouchEnterExit) {
+    states[key('crouch_enter')] = still('crouch_enter', { loop: false, fadeIn: 0.14 });
+    states[key('crouch_exit')] = still('crouch_exit', { loop: false, fadeIn: 0.14 });
+  }
+  for (const j of opts.jumps || []) states[key(j)] = still(j, { loop: j === 'jump_loop', fadeIn: 0.1 });
+  return states;
+}
+
+const RIFLE_LOCO_STATES = buildWeaponLocoStates('rifle', RIFLE_LOCO_PACK, {
+  dirs: LOCO_DIRS_8,
+  tiers: ['walk', 'run', 'sprint'],
+  aim: true,
+  crouch: true,
+  crouchAim: true,
+  crouchWalk: true,
+  turn: true,
+  crouchTurn: true,
+  jumps: ['jump_up', 'jump_loop', 'jump_down'],
+});
+
+const PISTOL_LOCO_STATES = buildWeaponLocoStates('pistol', PISTOL_LOCO_PACK, {
+  dirs: LOCO_DIRS_6,
+  tiers: ['walk', 'run'],
+  aim: false,
+  crouch: true,
+  crouchAim: false,
+  crouchWalk: false,
+  strafe: true,
+  turn: false,
+  crouchTurn: false,
+  crouchEnterExit: true,
+  jumps: ['jump', 'jump_alt'],
+});
+
+// Reload clips are NOT in the base packs — drop a Mixamo reload FBX into the
+// source dir and run `npm run import:loco-packs` (see import-locomotion-packs.mjs).
+// Played upper-body-only over locomotion legs (AnimationStateSystem reload branch),
+// so no finger-grip override — the reload's own hand motion drives the arms. Until
+// the file exists these entries lazy-fail harmlessly and the reload layer stays
+// inert (resolveReloadState gates on hasState).
+function weaponReloadClip(pack) {
+  return {
+    url: `${pack}/reload.fbx`,
+    loop: false,
+    retarget: false,
+    useBakedClip: false,
+    rootPosition: 'locked',
+    fadeIn: 0.16,
+    // The source Mixamo reload is ~3.3s; speed it toward the gun reload window
+    // (~1.5s) so it reads as a full reload before blending back to locomotion.
+    timeScale: 1.9,
+    optionalAsset: true,
+  };
+}
+
 export const MARA_ANIMATION_MANIFEST = {
+  ...RIFLE_LOCO_STATES,
+  ...PISTOL_LOCO_STATES,
+  rifle_reload: weaponReloadClip(RIFLE_LOCO_PACK),
+  pistol_reload: weaponReloadClip(PISTOL_LOCO_PACK),
   idle: {
     url: '/assets/animation-packs/locomotion-pack-2/idle.fbx',
     loop: true,
@@ -1096,6 +1242,125 @@ export const MARA_ANIMATION_MANIFEST = {
     fadeIn: 0.12,
     combat: { kind: 'sheathe' },
   },
+  // --- FP rifle locomotion (M4; from dust-and-bullets rifle pack) ---
+  fp_idle: {
+    url: '/assets/animation-packs/weapon-rifle/idle.fbx',
+    loop: true,
+    retarget: false,
+    useBakedClip: false,
+    rootPosition: 'locked',
+    fadeIn: 0.2,
+    trackOverrideSourceState: 'armedIdle',
+    trackOverrideBonePrefixes: FP_RIFLE_GRIP_FINGER_PREFIXES,
+  },
+  fp_walk: {
+    url: '/assets/animation-packs/weapon-rifle/walk.fbx',
+    loop: true,
+    retarget: false,
+    useBakedClip: false,
+    rootPosition: 'locked',
+    fadeIn: 0.18,
+    trackOverrideSourceState: 'armedIdle',
+    trackOverrideBonePrefixes: FP_RIFLE_GRIP_FINGER_PREFIXES,
+    rootMotion: {
+      horizontal: true,
+      movementScale: 1,
+      blend: 0.4,
+      drive: 'locomotion',
+    },
+  },
+  fp_run: {
+    url: '/assets/animation-packs/weapon-rifle/run.fbx',
+    loop: true,
+    retarget: false,
+    useBakedClip: false,
+    rootPosition: 'locked',
+    fadeIn: 0.16,
+    timeScale: 1.05,
+    trackOverrideSourceState: 'armedIdle',
+    trackOverrideBonePrefixes: FP_RIFLE_GRIP_FINGER_PREFIXES,
+    rootMotion: {
+      horizontal: true,
+      movementScale: 1,
+      blend: 0.35,
+      drive: 'locomotion',
+    },
+  },
+  fp_walkBackward: {
+    url: '/assets/animation-packs/weapon-rifle/walkBackward.fbx',
+    loop: true,
+    retarget: false,
+    useBakedClip: false,
+    rootPosition: 'locked',
+    fadeIn: 0.16,
+    trackOverrideSourceState: 'armedIdle',
+    trackOverrideBonePrefixes: FP_RIFLE_GRIP_FINGER_PREFIXES,
+    rootMotion: {
+      horizontal: true,
+      movementScale: 1,
+      blend: 0.4,
+      drive: 'locomotion',
+    },
+  },
+  fp_runBackward: {
+    url: '/assets/animation-packs/weapon-rifle/runBackward.fbx',
+    loop: true,
+    retarget: false,
+    useBakedClip: false,
+    rootPosition: 'locked',
+    fadeIn: 0.16,
+    trackOverrideSourceState: 'armedIdle',
+    trackOverrideBonePrefixes: FP_RIFLE_GRIP_FINGER_PREFIXES,
+    rootMotion: {
+      horizontal: true,
+      movementScale: 1,
+      blend: 0.35,
+      drive: 'locomotion',
+    },
+  },
+  fp_strafeLeft: {
+    url: '/assets/animation-packs/weapon-rifle/strafeLeft.fbx',
+    loop: true,
+    retarget: false,
+    useBakedClip: false,
+    rootPosition: 'locked',
+    fadeIn: 0.16,
+    trackOverrideSourceState: 'armedIdle',
+    trackOverrideBonePrefixes: FP_RIFLE_GRIP_FINGER_PREFIXES,
+    rootMotion: {
+      horizontal: true,
+      movementScale: 1,
+      blend: 0.35,
+      drive: 'locomotion',
+    },
+  },
+  fp_strafeRight: {
+    url: '/assets/animation-packs/weapon-rifle/strafeRight.fbx',
+    loop: true,
+    retarget: false,
+    useBakedClip: false,
+    rootPosition: 'locked',
+    fadeIn: 0.16,
+    trackOverrideSourceState: 'armedIdle',
+    trackOverrideBonePrefixes: FP_RIFLE_GRIP_FINGER_PREFIXES,
+    rootMotion: {
+      horizontal: true,
+      movementScale: 1,
+      blend: 0.35,
+      drive: 'locomotion',
+    },
+  },
+  fp_jump: {
+    url: '/assets/animation-packs/weapon-rifle/jump.fbx',
+    loop: false,
+    retarget: false,
+    useBakedClip: false,
+    rootPosition: 'locked',
+    fadeIn: 0.1,
+    trackOverrideSourceState: 'armedIdle',
+    trackOverrideBonePrefixes: FP_RIFLE_GRIP_FINGER_PREFIXES,
+  },
+
   armedIdle: {
     url: '/assets/animation-packs/great sword idle.fbx',
     loop: true,

@@ -22,7 +22,7 @@ export const PLAYER_MODEL_PROFILES = Object.freeze({
   [PLAYER_MODEL_IDS.PLAYER]: Object.freeze({
     id: PLAYER_MODEL_IDS.PLAYER,
     label: 'Player',
-    url: '/assets/models/player-tpose.glb',
+    url: '/assets/models/newplayerv3.glb',
     format: 'glb',
     skeletonSource: 'mixamo',
     // Mixamo GLB: Armature +90° with hips rest −90° cancel at rest, but clips

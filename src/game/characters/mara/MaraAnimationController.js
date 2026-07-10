@@ -5,6 +5,8 @@ const DEFAULT_FADE_SECONDS = 0.18;
 // Smoothing rate for the leg-overlay weight (attack/draw/sheathe legs blending
 // in/out over locomotion). Higher = snappier blend.
 const ATTACK_LEG_SMOOTHING = 12;
+// Cross-dissolve rate for the feet-only footwork overlay (turn-in-place).
+const FOOTWORK_BLEND_SMOOTHING = 14;
 
 const ROOT_POSITION_TRACK = 'mixamorigHips.position';
 const HANG_IK_ENABLED = true;
@@ -111,9 +113,42 @@ const LOWER_BODY_PREFIXES = [
   'mixamorigRightToe',
 ];
 
+// Leg bones ONLY (hips excluded). Used for the feet-only footwork overlay
+// (turn-in-place): the legs shuffle from the turn clip while the hips/torso/arms
+// keep the aim idle — so the aim and the neck-mounted FP camera never swing.
+const LEG_ONLY_PREFIXES = [
+  'mixamorigLeftUpLeg',
+  'mixamorigLeftLeg',
+  'mixamorigLeftFoot',
+  'mixamorigLeftToe',
+  'mixamorigRightUpLeg',
+  'mixamorigRightLeg',
+  'mixamorigRightFoot',
+  'mixamorigRightToe',
+];
+
 function boneNameOfTrack(track) {
   const dot = track.name.indexOf('.');
   return dot === -1 ? track.name : track.name.slice(0, dot);
+}
+
+// Keep only the leg tracks (keepLegs) or everything except the legs — including
+// hips — (the "body"). The two are disjoint and together cover the whole rig, so
+// a legs clip + a body clip coexist at weight 1 without fighting.
+function filterClipByLegs(source, keepLegs) {
+  const tracks = source.tracks.filter((track) => {
+    const bone = boneNameOfTrack(track);
+    const isLeg = LEG_ONLY_PREFIXES.some((prefix) => bone.startsWith(prefix));
+    return keepLegs ? isLeg : !isLeg;
+  });
+  const masked = new THREE.AnimationClip(
+    `${source.name}:${keepLegs ? 'legs' : 'body'}`,
+    source.duration,
+    tracks,
+    source.blendMode,
+  );
+  masked.userData = source.userData ?? {};
+  return masked;
 }
 
 // Return a clip that keeps only the lower- or upper-body tracks of `source`.
@@ -423,6 +458,9 @@ export class MaraAnimationController {
     this.actionSettings = new Map();
     this.lowerActions = new Map();
     this.upperActions = new Map();
+    // Legs-only / body(no-legs) masked variants for the feet-only footwork overlay.
+    this.legActions = new Map();
+    this.bodyActions = new Map();
     this.currentAction = null;
     this.currentState = 'loading';
     this.upperBodyAction = null;
@@ -433,6 +471,14 @@ export class MaraAnimationController {
     this.attackLegState = null;
     this.attackLegWeight = 0;
     this.attackLegTarget = 0;
+    // Feet-only footwork overlay (turn-in-place): a legs clip + a body clip that
+    // cross-dissolve in over the normal layer via footworkWeight.
+    this.footworkActive = false;
+    this.footworkWeight = 0;
+    this.footworkLegAction = null;
+    this.footworkLegState = null;
+    this.footworkBodyAction = null;
+    this.footworkBodyState = null;
 
     for (const [state, entry] of clips) {
       const clip = entry.clip ?? entry;
@@ -462,7 +508,24 @@ export class MaraAnimationController {
       upperAction.clampWhenFinished = !loop;
       this.lowerActions.set(state, lowerAction);
       this.upperActions.set(state, upperAction);
+
+      this._registerFootworkActions(mixer, state, clip, loopMode, loop);
     }
+  }
+
+  // Build the legs-only + body(no-legs) masked actions used by the footwork
+  // overlay. Track objects are shared, so this is cheap per state.
+  _registerFootworkActions(mixer, state, clip, loopMode, loop) {
+    const legAction = mixer.clipAction(filterClipByLegs(clip, true));
+    const bodyAction = mixer.clipAction(filterClipByLegs(clip, false));
+    legAction.enabled = true;
+    bodyAction.enabled = true;
+    legAction.setLoop(loopMode, Infinity);
+    bodyAction.setLoop(loopMode, Infinity);
+    legAction.clampWhenFinished = !loop;
+    bodyAction.clampWhenFinished = !loop;
+    this.legActions.set(state, legAction);
+    this.bodyActions.set(state, bodyAction);
   }
 
   addClips(additionalClips) {
@@ -495,6 +558,8 @@ export class MaraAnimationController {
       upperAction.clampWhenFinished = !loop;
       this.lowerActions.set(state, lowerAction);
       this.upperActions.set(state, upperAction);
+
+      this._registerFootworkActions(this.mixer, state, clip, loopMode, loop);
     }
   }
 
@@ -537,7 +602,66 @@ export class MaraAnimationController {
       }
     }
 
+    // Feet-only footwork overlay (turn-in-place): cross-dissolve the legs clip +
+    // body clip in over the normal layer. The normal layer is scaled down by the
+    // same weight, so the aim (body/hips) and FP camera stay put while the feet
+    // shuffle. See setFootwork.
+    const fwTarget = this.footworkActive ? 1 : 0;
+    this.footworkWeight += (fwTarget - this.footworkWeight) * (1 - Math.exp(-FOOTWORK_BLEND_SMOOTHING * delta));
+    if (!this.footworkActive && this.footworkWeight < 0.002) {
+      this.footworkWeight = 0;
+      if (this.footworkLegAction) { this.footworkLegAction.stop(); this.footworkLegAction = null; this.footworkLegState = null; }
+      if (this.footworkBodyAction) { this.footworkBodyAction.stop(); this.footworkBodyAction = null; this.footworkBodyState = null; }
+    }
+    if (this.footworkWeight > 0.0001) {
+      const baseScale = 1 - this.footworkWeight;
+      if (this.currentAction) this.currentAction.setEffectiveWeight(this.currentAction.getEffectiveWeight() * baseScale);
+      if (this.upperBodyAction) this.upperBodyAction.setEffectiveWeight(this.upperBodyAction.getEffectiveWeight() * baseScale);
+      if (this.attackLegAction) this.attackLegAction.setEffectiveWeight(this.attackLegAction.getEffectiveWeight() * baseScale);
+      if (this.footworkLegAction) this.footworkLegAction.setEffectiveWeight(this.footworkWeight);
+      if (this.footworkBodyAction) this.footworkBodyAction.setEffectiveWeight(this.footworkWeight);
+    }
+
     this.mixer.update(delta);
+  }
+
+  /**
+   * Feet-only footwork overlay. Plays `legsState` on the legs (shuffle) and
+   * `bodyState` on the hips/torso/arms (a steady aim idle), cross-dissolved over
+   * the normal layer. Because the legs clip carries no hips track, the aim pose
+   * and the neck-mounted FP camera never swing — only the feet reposition.
+   * @returns {boolean} false if either masked clip is missing (caller falls back)
+   */
+  setFootwork(legsState, bodyState) {
+    const legAction = this.legActions.get(legsState);
+    const bodyAction = this.bodyActions.get(bodyState);
+    if (!legAction || !bodyAction) return false;
+
+    const wasActive = this.footworkActive;
+    this.footworkActive = true;
+
+    if (this.footworkLegState !== legsState || !wasActive) {
+      if (this.footworkLegAction && this.footworkLegAction !== legAction) this.footworkLegAction.stop();
+      legAction.reset();
+      legAction.setEffectiveWeight(this.footworkWeight);
+      legAction.play();
+      this.footworkLegAction = legAction;
+      this.footworkLegState = legsState;
+    }
+    if (this.footworkBodyState !== bodyState || !wasActive) {
+      if (this.footworkBodyAction && this.footworkBodyAction !== bodyAction) this.footworkBodyAction.stop();
+      bodyAction.reset();
+      bodyAction.setEffectiveWeight(this.footworkWeight);
+      bodyAction.play();
+      this.footworkBodyAction = bodyAction;
+      this.footworkBodyState = bodyState;
+    }
+    return true;
+  }
+
+  /** Release the footwork overlay; it cross-dissolves back out in update(). */
+  clearFootwork() {
+    this.footworkActive = false;
   }
 
   setMirrorX(mirror = false) {

@@ -16,6 +16,7 @@ const mainHtml = fileURLToPath(new URL('./index.html', import.meta.url));
 const cityGiExampleHtml = fileURLToPath(new URL('./webgpu_generator_city.html', import.meta.url));
 const devToolsModule = fileURLToPath(new URL('./src/dev/devTools.jsx', import.meta.url));
 const bodyshopModule = fileURLToPath(new URL('./src/dev/BodyshopScene.jsx', import.meta.url));
+const gunsmithModule = fileURLToPath(new URL('./src/dev/GunsmithScene.jsx', import.meta.url));
 const devToolsPublicId = 'virtual:dreamfall-dev-tools';
 const devToolsResolvedId = `\0${devToolsPublicId}`;
 
@@ -33,8 +34,10 @@ function devToolsPlugin(enabled) {
     load(id) {
       if (id !== devToolsResolvedId) return null;
       if (enabled) {
+        // createDevTools + GunsmithScene both re-export from devTools.jsx so a single
+        // module update picks up new editor surfaces without a stale virtual cache.
         return `
-          export { createDevTools } from ${JSON.stringify(devToolsModule)};
+          export { createDevTools, GunsmithScene } from ${JSON.stringify(devToolsModule)};
           export { BodyshopScene } from ${JSON.stringify(bodyshopModule)};
         `;
       }
@@ -48,6 +51,7 @@ function devToolsPlugin(enabled) {
           };
         }
         export function BodyshopScene() { return null; }
+        export function GunsmithScene() { return null; }
       `;
     },
   };

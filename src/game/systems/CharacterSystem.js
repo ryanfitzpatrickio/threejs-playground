@@ -146,8 +146,8 @@ export class CharacterSystem {
 
     try {
       const sunglasses = await factory();
-      sunglasses.group.position.set(0, 12, 9);
-      sunglasses.group.rotation.set(0, 0, 0);
+      sunglasses.group.position.set(-0.4, 10.2, 6.2);
+      sunglasses.group.rotation.set(THREE.MathUtils.degToRad(10.5), 0, 0);
       head.add(sunglasses.group);
 
       head.updateWorldMatrix(true, false);
@@ -156,6 +156,7 @@ export class CharacterSystem {
       if (Number.isFinite(inherited) && inherited > 1e-6) {
         sunglasses.group.scale.setScalar(1 / inherited);
       }
+      sunglasses.group.userData.socketBaseScale = sunglasses.group.scale.x;
 
       character.sunglasses = sunglasses;
     } catch (error) {

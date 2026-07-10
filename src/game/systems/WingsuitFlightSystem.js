@@ -3,9 +3,10 @@ import { GAME_CONFIG } from '../config/gameConfig.js';
 
 // Wingsuit flight mode — Part B.
 //
-// Activates on Q press or double-tap of Space while airborne (input.wingsuitTogglePressed).
-// Takes over movement like the other traversal systems (MovementSystem returns its
-// locked object when character.wingsuit.active, and this replaces the movement result).
+// Activates via the equipped wingsuit ability: F (or double-tap Space) while
+// airborne sets input.wingsuitTogglePressed (AbilitySystem). Takes over movement
+// like the other traversal systems (MovementSystem returns its locked object when
+// character.wingsuit.active, and this replaces the movement result).
 //
 // Arcade wingsuit model: a forward direction defined by heading (yaw) + pitch, and a
 // scalar airspeed. Gravity along the forward axis turns dives into speed; quadratic

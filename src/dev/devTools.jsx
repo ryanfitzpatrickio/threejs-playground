@@ -6,6 +6,10 @@ import { WorldMapControls } from '../ui/components/WorldMapControls.jsx';
 import { WorldMapPreview } from '../ui/components/WorldMapPreview.jsx';
 import { flushFileStore, setMapBuilderAutosave } from '../store/fileStore.js';
 
+// Re-export so App can take Gunsmith from the same virtual:dreamfall-dev-tools surface
+// as createDevTools (Bodyshop stays a separate chunk via vite.config.js).
+export { GunsmithScene } from './GunsmithScene.jsx';
+
 export function createDevTools({ viewMode, switchTo, onPlayScene }) {
   const [builderSnapshot, setBuilderSnapshot] = createSignal(null);
   const [builderInstance, setBuilderInstance] = createSignal(null);
@@ -70,6 +74,13 @@ export function createDevTools({ viewMode, switchTo, onPlayScene }) {
         title="Map — draw world zones & POIs (2D World-Map Editor)"
       >
         Map
+      </button>
+      <button
+        class={`mode-btn ${viewMode() === 'gunsmith' ? 'active' : ''}`}
+        onClick={() => switchTo('gunsmith')}
+        title="Gunsmith — annotate gun models (parts, anchors, materials)"
+      >
+        Guns
       </button>
     </>
   );

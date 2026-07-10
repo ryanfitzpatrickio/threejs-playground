@@ -2,6 +2,10 @@ import * as THREE from 'three';
 import { GAME_CONFIG } from '../config/gameConfig.js';
 import { getRecommendedCameraFar } from '../config/qualityPresets.js';
 import { CITY_FURNITURE_LAYER } from '../render/renderLayers.js';
+import {
+  applyFirstPersonBodyYaw,
+  isFirstPersonForwardIntent,
+} from '../characters/player/firstPersonRig.js';
 
 const desiredPosition = new THREE.Vector3();
 const lookTarget = new THREE.Vector3();
@@ -111,6 +115,10 @@ export class CameraSystem {
     this.photoMode = false;
     this.interiorFirstPerson = false;
     this.onFootFirstPerson = false;
+    /** 0..1 ADS blend driven by WeaponSystem (M5). */
+    this.weaponAdsBlend = 0;
+    /** Target FOV while fully ADS, or null to use hip FOV. */
+    this.weaponAdsFov = null;
     this.comfortEnabled = true;
     this.cameraFeel = 'comfort';
     this.modeBlend = null;
@@ -293,13 +301,38 @@ export class CameraSystem {
 
     const config = GAME_CONFIG.camera;
     const hookSwing = character?.hookSwing;
+    const onFootFp = this.usesOnFootFirstPerson();
+    // Publish the look yaw so MovementSystem can aim-face the body next frame when
+    // a gun is out and aiming (third-person ADS strafe; first person owns yaw itself).
+    if (character) character.aimYaw = this.yaw;
     this.updateOrbitInput({
-      input, config, hookSwing, allowZoom: !this.usesOnFootFirstPerson(), invertPitch: this.usesOnFootFirstPerson(),
+      input,
+      config,
+      hookSwing,
+      allowZoom: !onFootFp,
+      invertPitch: onFootFp,
+      minPitch: onFootFp ? (config.onFootFirstPersonMinPitch ?? config.minPitch) : config.minPitch,
+      maxPitch: onFootFp ? (config.onFootFirstPersonMaxPitch ?? config.maxPitch) : config.maxPitch,
     });
 
     if (this.usesOnFootFirstPerson()) {
-      this._setCharacterHiddenForFirstPerson(character, true);
-      this.updateOnFootFirstPerson({ delta, target, config });
+      // On-foot FP keeps the body visible (head hide is owned by FirstPersonWeaponSystem).
+      // Only hide the whole character for vehicle cockpit FP.
+      this._setCharacterHiddenForFirstPerson(character, false);
+      if (character?.group) character.group.visible = true;
+      // Turn body before sampling the neck so the eye point stays on the skeleton
+      // when look yaw exceeds the neck range (avoids peering into chest/shoulders).
+      // Forward movement straightens any stand-still neck offset onto look yaw.
+      if (character?.group && !character?.vehicle) {
+        applyFirstPersonBodyYaw(character.group, this.yaw, {
+          maxNeckYaw: config.onFootFirstPersonMaxNeckYaw ?? 0.72,
+          straighten: isFirstPersonForwardIntent(input, character),
+          delta,
+          straightenSmoothing: config.onFootFirstPersonStraightenSmoothing ?? 16,
+        });
+        character.fpBodyYawLocked = true;
+      }
+      this.updateOnFootFirstPerson({ delta, target, config, character });
       return;
     }
 
@@ -335,29 +368,91 @@ export class CameraSystem {
 
     this.updateFov({
       delta,
-      targetFov: config.vehicle.defaultFov,
+      targetFov: config.thirdPersonFov ?? config.vehicle?.defaultFov ?? 48,
       smoothing: 10,
     });
   }
 
-  updateOnFootFirstPerson({ delta, target, config }) {
+  updateOnFootFirstPerson({ delta, target, config, character = null }) {
+    // Never follow the neck bone in on-foot FP: with the head scaled away and any
+    // spine motion, neck sampling pulls the camera into the chest cavity (see
+    // defect recordings 2026-07-09). Always use character origin + fixed eye height.
     const eyeHeight = config.onFootEyeHeight ?? 1.62;
-    const eyeForward = config.onFootEyeForward ?? 0.06;
+    const eyeForward = config.onFootEyeForward ?? 0.08;
     const smooth = config.onFootFirstPersonSmoothing ?? 28;
+    const eyePush = config.onFootFirstPersonEyePush ?? 0.2;
+    const eyeLift = config.onFootFirstPersonEyeLift ?? 0.04;
+
+    const lookDown = Math.max(0, -this.pitch);
+    const lookDownT = Math.min(1, lookDown / 0.9);
+    const lookDownPush = (config.onFootFirstPersonEyePushLookDown ?? 0.9) * lookDownT;
+    const horizontalPush = eyeForward + (eyePush + lookDownPush) * Math.max(0.35, Math.cos(this.pitch));
+    const lookDownLift = (config.onFootFirstPersonEyeLiftLookDown ?? 0.08) * lookDownT;
+    // Pivot the eye vertically around the neck rather than pushing it along the
+    // view ray. This preserves the weapon's lower-right framing when looking
+    // down and gives the same natural counter-shift when looking up.
+    const pitchHinge = -Math.sin(this.pitch) * (config.onFootFirstPersonPitchHingeHeight ?? 0.1);
+
+    // Keep the eye at head height and push horizontally beyond the chest as the
+    // view pitches down. Moving along the full look vector lowered the camera
+    // into the jacket—the exact failure this offset is intended to prevent.
+    const fwdX = -Math.sin(this.yaw);
+    const fwdZ = -Math.cos(this.yaw);
+
+    // A position spring necessarily trails a moving target. That is harmless in
+    // an orbit camera, but in first person the lag places the eye behind the
+    // headless neck when running. Predict just the velocity travelling into the
+    // view direction, so forward run/sprint stays eye-level without pushing the
+    // camera forward while backpedalling or strafing.
+    const velocity = character?.velocity;
+    const forwardSpeed = velocity
+      ? Math.max(0, velocity.x * fwdX + velocity.z * fwdZ)
+      : 0;
+    const motionLead = Math.min(
+      config.onFootFirstPersonMotionLeadMax ?? 0.32,
+      (forwardSpeed / Math.max(smooth, 0.001))
+        * (config.onFootFirstPersonMotionLeadScale ?? 1.15),
+    );
+    const framingPushSpeed = Math.max(
+      config.onFootFirstPersonMotionFramingSpeed ?? GAME_CONFIG.character.jogSpeed ?? 4.1,
+      0.001,
+    );
+    const motionFramingPush = (config.onFootFirstPersonMotionFramingPush ?? 0.07)
+      * THREE.MathUtils.clamp(forwardSpeed / framingPushSpeed, 0, 1);
 
     desiredPosition.set(
-      target.x + Math.sin(this.yaw) * eyeForward,
-      target.y + eyeHeight,
-      target.z + Math.cos(this.yaw) * eyeForward,
+      target.x + fwdX * (horizontalPush + motionLead + motionFramingPush),
+      target.y + eyeHeight + eyeLift + lookDownLift + pitchHinge,
+      target.z + fwdZ * (horizontalPush + motionLead + motionFramingPush),
     );
+
+    // Floor: keep eyes above mid-chest even when looking straight down.
+    const minY = target.y + eyeHeight * 0.72;
+    if (desiredPosition.y < minY) desiredPosition.y = minY;
+
     this.camera.position.lerp(desiredPosition, 1 - Math.exp(-smooth * delta));
     this.camera.rotation.set(this.pitch, this.yaw, 0, 'YXZ');
 
+    // Weapon ADS (M5): blend hip FOV → per-gun adsFov while aiming.
+    const hipFov = config.onFootFirstPersonFov ?? 74;
+    const ads = THREE.MathUtils.clamp(this.weaponAdsBlend ?? 0, 0, 1);
+    const adsFov = Number.isFinite(this.weaponAdsFov) ? this.weaponAdsFov : hipFov;
+    const targetFov = THREE.MathUtils.lerp(hipFov, adsFov, ads);
     this.updateFov({
       delta,
-      targetFov: config.onFootFirstPersonFov ?? 74,
-      smoothing: 10,
+      targetFov,
+      smoothing: ads > 0.01 ? 14 : 10,
     });
+  }
+
+  /**
+   * WeaponSystem ADS blend (0..1) + target FOV while aimed.
+   * @param {number} blend
+   * @param {number|null} adsFov
+   */
+  setWeaponAds(blend = 0, adsFov = null) {
+    this.weaponAdsBlend = THREE.MathUtils.clamp(Number(blend) || 0, 0, 1);
+    this.weaponAdsFov = Number.isFinite(Number(adsFov)) ? Number(adsFov) : null;
   }
 
   updateVehicleCamera({ delta, vehicle, viewport, character, input }) {
@@ -680,7 +775,15 @@ export class CameraSystem {
     }
   }
 
-  updateOrbitInput({ input, config, hookSwing = null, allowZoom = true, invertPitch = false }) {
+  updateOrbitInput({
+    input,
+    config,
+    hookSwing = null,
+    allowZoom = true,
+    invertPitch = false,
+    minPitch = config.minPitch,
+    maxPitch = config.maxPitch,
+  }) {
     if (!input) {
       return;
     }
@@ -690,8 +793,8 @@ export class CameraSystem {
     const pitchDelta = input.lookY * config.lookSensitivity * lookScale;
     this.pitch = THREE.MathUtils.clamp(
       this.pitch + (invertPitch ? -pitchDelta : pitchDelta),
-      config.minPitch,
-      config.maxPitch,
+      minPitch,
+      maxPitch,
     );
 
     if (allowZoom && input.zoomDelta) {

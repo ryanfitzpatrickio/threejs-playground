@@ -48,6 +48,12 @@ export function buildPostPipelinePlan({
           // CPU-side scene re-render) every Nth frame, reusing the AO texture
           // on the frames between.
           updateInterval: Math.max(1, Math.round(ssaoPreset.updateInterval ?? 1)),
+          // Most scenes refresh immediately after meaningful camera motion to
+          // avoid ghosting. Compact scenes may explicitly keep the half-rate
+          // cadence: at 60 Hz the reused screen-space result is one frame old.
+          ...(ssaoPreset.updateOnCameraMotion === false
+            ? { updateOnCameraMotion: false }
+            : {}),
         }
       : null,
     bloom: environmentPreset.bloom === true

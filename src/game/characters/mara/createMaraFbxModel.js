@@ -263,7 +263,17 @@ async function loadAnimationClipsPartial({
   const CORE_STATES = new Set([
     'idle', 'jog', 'sprint', 'runningSlide',
     'mudIdle', 'mudWalk', 'mudRun', 'mudStandingJump', 'mudRunJump',
-    'armedIdle', 'armedJog', 'armedSprint',
+    'armedIdle', 'armedJog', 'armedSprint', 'armedWalk',
+    // FP rifle locomotion must be available before first equip (not lazy rest-load).
+    'fp_idle', 'fp_walk', 'fp_run', 'fp_walkBackward', 'fp_runBackward',
+    'fp_strafeLeft', 'fp_strafeRight', 'fp_jump',
+    // Hybrid weapon locomotion: a responsive core so equipping a gun isn't
+    // unarmed for a beat. The rest of the 8-way/crouch/turn set lazy-loads and
+    // the weapon systems fall back per-state (hasState) until it streams in.
+    'rifle_idle', 'rifle_aim_idle', 'rifle_crouch_idle',
+    'rifle_run_fwd', 'rifle_run_bwd', 'rifle_run_left', 'rifle_run_right', 'rifle_walk_fwd',
+    'rifle_turn_left', 'rifle_turn_right',
+    'pistol_idle', 'pistol_run_fwd', 'pistol_run_bwd',
     'drawSword', 'sheatheSword',
     'lightSlash1', 'lightSlash2', 'lightSlash3', 'heavyAttack',
     'aimCutVertical', 'aimCutHorizontal',
@@ -298,6 +308,7 @@ async function loadAnimationClipsPartial({
       }
 
       const source = await loader.loadAsync(assetUrl(entry.url));
+      normalizeMixamoAnimationSource(source, targetNames);
       const clip = source.animations[0];
 
       if (!clip) {
@@ -335,6 +346,7 @@ async function loadAnimationClipsPartial({
     const restClips = new Map();
     await Promise.all(
       restEntries.map(async ([state, entry]) => {
+        try {
         const retargetedClip = await loadRetargetedClip({ entry, state });
 
         if (retargetedClip) {
@@ -352,6 +364,7 @@ async function loadAnimationClipsPartial({
         }
 
         const source = await loader.loadAsync(assetUrl(entry.url));
+        normalizeMixamoAnimationSource(source, targetNames);
         const clip = source.animations[0];
         if (!clip) return;
 
@@ -379,6 +392,12 @@ async function loadAnimationClipsPartial({
           reversed: entry.reversed === true,
           transitions: entry.transitions,
         });
+        } catch (err) {
+          // A lazy clip failing (e.g. an optional asset not yet dropped in, like a
+          // reload) must not sink the whole rest-load batch. Skip it; systems that
+          // depend on it already gate on hasState().
+          console.warn(`[mara] skipped animation "${state}" (${entry.url}):`, err?.message ?? err);
+        }
       }),
     );
     applyClipTrackOverrides({ clips: restClips, manifest: Object.fromEntries(restEntries) });
@@ -516,6 +535,39 @@ export function collectTargetNames(object) {
   });
 
   return names;
+}
+
+/**
+ * Some Mixamo downloads add a numeric discriminator to the rig prefix
+ * (`mixamorig6Hips`, `mixamorig6RightArm`, ...). Three binds animation tracks
+ * by exact object name, so those clips otherwise survive loading as registered
+ * states with zero usable tracks. Rename only when the canonical name exists on
+ * the current target skeleton; unrelated scene nodes are left untouched.
+ */
+export function normalizeMixamoAnimationSource(source, targetNames) {
+  if (!source || !targetNames?.size) return source;
+
+  const canonicalName = (name) => name?.replace(/^mixamorig\d+(?=[A-Z])/, 'mixamorig');
+
+  source.traverse?.((child) => {
+    const canonical = canonicalName(child.name);
+    if (canonical !== child.name && targetNames.has(canonical)) {
+      child.name = canonical;
+    }
+  });
+
+  for (const clip of source.animations ?? []) {
+    for (const track of clip.tracks ?? []) {
+      const dot = track.name.indexOf('.');
+      const nodeName = dot >= 0 ? track.name.slice(0, dot) : track.name;
+      const canonical = canonicalName(nodeName);
+      if (canonical !== nodeName && targetNames.has(canonical)) {
+        track.name = `${canonical}${dot >= 0 ? track.name.slice(dot) : ''}`;
+      }
+    }
+  }
+
+  return source;
 }
 
 export function normalizeCharacterObject(object) {

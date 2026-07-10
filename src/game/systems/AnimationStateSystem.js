@@ -1,4 +1,13 @@
 import { GAME_CONFIG } from '../config/gameConfig.js';
+import { normalizeWeaponLocoKind, resolveWeaponLocomotionState } from '../characters/player/weaponLocomotion.js';
+import {
+  applyLeanRoll,
+  movementToLocomotionAxes,
+  resolveSpineAimBones,
+} from '../characters/player/firstPersonRig.js';
+
+// Cover-peek lean smoothing (rad/s-ish exponential rate) for the weapon stance.
+const LEAN_SMOOTHING = 11;
 
 const SWING_LAND_STATES = ['swingLand', 'swingLand1', 'swingLand2', 'swingLand3'];
 
@@ -27,6 +36,9 @@ export class AnimationStateSystem {
     this.landingState = 'land';
     this.jumpBigTimer = 0;
     this.landRollTimer = 0;
+    this.leanAmount = 0;
+    this._leanSpineRoot = null;
+    this._leanSpineBones = null;
   }
 
   start({ character }) {
@@ -111,7 +123,39 @@ export class AnimationStateSystem {
 
       let groundingState = this.state;
 
-      if (flinchLayered && !dodgeActive) {
+      // Feet-only turn-in-place: drive the turn clip on the legs only while the
+      // aim idle holds the hips/torso/arms, so the rifle stays aimed and the
+      // FP camera keeps tracking the mouse — only the feet shuffle around.
+      const gunTurn = Boolean(combat?.weaponClass)
+        && typeof this.state === 'string'
+        && this.state.includes('_turn_')
+        && !movement.airborne
+        && !movement.sliding;
+      let footworkApplied = false;
+      if (gunTurn && character.animationController.setFootwork) {
+        const bodyState = this.resolveAimIdleState(character);
+        footworkApplied = character.animationController.setFootwork(this.state, bodyState);
+        if (footworkApplied) groundingState = bodyState;
+      }
+
+      // Reload: legs keep locomotion (lower), the upper body plays the reload.
+      // Inert until a `${kind}_reload` clip is present (resolveReloadState → null).
+      const reloadUpper = combat?.reloading && !movement.airborne && !movement.sliding && !movement.hanging
+        ? this.resolveReloadState(character)
+        : null;
+
+      if (footworkApplied) {
+        // Footwork owns the pose; the normal layer dims out via footworkWeight.
+      } else if (reloadUpper) {
+        character.animationController.clearFootwork?.();
+        character.animationController.setLayered(true);
+        // Lower body keeps the resolved gun locomotion (idle/walk/run legs).
+        character.animationController.play(this.playbackState);
+        character.animationController.setUpperBodyState(reloadUpper);
+        character.animationController.setAttackLegs(null, 0);
+        groundingState = this.playbackState;
+      } else if (flinchLayered && !dodgeActive) {
+        character.animationController.clearFootwork?.();
         character.animationController.setLayered(true);
         const lowerState = surfacePlaybackState(resolveLocomotionLower(input, movement));
         character.animationController.play(lowerState);
@@ -119,6 +163,7 @@ export class AnimationStateSystem {
         character.animationController.setAttackLegs(null, 0);
         groundingState = lowerState;
       } else if (armed && !movement.sliding && !dodgeActive && !hitReactionActive) {
+        character.animationController.clearFootwork?.();
         // Layered rig for armed locomotion/attacks (but NOT during slide).
         // The locomotion base drives the legs and stays crossfaded
         // (so idle<->jog stays smooth). The override clip's lower half is layered
@@ -135,6 +180,7 @@ export class AnimationStateSystem {
       } else {
         // Unarmed or sliding: play full body clip (slide gets its own root motion).
         // Disable upper/lower separation during slide so root motion works properly.
+        character.animationController.clearFootwork?.();
         character.animationController.setLayered(false);
         character.animationController.setUpperBodyState(null);
         character.animationController.setAttackLegs(null, 0);
@@ -168,6 +214,8 @@ export class AnimationStateSystem {
         character.animationController.applyArmedSpineStabilizer?.();
       }
 
+      this.applyWeaponLean({ delta, input, character });
+
       return;
     }
 
@@ -196,6 +244,55 @@ export class AnimationStateSystem {
       jumpBigTimer: this.jumpBigTimer,
       landRollTimer: this.landRollTimer,
     };
+  }
+
+  // Upper-body reload clip for the equipped gun kind (crouch variant preferred
+  // when crouched). Returns null if no reload clip is available.
+  resolveReloadState(character) {
+    const kind = normalizeWeaponLocoKind(character.combat?.weaponClass);
+    if (!kind) return null;
+    const ctrl = character.animationController;
+    const crouch = character.combat?.stance === 'crouch';
+    const candidates = crouch ? [`${kind}_crouch_reload`, `${kind}_reload`] : [`${kind}_reload`];
+    for (const c of candidates) {
+      if (ctrl?.hasState?.(c)) return c;
+    }
+    return null;
+  }
+
+  // Aim/ready idle used as the steady upper body during a feet-only turn. Only
+  // rifles ship turn clips, so this resolves the rifle family (with fallbacks).
+  resolveAimIdleState(character) {
+    const ctrl = character.animationController;
+    const crouch = character.combat?.stance === 'crouch';
+    const aiming = Boolean(character.combat?.aiming);
+    const candidates = crouch
+      ? [aiming ? 'rifle_crouch_aim_idle' : null, 'rifle_crouch_idle', 'rifle_aim_idle', 'rifle_idle']
+      : [aiming ? 'rifle_aim_idle' : null, 'rifle_idle'];
+    for (const c of candidates) {
+      if (c && ctrl?.hasState?.(c)) return c;
+    }
+    return 'rifle_idle';
+  }
+
+  // Procedural cover-peek lean (Q/E while a gun is out) applied as an additive
+  // spine roll after the mixer write. Shared by first and third person; the packs
+  // have no lean mocap. Rolls the camera-carrying neck for a real peek in FP.
+  applyWeaponLean({ delta, input, character }) {
+    const modelRoot = character.animationController?.modelRoot;
+    if (!modelRoot) return;
+    if (this._leanSpineRoot !== modelRoot) {
+      this._leanSpineRoot = modelRoot;
+      this._leanSpineBones = resolveSpineAimBones(modelRoot);
+    }
+    const armed = Boolean(character.combat?.weaponClass);
+    const target = armed
+      ? (input?.leanRightHeld ? 1 : 0) - (input?.leanLeftHeld ? 1 : 0)
+      : 0;
+    this.leanAmount += (target - this.leanAmount) * (1 - Math.exp(-LEAN_SMOOTHING * delta));
+    if (Math.abs(this.leanAmount) > 0.001) {
+      applyLeanRoll(this._leanSpineBones, this.leanAmount);
+    }
   }
 
   resolveAnimationState({ input, movement, character, delta }) {
@@ -439,6 +536,37 @@ export class AnimationStateSystem {
       }
 
       return this.jumpStartedMoving ? 'jumpMoving' : 'jump';
+    }
+
+    // Gun-armed grounded locomotion (shared FP/TP resolver). Fires in third
+    // person when a gun is equipped (combat.weaponClass set); first person sets
+    // combat.animationOverride which already short-circuits above. Melee (great
+    // sword) uses combat.armed + mapArmedState and never sets weaponClass, so it
+    // is unaffected. Falls through to the unarmed states if the clip is not
+    // loaded yet (rich pack streams in after the core subset).
+    const gunKind = character?.combat?.weaponClass;
+    if (gunKind) {
+      const aiming = Boolean(character.combat?.aiming);
+      // Aim-facing (ADS): body faces the camera, so camera-relative axes select the
+      // true 8-way strafe. Hip-carry: MovementSystem turns the body to face travel,
+      // so locomotion is always forward (feeding raw axes here would moonwalk).
+      const axes = aiming
+        ? movementToLocomotionAxes(movement, input)
+        : { forward: movement.wantsMove || movement.speed > 0.4 ? 1 : 0, strafe: 0 };
+      const resolved = resolveWeaponLocomotionState({
+        weaponKind: gunKind,
+        stance: character.combat?.stance === 'crouch' ? 'crouch' : 'stand',
+        aiming,
+        forward: axes.forward,
+        strafe: axes.strafe,
+        sprinting: Boolean(movement.sprinting),
+        grounded: true,
+        turning: character.combat?.turning ?? null,
+      });
+      if (resolved && character.animationController?.hasState?.(resolved.state)) {
+        character.airborneAnimationOverride = null;
+        return resolved.state;
+      }
     }
 
     if (movement.sprinting) {

@@ -1,0 +1,986 @@
+/**
+ * WeaponSystem (M5–M7) — loadout + perf-conscious fire path.
+ *
+ * Owns the unified weapon list (great sword first, then guns). Scroll cycles the
+ * equipped entry; Z holsters / draws it. Fire path only runs when a gun is drawn
+ * in first person.
+ *
+ * Hitscan prefers cheap enemy capsules; world Rapier rays are optional (expensive
+ * against city heightfields). No PointLight flash, no per-shot layout force,
+ * audio is throttled / pooled.
+ */
+
+import * as THREE from 'three';
+import { getGunSound } from '../weapons/gunSoundLibrary.js';
+import {
+  buildPelletDirections,
+  resolvePelletHit,
+} from '../weapons/weaponHitscan.js';
+import {
+  DEFAULT_WEAPON_ID,
+  WEAPON_CATALOG,
+  findWeapon,
+  isGunWeaponId,
+  isSwordWeaponId,
+  weaponIndex,
+} from '../weapons/weaponCatalog.js';
+
+const TRACER_POOL = 12;
+const TRACER_LIFE = 0.055;
+const SHELL_POOL = 8;
+const SHELL_LIFE = 0.7;
+const RECOIL_RECOVER = 9;
+const GUN_KICK_RECOVER = 16;
+const INSPECT_BLEND_SPEED = 8;
+/** World physics ray is costly on streamed city colliders — off by default. */
+const USE_WORLD_RAY = false;
+const AUDIO_MIN_INTERVAL_MS = 45;
+
+const _muzzle = new THREE.Vector3();
+const _origin = new THREE.Vector3();
+const _fwd = new THREE.Vector3();
+const _right = new THREE.Vector3();
+const _up = new THREE.Vector3(0, 1, 0);
+const _hitPoint = new THREE.Vector3();
+
+export class WeaponSystem {
+  constructor() {
+    this.scene = null;
+    this.enabled = true;
+    this.lastShots = [];
+    this.totalShots = 0;
+    this.totalHits = 0;
+    this.totalKills = 0;
+    this.recoilPitch = 0;
+    this.recoilYaw = 0;
+    this.gunKick = 0;
+    this.inspectBlend = 0;
+    /** Equipped loadout id (sword first by default). */
+    this.equippedId = DEFAULT_WEAPON_ID;
+    this.switchIndex = weaponIndex(this.equippedId);
+    /** When true, equipped weapon is put away (Z toggles). Sword starts drawn. */
+    this.holstered = false;
+    this._tracers = [];
+    this._tracerMat = null;
+    this._shells = [];
+    this._shellGeo = null;
+    this._shellMat = null;
+    this._audioCtx = null;
+    this._shotGain = null;
+    this._sampleGain = null;
+    this._sampleCompressor = null;
+    this._audioBuffers = new Map();
+    this._audioLoads = new Map();
+    this._audioVoices = new Map();
+    this._audioGeneration = 0;
+    this._preloadedGun = null;
+    this._lastAudioMs = 0;
+    this._lastDryClick = 0;
+    this._reloadAnimTimer = 0;
+    this._pendingRagdolls = [];
+    this._fwdScratch = { x: 0, y: 0, z: -1 };
+    this._originScratch = { x: 0, y: 0, z: 0 };
+  }
+
+  initialize(scene) {
+    this.scene = scene ?? null;
+    if (!scene) return;
+
+    this._tracerMat = new THREE.LineBasicMaterial({
+      color: 0xffe0a0,
+      transparent: true,
+      opacity: 0.75,
+      depthWrite: false,
+    });
+    for (let i = 0; i < TRACER_POOL; i += 1) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+      const line = new THREE.Line(geo, this._tracerMat);
+      line.visible = false;
+      line.frustumCulled = false;
+      line.renderOrder = 40;
+      // Skip bounds recompute — short-lived FX
+      line.matrixAutoUpdate = false;
+      scene.add(line);
+      this._tracers.push({
+        line,
+        life: 0,
+        pos: geo.attributes.position,
+        originAnchor: null,
+      });
+    }
+
+    // Cheap unlit shells (no lighting cost)
+    this._shellGeo = new THREE.CylinderGeometry(0.005, 0.005, 0.022, 4);
+    this._shellMat = new THREE.MeshBasicMaterial({ color: 0xc9a227 });
+    for (let i = 0; i < SHELL_POOL; i += 1) {
+      const mesh = new THREE.Mesh(this._shellGeo, this._shellMat);
+      mesh.visible = false;
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+      mesh.frustumCulled = true;
+      scene.add(mesh);
+      this._shells.push({ mesh, life: 0, vx: 0, vy: 0, vz: 0 });
+    }
+  }
+
+  isSwordEquipped() {
+    return isSwordWeaponId(this.equippedId);
+  }
+
+  isGunEquipped() {
+    return isGunWeaponId(this.equippedId);
+  }
+
+  /** Drawn = equipped and not holstered. */
+  isDrawn() {
+    return !this.holstered;
+  }
+
+  isGunDrawn() {
+    return this.isGunEquipped() && this.isDrawn();
+  }
+
+  isSwordDrawn() {
+    return this.isSwordEquipped() && this.isDrawn();
+  }
+
+  getEquippedEntry() {
+    return findWeapon(this.equippedId);
+  }
+
+  /**
+   * Select a catalog weapon by id. Does not force draw — call applyLoadoutVisuals
+   * (or processLoadout) after if the character should match the new selection.
+   * @param {string} weaponId
+   * @returns {string} equipped id
+   */
+  equip(weaponId) {
+    const entry = findWeapon(weaponId);
+    if (!entry) return this.equippedId;
+    this.equippedId = entry.id;
+    this.switchIndex = weaponIndex(entry.id);
+    return this.equippedId;
+  }
+
+  /**
+   * Cycle loadout by scroll direction (+1 / -1).
+   * @param {number} dir
+   * @returns {string}
+   */
+  cycle(dir = 1) {
+    if (WEAPON_CATALOG.length === 0) return this.equippedId;
+    const step = dir > 0 ? 1 : -1;
+    this.switchIndex = (this.switchIndex + step + WEAPON_CATALOG.length) % WEAPON_CATALOG.length;
+    this.equippedId = WEAPON_CATALOG[this.switchIndex]?.id ?? DEFAULT_WEAPON_ID;
+    return this.equippedId;
+  }
+
+  /**
+   * Early-frame loadout: Z holster/draw, scroll cycle. Call before combat/FP
+   * consume the frame so sword and gun stance stay in sync.
+   *
+   * @returns {object} patched input (drawSheathe consumed when handled)
+   */
+  processLoadout({
+    input,
+    character,
+    combatSystem = null,
+    firstPersonWeaponSystem = null,
+  } = {}) {
+    if (!input) return input;
+
+    let nextInput = input;
+    const combat = character?.combat;
+    const busy = Boolean(
+      combat?.attack
+      || combat?.weapon === 'drawing'
+      || combat?.weapon === 'sheathing',
+    );
+    const reloading = Boolean(firstPersonWeaponSystem?.gunView?.gun?.isReloading);
+
+    // Scroll cycles the full weapon list (sword + guns) when free.
+    const zoom = Number(input.zoomDelta) || 0;
+    if (zoom !== 0 && !busy && !reloading) {
+      const prevId = this.equippedId;
+      this.cycle(zoom > 0 ? 1 : -1);
+      if (this.equippedId !== prevId) {
+        this._onEquippedChanged({ character, combatSystem, firstPersonWeaponSystem });
+        // Stay drawn/holstered as before; snap the new weapon into that state.
+        this._applyDrawnState({
+          character,
+          combatSystem,
+          firstPersonWeaponSystem,
+          animated: false,
+        });
+      }
+      // Consume zoom so abilities / camera do not also react this frame.
+      nextInput = { ...nextInput, zoomDelta: 0 };
+    }
+
+    // Z: holster put-away / draw the equipped weapon (sword first by default).
+    if (input.drawSheathePressed && !busy && canToggleHolster(character)) {
+      this.holstered = !this.holstered;
+      this._applyDrawnState({ character, combatSystem, firstPersonWeaponSystem, animated: true });
+      nextInput = {
+        ...nextInput,
+        drawSheathePressed: false,
+        // Don't also treat this edge as a held inspect.
+        inspectHeld: false,
+      };
+    }
+
+    // Keep gun mesh / sword visibility coherent every frame.
+    this._syncVisuals({ character, firstPersonWeaponSystem });
+
+    return nextInput;
+  }
+
+  /**
+   * Force a specific weapon out (e.g. shooting range).
+   * @param {string} weaponId
+   */
+  equipAndDraw(weaponId, { character, combatSystem, firstPersonWeaponSystem } = {}) {
+    this.equip(weaponId);
+    this.holstered = false;
+    this._onEquippedChanged({ character, combatSystem, firstPersonWeaponSystem });
+    this._applyDrawnState({ character, combatSystem, firstPersonWeaponSystem, animated: false });
+  }
+
+  _onEquippedChanged({ character, combatSystem, firstPersonWeaponSystem }) {
+    if (this.isSwordEquipped()) {
+      // Hide any gun; sword visibility follows holstered state.
+      firstPersonWeaponSystem?.setHolstered?.(true);
+    } else if (this.isGunEquipped()) {
+      // Sheathe sword quietly when switching to a firearm.
+      combatSystem?.forceSheathe?.({ character, silent: true });
+      if (!this.holstered) {
+        void firstPersonWeaponSystem?.equipGun?.(this.equippedId);
+        firstPersonWeaponSystem?.setHolstered?.(false);
+      } else {
+        firstPersonWeaponSystem?.setHolstered?.(true);
+      }
+    }
+  }
+
+  _applyDrawnState({ character, combatSystem, firstPersonWeaponSystem, animated = true }) {
+    if (this.holstered) {
+      // Put away.
+      if (this.isSwordEquipped()) {
+        if (animated) {
+          combatSystem?.requestSheathe?.({ character });
+        } else {
+          combatSystem?.forceSheathe?.({ character, silent: true });
+        }
+      }
+      firstPersonWeaponSystem?.setHolstered?.(true);
+      return;
+    }
+
+    // Draw equipped.
+    if (this.isSwordEquipped()) {
+      firstPersonWeaponSystem?.setHolstered?.(true);
+      if (animated) {
+        combatSystem?.requestDraw?.({ character });
+      } else {
+        combatSystem?.forceDraw?.({ character, silent: true });
+      }
+      return;
+    }
+
+    if (this.isGunEquipped()) {
+      combatSystem?.forceSheathe?.({ character, silent: true });
+      void firstPersonWeaponSystem?.equipGun?.(this.equippedId);
+      firstPersonWeaponSystem?.setHolstered?.(false);
+    }
+  }
+
+  _syncVisuals({ character, firstPersonWeaponSystem }) {
+    const entry = this.getEquippedEntry();
+    if (character?.combat) {
+      character.combat.equippedWeaponId = this.equippedId;
+      character.combat.weaponHolstered = this.holstered;
+      character.combat.equippedWeaponKind = entry?.kind ?? null;
+    }
+
+    if (this.isGunDrawn()) {
+      firstPersonWeaponSystem?.setHolstered?.(false);
+      if (firstPersonWeaponSystem && firstPersonWeaponSystem.equippedGunId !== this.equippedId) {
+        void firstPersonWeaponSystem.equipGun?.(this.equippedId);
+      }
+    } else if (this.isGunEquipped() && this.holstered) {
+      firstPersonWeaponSystem?.setHolstered?.(true);
+    } else if (this.isSwordEquipped()) {
+      firstPersonWeaponSystem?.setHolstered?.(true);
+    }
+  }
+
+  update({
+    delta,
+    input,
+    character,
+    cameraSystem,
+    physicsSystem,
+    enemySystem,
+    enemyCutSystem = null,
+    propSystem = null,
+    firstPersonWeaponSystem,
+    vehicleDamageSystem = null,
+    vehicleSystem = null,
+    shootingRangeSystem = null,
+  }) {
+    const dt = Math.max(0, Number(delta) || 0);
+    this._tickEffects(dt);
+    this._flushOneRagdoll({ physicsSystem, enemySystem, enemyCutSystem, propSystem });
+    this._recoverRecoil(dt);
+
+    const fp = firstPersonWeaponSystem;
+    // Guns only fire when drawn (not holstered) in first person.
+    const active = Boolean(
+      this.enabled
+      && this.isGunDrawn()
+      && fp?.active
+      && fp?.visibleWeapon
+      && fp?.gunView?.gun,
+    );
+    if (!active) {
+      this.inspectBlend = 0;
+      cameraSystem?.setWeaponAds?.(0, null);
+      if (character?.combat) {
+        character.combat.aiming = false;
+        character.combat.reloading = false;
+      }
+      return;
+    }
+
+    const gun = fp.gunView.gun;
+    const gunRoot = fp.gunView.root;
+    if (this._preloadedGun !== gun) {
+      this._preloadedGun = gun;
+      this._preloadGunSounds(gun);
+    }
+
+    // Keep switch index aligned with loadout (scroll is handled in processLoadout).
+    this.switchIndex = weaponIndex(this.equippedId);
+
+    // X held: inspect firearm (Z is holster only).
+    const wantInspect = Boolean(input?.inspectHeld);
+    const inspectTarget = wantInspect && !gun.isReloading ? 1 : 0;
+    const iAlpha = 1 - Math.exp(-INSPECT_BLEND_SPEED * dt);
+    this.inspectBlend += (inspectTarget - this.inspectBlend) * iAlpha;
+
+    const firePressed = Boolean(input?.lightAttackPressed || input?.firePressed);
+    const fireHeld = Boolean(input?.mousePrimaryHeld || input?.fireHeld || firePressed);
+    const adsHeld = Boolean(input?.mouseSecondaryHeld || input?.heavyAttackPressed || input?.adsHeld);
+    const reloadPressed = Boolean(
+      input?.reloadPressed
+      || input?.shoulderThrowPressed
+      || input?.reload,
+    );
+
+    const canShoot = this.inspectBlend < 0.5;
+    // Aim state drives the shared locomotion resolver (aim_idle + walk gait + the
+    // aim-facing body yaw) in both first and third person.
+    if (character?.combat) character.combat.aiming = adsHeld && canShoot;
+    const { shot, events } = gun.update({
+      dt,
+      fireHeld: fireHeld && canShoot,
+      firePressed: firePressed && canShoot,
+      reloadPressed,
+      adsHeld: adsHeld && canShoot,
+      pumpPressed: !fireHeld,
+    });
+
+    cameraSystem?.setWeaponAds?.(gun.ads, gun.stats.adsFov ?? 48);
+
+    if (events.includes('dryFire') && !this._playGunSound(gun, 'dryFire')) {
+      this._playDryClick();
+    }
+    if (events.includes('reloadStart')) {
+      this._reloadAnimTimer = gun.stats.reloadTime || 1.5;
+      if (!this._playGunSound(gun, 'reloadStart')) this._playClick(220, 0.03);
+    }
+    if (events.includes('reloadComplete')) {
+      this._reloadAnimTimer = 0;
+      if (!this._playGunSound(gun, 'reloadComplete')) this._playClick(420, 0.025);
+    }
+    if (events.includes('pump')) {
+      if (!this._playGunSound(gun, 'pump')) this._playClick(360, 0.03);
+    }
+    if (this._reloadAnimTimer > 0) {
+      this._reloadAnimTimer = Math.max(0, this._reloadAnimTimer - dt);
+    }
+    // Drive the upper-body reload animation layer (legs keep locomotion).
+    if (character?.combat) character.combat.reloading = gun.isReloading;
+
+    // Kick data only — postAnimation layout already runs once per frame.
+    // Do NOT force another layout here (that was a major fire hitch).
+    this.gunKick *= Math.exp(-GUN_KICK_RECOVER * dt);
+    if (this.gunKick < 1e-4) this.gunKick = 0;
+    if (gunRoot) {
+      gunRoot.userData.weaponKickZ = this.gunKick * 0.035;
+      gunRoot.userData.weaponKickPitch = this.gunKick * 0.07;
+      gunRoot.userData.inspectBlend = this.inspectBlend;
+      if (gun.slideLocked) {
+        gunRoot.userData.weaponKickZ = Math.max(gunRoot.userData.weaponKickZ || 0, 0.01);
+      }
+    }
+
+    if (shot) {
+      this._resolveShot({
+        shot,
+        gun,
+        fp,
+        cameraSystem,
+        physicsSystem,
+        enemySystem,
+        vehicleDamageSystem,
+        vehicleSystem,
+        shootingRangeSystem,
+      });
+    }
+
+    void character;
+  }
+
+  _resolveShot({
+    shot,
+    gun,
+    fp,
+    cameraSystem,
+    physicsSystem,
+    enemySystem,
+    vehicleDamageSystem,
+    vehicleSystem,
+    shootingRangeSystem = null,
+  }) {
+    this.totalShots += 1;
+    const camera = cameraSystem?.camera;
+    if (!camera) return;
+
+    camera.getWorldDirection(_fwd);
+    _origin.copy(camera.position);
+
+    const originAnchorName = shot.originAnchor || 'muzzle';
+    const muzzle = fp?.gunView?.anchors?.[originAnchorName]
+      || fp?.gunView?.anchors?.muzzle;
+    if (muzzle?.parent) muzzle.getWorldPosition(_muzzle);
+    else _muzzle.copy(_origin).addScaledVector(_fwd, 0.35);
+
+    const pellets = Math.max(1, shot.pellets || 1);
+    // Cap pellets hard — shotgun lag guard
+    const pelletCount = Math.min(pellets, 6);
+    const spread = Number(shot.spread) || 0.02;
+    const range = Math.min(Number(shot.range) || 100, 90);
+
+    this._fwdScratch.x = _fwd.x;
+    this._fwdScratch.y = _fwd.y;
+    this._fwdScratch.z = _fwd.z;
+    this._originScratch.x = _origin.x;
+    this._originScratch.y = _origin.y;
+    this._originScratch.z = _origin.z;
+
+    const dirs = buildPelletDirections(this._fwdScratch, pelletCount, spread);
+    const rangeHits = shootingRangeSystem?.getHitEntities?.() ?? [];
+    // Capsule hitscan treats range targets like enemies (same vertical cylinder).
+    const enemies = rangeHits.length
+      ? [...(enemySystem?.enemies ?? []), ...rangeHits]
+      : (enemySystem?.enemies ?? null);
+    const physics = USE_WORLD_RAY ? physicsSystem : null;
+
+    let hitSummary = null;
+    for (let i = 0; i < dirs.length; i += 1) {
+      const d = dirs[i];
+      const result = resolvePelletHit({
+        origin: this._originScratch,
+        direction: d,
+        range,
+        enemies,
+        physics,
+        baseDamage: shot.damage,
+      });
+
+      _hitPoint.set(result.point.x, result.point.y, result.point.z);
+      this._spawnTracer(_muzzle, _hitPoint, muzzle);
+
+      if (result.kind === 'enemy' && result.enemy?.rangeTarget) {
+        this.totalHits += 1;
+        shootingRangeSystem?.onTargetHit?.(result.enemy, {
+          region: result.region,
+          damage: result.damage,
+        });
+      } else if (result.kind === 'enemy' && result.enemy) {
+        this._applyEnemyDamage({
+          enemy: result.enemy,
+          damage: result.damage,
+          region: result.region,
+          direction: d,
+          enemySystem,
+        });
+      } else if (result.kind === 'world') {
+        this._tryDamageVehicle({
+          point: result.point,
+          direction: d,
+          damage: shot.damage,
+          vehicleSystem,
+          vehicleDamageSystem,
+        });
+      }
+
+      if (!hitSummary) {
+        hitSummary = {
+          kind: result.enemy?.rangeTarget
+            ? (result.enemy.friendly ? 'friendly' : 'target')
+            : result.kind,
+          damage: result.damage,
+          region: result.region,
+          distance: result.distance,
+          enemyId: result.enemy?.id ?? null,
+        };
+      }
+    }
+
+    // Recoil
+    const reco = Number(shot.recoil) || 0.03;
+    const adsMul = gun.ads > 0.5 ? 0.55 : 1;
+    this.recoilPitch += reco * 1.15 * adsMul;
+    this.recoilYaw += (Math.random() - 0.5) * reco * 0.55 * adsMul;
+    if (cameraSystem) {
+      const maxPitch = 1.35;
+      cameraSystem.pitch = Math.min(
+        (cameraSystem.pitch ?? 0) + reco * 0.85 * adsMul,
+        maxPitch,
+      );
+      cameraSystem.yaw = (cameraSystem.yaw ?? 0)
+        + (Math.random() - 0.5) * reco * 0.35 * adsMul;
+      camera.rotation.set(cameraSystem.pitch, cameraSystem.yaw, 0, 'YXZ');
+    }
+
+    this.gunKick = Math.min(1, this.gunKick + 0.45 + reco * 3);
+    this._ejectShell(_muzzle, _fwd);
+    this._playGunshot(gun);
+
+    // Single summary slot — avoid allocating mapped arrays every shot
+    this.lastShots.length = 0;
+    if (hitSummary) {
+      hitSummary.distance = Number(hitSummary.distance?.toFixed?.(2) ?? hitSummary.distance);
+      this.lastShots.push(hitSummary);
+    }
+  }
+
+  _applyEnemyDamage({ enemy, damage, region, direction, enemySystem }) {
+    if (!enemy || enemy.pendingCorpse || (enemy.health ?? 0) <= 0) return;
+    this.totalHits += 1;
+    enemy.health = Math.max(0, (enemy.health ?? 100) - damage);
+    enemy.staggerTimer = Math.max(enemy.staggerTimer ?? 0, region === 'head' ? 0.45 : 0.22);
+    enemySystem?.applyKnockback?.(enemy, {
+      direction: { x: direction.x, z: direction.z },
+      power: region === 'head' ? 3.2 : 2.0,
+    });
+
+    if ((enemy.health ?? 0) > 0) return;
+
+    // Defer ragdoll spawn — smashEnemyToRagdoll is multi-ms and hitchy mid-burst.
+    this.totalKills += 1;
+    enemy.health = 0;
+    enemy.pendingCorpse = true;
+    this._pendingRagdolls.push({
+      enemy,
+      launch: {
+        x: direction.x * 4.5,
+        y: 2.0 + (region === 'head' ? 1.2 : 0.4),
+        z: direction.z * 4.5,
+      },
+    });
+  }
+
+  _flushOneRagdoll({ physicsSystem, enemySystem, enemyCutSystem, propSystem }) {
+    if (!this._pendingRagdolls.length) return;
+    const job = this._pendingRagdolls.shift();
+    const { enemy, launch } = job;
+    if (!enemy?.model) return;
+
+    const smashed = enemyCutSystem?.smashEnemyToRagdoll?.({
+      enemy,
+      launchVelocity: launch,
+      physicsSystem,
+      enemySystem,
+      propSystem,
+    });
+    if (!smashed) {
+      physicsSystem?.removeEnemyCollider?.(enemy);
+      enemySystem?.releasePlayerSlot?.(enemy);
+    }
+  }
+
+  _tryDamageVehicle({ point, direction, damage, vehicleSystem, vehicleDamageSystem }) {
+    if (!vehicleSystem?.vehicles?.length || !vehicleDamageSystem) return;
+    let best = null;
+    let bestD = 2.5;
+    for (const v of vehicleSystem.vehicles) {
+      const p = v.group?.position;
+      if (!p) continue;
+      const d = Math.hypot(p.x - point.x, p.y - point.y, p.z - point.z);
+      if (d < bestD) {
+        bestD = d;
+        best = v;
+      }
+    }
+    if (!best) return;
+    if (typeof vehicleDamageSystem.applyBulletHit === 'function') {
+      vehicleDamageSystem.applyBulletHit({ vehicle: best, damage, point });
+    } else if (typeof vehicleDamageSystem.applyImpact === 'function') {
+      vehicleDamageSystem.applyImpact({
+        vehicle: best,
+        impulse: damage * 0.12,
+        point,
+        direction,
+      });
+    }
+  }
+
+  _spawnTracer(from, to, originAnchor = null) {
+    let slot = null;
+    for (let i = 0; i < this._tracers.length; i += 1) {
+      if (this._tracers[i].life <= 0) {
+        slot = this._tracers[i];
+        break;
+      }
+    }
+    if (!slot) slot = this._tracers[0];
+    if (!slot) return;
+    const arr = slot.pos.array;
+    arr[0] = from.x;
+    arr[1] = from.y;
+    arr[2] = from.z;
+    arr[3] = to.x;
+    arr[4] = to.y;
+    arr[5] = to.z;
+    slot.pos.needsUpdate = true;
+    slot.line.visible = true;
+    slot.life = TRACER_LIFE;
+    // The gun keeps moving through recoil and locomotion while this short-lived
+    // world-space line is visible. Retain the actual socket so the rendered
+    // start vertex stays attached to the muzzle instead of lagging behind it.
+    slot.originAnchor = originAnchor?.parent ? originAnchor : null;
+  }
+
+  _ejectShell(muzzle, forward) {
+    let slot = null;
+    for (let i = 0; i < this._shells.length; i += 1) {
+      if (this._shells[i].life <= 0) {
+        slot = this._shells[i];
+        break;
+      }
+    }
+    if (!slot) return;
+    _right.crossVectors(forward, _up);
+    if (_right.lengthSq() < 1e-6) _right.set(1, 0, 0);
+    else _right.normalize();
+    slot.mesh.position.copy(muzzle).addScaledVector(_right, 0.04).addScaledVector(forward, -0.02);
+    slot.mesh.visible = true;
+    slot.life = SHELL_LIFE;
+    slot.vx = _right.x * 2 + (Math.random() - 0.5) * 0.3;
+    slot.vy = 1.4 + Math.random() * 0.5;
+    slot.vz = _right.z * 2 + (Math.random() - 0.5) * 0.3;
+  }
+
+  _tickEffects(dt) {
+    for (let i = 0; i < this._tracers.length; i += 1) {
+      const t = this._tracers[i];
+      if (t.life <= 0) continue;
+      t.life -= dt;
+      if (t.life <= 0) {
+        t.line.visible = false;
+        t.originAnchor = null;
+        continue;
+      }
+      if (t.originAnchor?.parent) {
+        t.originAnchor.getWorldPosition(_muzzle);
+        const arr = t.pos.array;
+        arr[0] = _muzzle.x;
+        arr[1] = _muzzle.y;
+        arr[2] = _muzzle.z;
+        t.pos.needsUpdate = true;
+      }
+    }
+    for (let i = 0; i < this._shells.length; i += 1) {
+      const s = this._shells[i];
+      if (s.life <= 0) continue;
+      s.life -= dt;
+      s.vy -= 9.8 * dt;
+      s.mesh.position.x += s.vx * dt;
+      s.mesh.position.y += s.vy * dt;
+      s.mesh.position.z += s.vz * dt;
+      if (s.mesh.position.y < 0.04) {
+        s.mesh.position.y = 0.04;
+        s.vy *= -0.2;
+        s.vx *= 0.55;
+        s.vz *= 0.55;
+      }
+      if (s.life <= 0) s.mesh.visible = false;
+    }
+  }
+
+  _recoverRecoil(dt) {
+    const a = 1 - Math.exp(-RECOIL_RECOVER * dt);
+    this.recoilPitch *= 1 - a;
+    this.recoilYaw *= 1 - a;
+  }
+
+  _ensureAudio() {
+    if (this._audioCtx || typeof AudioContext === 'undefined') return this._audioCtx;
+    try {
+      this._audioCtx = new AudioContext();
+      this._shotGain = this._audioCtx.createGain();
+      this._shotGain.gain.value = 0.06;
+      this._shotGain.connect(this._audioCtx.destination);
+      this._sampleGain = this._audioCtx.createGain();
+      this._sampleGain.gain.value = 0.65;
+      this._sampleCompressor = this._audioCtx.createDynamicsCompressor();
+      this._sampleCompressor.threshold.value = -10;
+      this._sampleCompressor.knee.value = 6;
+      this._sampleCompressor.ratio.value = 12;
+      this._sampleCompressor.attack.value = 0.003;
+      this._sampleCompressor.release.value = 0.16;
+      this._sampleGain.connect(this._sampleCompressor);
+      this._sampleCompressor.connect(this._audioCtx.destination);
+    } catch {
+      this._audioCtx = null;
+    }
+    return this._audioCtx;
+  }
+
+  _preloadGunSounds(gun) {
+    const assignments = gun?.profile?.sounds;
+    if (!assignments) return;
+    for (const soundId of Object.values(assignments)) {
+      if (soundId) void this._loadGunSound(soundId);
+    }
+  }
+
+  _loadGunSound(soundId) {
+    if (this._audioBuffers.has(soundId)) {
+      return Promise.resolve(this._audioBuffers.get(soundId));
+    }
+    if (this._audioLoads.has(soundId)) return this._audioLoads.get(soundId);
+
+    const sound = getGunSound(soundId);
+    const ctx = this._ensureAudio();
+    if (!sound || !ctx || typeof fetch !== 'function') return Promise.resolve(null);
+
+    const generation = this._audioGeneration;
+    const load = fetch(sound.url)
+      .then((response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.arrayBuffer();
+      })
+      .then((bytes) => ctx.decodeAudioData(bytes))
+      .then((buffer) => {
+        if (generation === this._audioGeneration) {
+          this._audioBuffers.set(soundId, buffer);
+          return buffer;
+        }
+        return null;
+      })
+      .catch((error) => {
+        console.warn(`[WeaponSystem] gun sound failed: ${soundId}`, error);
+        return null;
+      })
+      .finally(() => {
+        this._audioLoads.delete(soundId);
+      });
+    this._audioLoads.set(soundId, load);
+    return load;
+  }
+
+  _playGunSound(gun, interaction, { pitchJitter = 0 } = {}) {
+    const soundId = gun?.profile?.sounds?.[interaction];
+    const sound = getGunSound(soundId);
+    const ctx = this._ensureAudio();
+    if (!sound || !ctx) return false;
+
+    const start = (buffer) => {
+      if (buffer && this._audioCtx === ctx) {
+        this._startGunSound(sound, buffer, pitchJitter);
+      }
+    };
+    const buffer = this._audioBuffers.get(soundId);
+    const ready = buffer ? Promise.resolve(buffer) : this._loadGunSound(soundId);
+
+    if (ctx.state === 'suspended') {
+      void ctx.resume().then(() => ready.then(start)).catch(() => {});
+    } else if (buffer) {
+      start(buffer);
+    } else {
+      void ready.then(start);
+    }
+    return true;
+  }
+
+  _startGunSound(sound, buffer, pitchJitter = 0) {
+    const ctx = this._audioCtx;
+    const output = this._sampleGain;
+    if (!ctx || !output || ctx.state !== 'running') return;
+    try {
+      const source = ctx.createBufferSource();
+      const gain = ctx.createGain();
+      source.buffer = buffer;
+      source.playbackRate.value = 1 + (Math.random() * 2 - 1) * pitchJitter;
+      gain.gain.value = sound.volume ?? 0.7;
+      source.connect(gain);
+      gain.connect(output);
+
+      const voices = this._audioVoices.get(sound.id) || [];
+      const maxVoices = Math.max(1, sound.maxVoices || 4);
+      while (voices.length >= maxVoices) {
+        const oldest = voices.shift();
+        try { oldest?.source?.stop?.(); } catch {}
+      }
+      const voice = { source, gain };
+      voices.push(voice);
+      this._audioVoices.set(sound.id, voices);
+      source.onended = () => {
+        const index = voices.indexOf(voice);
+        if (index >= 0) voices.splice(index, 1);
+        source.disconnect();
+        gain.disconnect();
+      };
+      source.start();
+    } catch {
+      // A failed sound must not interrupt the weapon state machine.
+    }
+  }
+
+  _playClick(freq = 300, dur = 0.03) {
+    const now = performance.now();
+    if (now - this._lastAudioMs < AUDIO_MIN_INTERVAL_MS) return;
+    this._lastAudioMs = now;
+    const ctx = this._ensureAudio();
+    if (!ctx || ctx.state === 'suspended') {
+      void ctx?.resume?.();
+      return;
+    }
+    try {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = 'square';
+      o.frequency.value = freq;
+      g.gain.value = 0.02;
+      o.connect(g);
+      g.connect(ctx.destination);
+      o.start();
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + dur);
+      o.stop(ctx.currentTime + dur);
+    } catch {
+      // ignore
+    }
+  }
+
+  _playDryClick() {
+    const now = performance.now();
+    if (now - this._lastDryClick < 140) return;
+    this._lastDryClick = now;
+    this._playClick(140, 0.04);
+  }
+
+  _playGunshot(gun) {
+    if (this._playGunSound(gun, 'fire', { pitchJitter: 0.018 })) return;
+
+    const kind = gun?.weaponKind || gun;
+    const now = performance.now();
+    if (now - this._lastAudioMs < AUDIO_MIN_INTERVAL_MS) return;
+    this._lastAudioMs = now;
+    const ctx = this._ensureAudio();
+    if (!ctx) return;
+    if (ctx.state === 'suspended') {
+      void ctx.resume();
+      return; // skip this shot's tone; next will play after resume
+    }
+    try {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = 'triangle';
+      const base = kind === 'shotgun' ? 90 : kind === 'pistol' ? 150 : 105;
+      o.frequency.setValueAtTime(base, ctx.currentTime);
+      o.frequency.exponentialRampToValueAtTime(45, ctx.currentTime + 0.05);
+      g.gain.setValueAtTime(0.05, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.07);
+      o.connect(g);
+      g.connect(this._shotGain || ctx.destination);
+      o.start();
+      o.stop(ctx.currentTime + 0.08);
+    } catch {
+      // ignore
+    }
+  }
+
+  snapshot() {
+    const entry = this.getEquippedEntry();
+    return {
+      enabled: this.enabled,
+      totalShots: this.totalShots,
+      totalHits: this.totalHits,
+      totalKills: this.totalKills,
+      recoilPitch: Number(this.recoilPitch.toFixed(4)),
+      gunKick: Number(this.gunKick.toFixed(3)),
+      inspectBlend: Number(this.inspectBlend.toFixed(3)),
+      lastShots: this.lastShots,
+      switchIndex: this.switchIndex,
+      equippedId: this.equippedId,
+      holstered: this.holstered,
+      equippedLabel: entry?.label ?? this.equippedId,
+      equippedShortLabel: entry?.shortLabel ?? this.equippedId,
+      equippedKind: entry?.kind ?? null,
+      pendingRagdolls: this._pendingRagdolls.length,
+      useWorldRay: USE_WORLD_RAY,
+    };
+  }
+
+  dispose() {
+    for (const t of this._tracers) {
+      if (t.line.parent) t.line.parent.remove(t.line);
+      t.line.geometry?.dispose?.();
+    }
+    this._tracers = [];
+    this._tracerMat?.dispose?.();
+    for (const s of this._shells) {
+      if (s.mesh.parent) s.mesh.parent.remove(s.mesh);
+    }
+    this._shells = [];
+    this._shellGeo?.dispose?.();
+    this._shellMat?.dispose?.();
+    this._audioGeneration += 1;
+    for (const voices of this._audioVoices.values()) {
+      for (const voice of voices) {
+        try { voice.source?.stop?.(); } catch {}
+      }
+    }
+    this._audioVoices.clear();
+    this._audioBuffers.clear();
+    this._audioLoads.clear();
+    this._preloadedGun = null;
+    try {
+      this._audioCtx?.close?.();
+    } catch {
+      // ignore
+    }
+    this._audioCtx = null;
+    this._shotGain = null;
+    this._sampleGain = null;
+    this._sampleCompressor = null;
+    this._pendingRagdolls.length = 0;
+    this.scene = null;
+  }
+}
+
+function canToggleHolster(character) {
+  if (!character) return false;
+  if (character.vehicle?.active || character.vehicle) return false;
+  if (character.hang?.active || character.wallRun?.active || character.wallClimb?.active
+    || character.vault?.active || character.slide?.active || character.rope?.active
+    || character.mount?.active || character.hookSwing?.active || character.wingsuit?.active) {
+    return false;
+  }
+  return true;
+}

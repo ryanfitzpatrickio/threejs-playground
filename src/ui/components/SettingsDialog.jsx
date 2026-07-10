@@ -52,10 +52,10 @@ function ChipGroup(props) {
             class="settings-chip"
             classList={{
               active: readValue(props.value) === option.id,
-              disabled: option.disabled,
+              disabled: readValue(option.disabled),
               'settings-chip--accent': option.accent,
             }}
-            disabled={option.disabled}
+            disabled={readValue(option.disabled)}
             title={option.title}
             onClick={() => props.onChange(option.id)}
           >
@@ -152,6 +152,7 @@ export function SettingsDialog(props) {
                       { id: 'world', label: 'World', title: 'Streaming editable terrain' },
                       { id: 'rally', label: 'Rally', title: 'Pine Ridge dirt stage', accent: true },
                       { id: 'wilds', label: 'Wilds', title: 'Eroded alpine valley' },
+                      { id: 'range', label: 'Range', title: 'Warehouse breach shooting course' },
                     ]}
                   />
                 </SettingSection>
@@ -289,7 +290,7 @@ export function SettingsDialog(props) {
                       id: feel,
                       label: formatCameraFeel(feel),
                       title: `Camera feel: ${formatCameraFeel(feel)}`,
-                      disabled: !comfortEnabled(),
+                      disabled: () => !comfortEnabled(),
                     }))}
                   />
                 </SettingSection>
@@ -310,7 +311,7 @@ export function SettingsDialog(props) {
                         id: 'first',
                         label: 'First person',
                         title: 'Eye-level camera while on foot',
-                        disabled: Boolean(snapshot()?.camera?.interiorFirstPerson),
+                        disabled: () => Boolean(snapshot()?.camera?.interiorFirstPerson),
                       },
                     ]}
                   />

@@ -1,0 +1,291 @@
+{
+  "generatedAt": "2026-07-10T01:12:55.581Z",
+  "guns": [
+    {
+      "id": "ak47",
+      "label": "Ak47",
+      "url": "/assets/guns/ak47.glb",
+      "meshCount": 17,
+      "meshNames": [
+        "mesh_0",
+        "mesh_1",
+        "mesh_2",
+        "mesh_3",
+        "mesh_4",
+        "mesh_5",
+        "mesh_6",
+        "mesh_7",
+        "mesh_8",
+        "mesh_9",
+        "mesh_10",
+        "mesh_11",
+        "mesh_12",
+        "mesh_13",
+        "mesh_14",
+        "mesh_15",
+        "mesh_16"
+      ],
+      "size": [
+        0.88,
+        0.253,
+        0.061
+      ],
+      "longestAxis": 0.88,
+      "bytes": 530472
+    },
+    {
+      "id": "desert-ar15",
+      "label": "Desert Ar15",
+      "url": "/assets/guns/desert-ar15.glb",
+      "meshCount": 10,
+      "meshNames": [
+        "mesh_0",
+        "mesh_1",
+        "mesh_2",
+        "mesh_3",
+        "mesh_4",
+        "mesh_5",
+        "mesh_6",
+        "mesh_7",
+        "mesh_8",
+        "mesh_9"
+      ],
+      "size": [
+        0.92,
+        0.279,
+        0.077
+      ],
+      "longestAxis": 0.92,
+      "bytes": 712136
+    },
+    {
+      "id": "desert-scar",
+      "label": "Desert Scar",
+      "url": "/assets/guns/desert-scar.glb",
+      "meshCount": 10,
+      "meshNames": [
+        "mesh_0",
+        "mesh_1",
+        "mesh_2",
+        "mesh_3",
+        "mesh_4",
+        "mesh_5",
+        "mesh_6",
+        "mesh_7",
+        "mesh_8",
+        "mesh_9"
+      ],
+      "size": [
+        0.9,
+        0.282,
+        0.056
+      ],
+      "longestAxis": 0.9,
+      "bytes": 437600
+    },
+    {
+      "id": "desert-sentinel",
+      "label": "Desert Sentinel",
+      "url": "/assets/guns/desert-sentinel.glb",
+      "meshCount": 8,
+      "meshNames": [
+        "mesh_0",
+        "mesh_1",
+        "mesh_2",
+        "mesh_3",
+        "mesh_4",
+        "mesh_5",
+        "mesh_6",
+        "mesh_7"
+      ],
+      "size": [
+        1.05,
+        0.233,
+        0.077
+      ],
+      "longestAxis": 1.05,
+      "bytes": 519640
+    },
+    {
+      "id": "folding-stock-ar",
+      "label": "Folding Stock Ar",
+      "url": "/assets/guns/folding-stock-ar.glb",
+      "meshCount": 18,
+      "meshNames": [
+        "mesh_0",
+        "mesh_1",
+        "mesh_2",
+        "mesh_3",
+        "mesh_4",
+        "mesh_5",
+        "mesh_6",
+        "mesh_7",
+        "mesh_8",
+        "mesh_9",
+        "mesh_10",
+        "mesh_11",
+        "mesh_12",
+        "mesh_13",
+        "mesh_14",
+        "mesh_15",
+        "mesh_16",
+        "mesh_17"
+      ],
+      "size": [
+        0.85,
+        0.293,
+        0.086
+      ],
+      "longestAxis": 0.85,
+      "bytes": 1050764
+    },
+    {
+      "id": "midnight-glock",
+      "label": "Midnight Glock",
+      "url": "/assets/guns/midnight-glock.glb",
+      "meshCount": 24,
+      "meshNames": [
+        "mesh_0",
+        "mesh_1",
+        "mesh_2",
+        "mesh_3",
+        "mesh_4",
+        "mesh_5",
+        "mesh_6",
+        "mesh_7",
+        "mesh_8",
+        "mesh_9",
+        "mesh_10",
+        "mesh_11",
+        "mesh_12",
+        "mesh_13",
+        "mesh_14",
+        "mesh_15",
+        "mesh_16",
+        "mesh_17",
+        "mesh_18",
+        "mesh_19",
+        "mesh_20",
+        "mesh_21",
+        "mesh_22",
+        "mesh_23"
+      ],
+      "size": [
+        0.2,
+        0.135,
+        0.037
+      ],
+      "longestAxis": 0.2,
+      "bytes": 2036776
+    },
+    {
+      "id": "modern-ar15",
+      "label": "Modern Ar15",
+      "url": "/assets/guns/modern-ar15.glb",
+      "meshCount": 10,
+      "meshNames": [
+        "mesh_0",
+        "mesh_1",
+        "mesh_2",
+        "mesh_3",
+        "mesh_4",
+        "mesh_5",
+        "mesh_6",
+        "mesh_7",
+        "mesh_8",
+        "mesh_9"
+      ],
+      "size": [
+        0.9,
+        0.284,
+        0.076
+      ],
+      "longestAxis": 0.9,
+      "bytes": 621856
+    },
+    {
+      "id": "obsidian-carbine",
+      "label": "Obsidian Carbine",
+      "url": "/assets/guns/obsidian-carbine.glb",
+      "meshCount": 17,
+      "meshNames": [
+        "mesh_0",
+        "mesh_1",
+        "mesh_2",
+        "mesh_3",
+        "mesh_4",
+        "mesh_5",
+        "mesh_6",
+        "mesh_7",
+        "mesh_8",
+        "mesh_9",
+        "mesh_10",
+        "mesh_11",
+        "mesh_12",
+        "mesh_13",
+        "mesh_14",
+        "mesh_15",
+        "mesh_16"
+      ],
+      "size": [
+        0.8,
+        0.293,
+        0.084
+      ],
+      "longestAxis": 0.8,
+      "bytes": 946692
+    },
+    {
+      "id": "olive-bullpup",
+      "label": "Olive Bullpup",
+      "url": "/assets/guns/olive-bullpup.glb",
+      "meshCount": 11,
+      "meshNames": [
+        "mesh_0",
+        "mesh_1",
+        "mesh_2",
+        "mesh_3",
+        "mesh_4",
+        "mesh_5",
+        "mesh_6",
+        "mesh_7",
+        "mesh_8",
+        "mesh_9",
+        "mesh_10"
+      ],
+      "size": [
+        0.72,
+        0.238,
+        0.069
+      ],
+      "longestAxis": 0.72,
+      "bytes": 620444
+    },
+    {
+      "id": "tactical-shotgun",
+      "label": "Tactical Shotgun",
+      "url": "/assets/guns/tactical-shotgun.glb",
+      "meshCount": 11,
+      "meshNames": [
+        "mesh_0",
+        "mesh_1",
+        "mesh_2",
+        "mesh_3",
+        "mesh_4",
+        "mesh_5",
+        "mesh_6",
+        "mesh_7",
+        "mesh_8",
+        "mesh_9",
+        "mesh_10"
+      ],
+      "size": [
+        1,
+        0.202,
+        0.054
+      ],
+      "longestAxis": 1,
+      "bytes": 343028
+    }
+  ]
+}

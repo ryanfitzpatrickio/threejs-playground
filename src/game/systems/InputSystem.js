@@ -12,13 +12,18 @@ const KEY_BINDINGS = {
   ShiftLeft: 'brace',
   ShiftRight: 'brace',
   Space: 'jump',
-  KeyC: 'slide',
-  KeyF: 'mount',
+  // C: crouch (weapon stance / low profile). Slide moved to Ctrl.
+  KeyC: 'crouch',
+  // F activates the equipped ability (swing / wingsuit — equip like a gun via scroll).
+  KeyF: 'ability',
   KeyT: 'telekinesis',
   KeyG: 'grabSlam',
-  KeyQ: 'wingsuit',
+  // Q: cover lean left (armed) + vehicle rear-view hold. Wingsuit is an ability now.
+  KeyQ: 'leanLeft',
+  // Z: holster / draw equipped weapon (WeaponSystem loadout).
   KeyZ: 'drawSheathe',
-  KeyE: 'hookFire',
+  // E: enter/exit vehicle or horse (was F). Cover lean right while held (armed).
+  KeyE: 'mount',
   Digit1: 'elevatorFloor1',
   Digit2: 'elevatorFloor2',
   Digit3: 'elevatorFloor3',
@@ -30,6 +35,11 @@ const KEY_BINDINGS = {
   Digit9: 'elevatorFloor9',
   AltLeft: 'hookAim',
   AltRight: 'hookAim',
+  // Ctrl: slide (was crouch; crouch is C now).
+  ControlLeft: 'slide',
+  ControlRight: 'slide',
+  // X: inspect equipped gun (hold).
+  KeyX: 'inspect',
   KeyR: 'shoulderThrow',
   KeyV: 'cutMode',
   KeyK: 'photoMode',
@@ -39,7 +49,8 @@ const KEY_BINDINGS = {
 
 const JUMP_DOUBLE_TAP_SECONDS = 0.48;
 const DODGE_DOUBLE_TAP_SECONDS = 0.3;
-const HOOK_DOUBLE_TAP_SECONDS = 0.3;
+// Double-tap F (ability) while swing is equipped → dual-rope pull launch.
+const ABILITY_DOUBLE_TAP_SECONDS = 0.3;
 
 // Move-vector (x = right-left, z = backward-forward) for each dodge direction.
 const DODGE_VECTORS = {
@@ -60,18 +71,22 @@ export class InputSystem {
     this.mousePrimaryPressed = false;
     this.mouseSecondaryPressed = false;
     this.mouseMiddlePressed = false;
+    this.mousePrimaryHeld = false;
+    this.mouseSecondaryHeld = false;
+    this.mouseMiddleHeld = false;
     this.pointerLocked = false;
     this.lastJumpPressTime = -Infinity;
-    this.lastHookFirePressTime = -Infinity;
-    this.hookFireDoubleTapPending = false; // one-frame edge (dual-rope pull launch)
+    this.lastAbilityPressTime = -Infinity;
+    this.abilityDoubleTapPending = false; // one-frame edge (dual-rope pull when swing equipped)
     this.wallRunJumpHold = false;
     this.lastDirectionPress = { forward: -Infinity, backward: -Infinity, left: -Infinity, right: -Infinity };
     this.dodgeDirectionPending = null; // {x, z} | null — one-frame edge
     this.jumpDoubleTapPending = false; // one-frame edge (air-dash)
-    this.wingsuitPressed = false; // one-frame edge (glider deploy via Q)
+    this.jumpDoubleTapRaw = false; // raw double-jump edge for wingsuit (AbilitySystem gates)
     this.handleKeyDown = this.handleKeyDown.bind(this);
     this.handleKeyUp = this.handleKeyUp.bind(this);
     this.handleMouseDown = this.handleMouseDown.bind(this);
+    this.handleMouseUp = this.handleMouseUp.bind(this);
     this.handleMouseMove = this.handleMouseMove.bind(this);
     this.handleWheel = this.handleWheel.bind(this);
     this.handlePointerLockChange = this.handlePointerLockChange.bind(this);
@@ -85,6 +100,7 @@ export class InputSystem {
     globalThis.addEventListener('keydown', this.handleKeyDown);
     globalThis.addEventListener('keyup', this.handleKeyUp);
     this.target.addEventListener('mousedown', this.handleMouseDown);
+    globalThis.addEventListener('mouseup', this.handleMouseUp);
     this.target.addEventListener('contextmenu', this.handleContextMenu);
     globalThis.addEventListener('mousemove', this.handleMouseMove);
     this.target.addEventListener('wheel', this.handleWheel, { passive: false });
@@ -101,6 +117,8 @@ export class InputSystem {
     const slidePressed = this.pressedActions.has('slide');
     const collisionDebugPressed = this.pressedActions.has('collisionDebug');
     const mountPressed = this.pressedActions.has('mount');
+    const abilityPressed = this.pressedActions.has('ability');
+    const abilityDoubleTapped = this.abilityDoubleTapPending;
     const drawSheathePressed = this.pressedActions.has('drawSheathe');
     const grabSlamPressed = this.pressedActions.has('grabSlam');
     const shoulderThrowPressed = this.pressedActions.has('shoulderThrow');
@@ -115,18 +133,18 @@ export class InputSystem {
     const cutCancelPressed = this.pressedActions.has('cutCancel');
     const telekinesisPressed = this.pressedActions.has('telekinesis');
     const telekinesisReleased = this.releasedActions.has('telekinesis');
-    const hookFirePressed = this.pressedActions.has('hookFire') || this.mouseMiddlePressed;
-    const hookFireDoubleTapped = this.hookFireDoubleTapPending;
+    // Hook fire is no longer a dedicated key — AbilitySystem maps F / middle-click
+    // onto hookFire* when the swing ability is equipped.
     const elevatorFloors = {};
     for (let i = 1; i <= 9; i += 1) {
       elevatorFloors[`elevatorFloor${i}`] = this.pressedActions.has(`elevatorFloor${i}`);
     }
-    this.hookFireDoubleTapPending = false;
+    this.abilityDoubleTapPending = false;
     const dodgeDirection = this.dodgeDirectionPending;
     const jumpDoubleTapped = this.jumpDoubleTapPending;
-    const wingsuitTogglePressed = this.jumpDoubleTapRaw === true || this.wingsuitPressed === true;
+    // Double-tap Space raw edge for wingsuit (AbilitySystem only enables while glider equipped).
+    const wingsuitTogglePressed = this.jumpDoubleTapRaw === true;
     this.jumpDoubleTapRaw = false;
-    this.wingsuitPressed = false;
     this.pressedActions.delete('jump');
     this.pressedActions.delete('left');
     this.pressedActions.delete('right');
@@ -134,6 +152,7 @@ export class InputSystem {
     this.pressedActions.delete('slide');
     this.pressedActions.delete('collisionDebug');
     this.pressedActions.delete('mount');
+    this.pressedActions.delete('ability');
     this.pressedActions.delete('drawSheathe');
     this.pressedActions.delete('grabSlam');
     this.pressedActions.delete('shoulderThrow');
@@ -142,7 +161,6 @@ export class InputSystem {
     this.pressedActions.delete('cutCommit');
     this.pressedActions.delete('cutCancel');
     this.pressedActions.delete('telekinesis');
-    this.pressedActions.delete('hookFire');
     for (let i = 1; i <= 9; i += 1) this.pressedActions.delete(`elevatorFloor${i}`);
     this.dodgeDirectionPending = null;
     this.jumpDoubleTapPending = false;
@@ -152,6 +170,7 @@ export class InputSystem {
     const lookX = this.lookDelta.x;
     const lookY = this.lookDelta.y;
     const zoomDelta = this.zoomDelta;
+    const mouseMiddlePressed = this.mouseMiddlePressed;
     this.lookDelta.x = 0;
     this.lookDelta.y = 0;
     this.zoomDelta = 0;
@@ -178,6 +197,9 @@ export class InputSystem {
       slide: this.actions.has('slide'),
       collisionDebugPressed,
       mountPressed,
+      abilityPressed,
+      abilityHeld: this.actions.has('ability'),
+      abilityDoubleTapped,
       drawSheathePressed,
       grabSlamPressed,
       shoulderThrowPressed,
@@ -188,20 +210,33 @@ export class InputSystem {
       cutCancelPressed,
       lightAttackPressed,
       heavyAttackPressed,
+      mousePrimaryHeld: this.mousePrimaryHeld,
+      mouseSecondaryHeld: this.mouseSecondaryHeld,
+      mouseMiddleHeld: this.mouseMiddleHeld,
+      mouseMiddlePressed,
+      // Hold C to crouch (weapon-locomotion stance layer).
+      crouchHeld: this.actions.has('crouch'),
+      // Cover-peek leans (Q/E). Q is lean-only; E is mount/interact + lean-right hold.
+      leanLeftHeld: this.actions.has('leanLeft'),
+      leanRightHeld: this.actions.has('mount'),
+      // X held: inspect gun while firearm is drawn (WeaponSystem).
+      inspectHeld: this.actions.has('inspect'),
       telekinesisPressed,
       telekinesisReleased,
       telekinesisHeld: this.actions.has('telekinesis'),
-      hookFire: this.actions.has('hookFire'),
-      hookFirePressed,
-      hookFireDoubleTapped,
+      // Hook flags start false; AbilitySystem fills them when swing is equipped.
+      hookFire: false,
+      hookFirePressed: false,
+      hookFireDoubleTapped: false,
       hookAimHeld: this.actions.has('hookAim'),
       hookReleasePressed: jumpPressed,
       dodgeDirection: GAME_CONFIG.character.enableDodge ? dodgeDirection : null,
       jumpDoubleTapped: GAME_CONFIG.character.enableAirDash ? jumpDoubleTapped : false,
-      // Raw edge for glider/wingsuit deploy (double-tap jump or single Q press).
-      // Independent of air-dash flag.
+      // Double-tap Space edge for wingsuit (AbilitySystem enables only while glider equipped).
       wingsuitTogglePressed,
-      wingsuitHeld: this.actions.has('wingsuit'),
+      // Q held: vehicle rear-view (GameRuntime) + cover lean left.
+      wingsuitHeld: this.actions.has('leanLeft'),
+      rearViewHeld: this.actions.has('leanLeft'),
       ...elevatorFloors,
     };
   }
@@ -210,6 +245,7 @@ export class InputSystem {
     globalThis.removeEventListener('keydown', this.handleKeyDown);
     globalThis.removeEventListener('keyup', this.handleKeyUp);
     this.target.removeEventListener('mousedown', this.handleMouseDown);
+    globalThis.removeEventListener('mouseup', this.handleMouseUp);
     this.target.removeEventListener('contextmenu', this.handleContextMenu);
     globalThis.removeEventListener('mousemove', this.handleMouseMove);
     this.target.removeEventListener('wheel', this.handleWheel);
@@ -224,8 +260,11 @@ export class InputSystem {
     this.mousePrimaryPressed = false;
     this.mouseSecondaryPressed = false;
     this.mouseMiddlePressed = false;
+    this.mousePrimaryHeld = false;
+    this.mouseSecondaryHeld = false;
+    this.mouseMiddleHeld = false;
     this.wallRunJumpHold = false;
-    this.wingsuitPressed = false;
+    this.abilityDoubleTapPending = false;
   }
 
   handleKeyDown(event) {
@@ -237,12 +276,12 @@ export class InputSystem {
 
     const wasActive = this.actions.has(action);
 
-    if (action === 'telekinesis' || action === 'hookFire') {
+    if (action === 'telekinesis') {
       this.pressedActions.add(action);
     }
 
     if (
-      (action === 'jump' || action === 'left' || action === 'right' || action === 'brace' || action === 'slide' || action === 'collisionDebug' || action === 'mount' || action === 'drawSheathe' || action === 'grabSlam' || action === 'shoulderThrow' || action === 'cutMode' || action === 'photoMode' || action === 'cutCommit' || action === 'cutCancel' || action === 'telekinesis' || action === 'hookFire') &&
+      (action === 'jump' || action === 'left' || action === 'right' || action === 'brace' || action === 'slide' || action === 'collisionDebug' || action === 'mount' || action === 'ability' || action === 'drawSheathe' || action === 'grabSlam' || action === 'shoulderThrow' || action === 'cutMode' || action === 'photoMode' || action === 'cutCommit' || action === 'cutCancel' || action === 'telekinesis') &&
       !event.repeat &&
       !wasActive
     ) {
@@ -254,7 +293,7 @@ export class InputSystem {
       const doubleTap = now - this.lastJumpPressTime <= JUMP_DOUBLE_TAP_SECONDS;
       this.wallRunJumpHold = doubleTap;
       if (doubleTap) {
-        this.jumpDoubleTapRaw = true; // raw edge — consumed by the wingsuit toggle
+        this.jumpDoubleTapRaw = true; // raw edge — AbilitySystem may use for wingsuit
       }
       if (doubleTap && GAME_CONFIG.character.enableAirDash) {
         this.jumpDoubleTapPending = true; // air-dash edge (yielded to wall-run in MovementSystem)
@@ -262,16 +301,12 @@ export class InputSystem {
       this.lastJumpPressTime = now;
     }
 
-    if (action === 'wingsuit' && !event.repeat && !wasActive) {
-      this.wingsuitPressed = true;
-    }
-
-    if (action === 'hookFire' && !event.repeat && !wasActive) {
+    if (action === 'ability' && !event.repeat && !wasActive) {
       const now = event.timeStamp * 0.001;
-      if (now - (this.lastHookFirePressTime ?? -Infinity) <= HOOK_DOUBLE_TAP_SECONDS) {
-        this.hookFireDoubleTapPending = true; // dual-rope pull-launch edge
+      if (now - (this.lastAbilityPressTime ?? -Infinity) <= ABILITY_DOUBLE_TAP_SECONDS) {
+        this.abilityDoubleTapPending = true; // dual-rope pull-launch when swing equipped
       }
-      this.lastHookFirePressTime = now;
+      this.lastAbilityPressTime = now;
     }
 
     if ((action === 'forward' || action === 'backward' || action === 'left' || action === 'right') && !event.repeat && !wasActive) {
@@ -310,21 +345,30 @@ export class InputSystem {
 
     if (event.button === 0) {
       this.mousePrimaryPressed = true;
+      this.mousePrimaryHeld = true;
 
       if (document.pointerLockElement !== this.target) {
         this.target.requestPointerLock?.();
       }
     } else if (event.button === 1) {
       this.mouseMiddlePressed = true;
+      this.mouseMiddleHeld = true;
 
       if (document.pointerLockElement !== this.target) {
         this.target.requestPointerLock?.();
       }
     } else if (event.button === 2) {
-      // Right-click = heavy attack (combat). Prevent the context menu separately
-      // via handleContextMenu so the button-2 press still registers here.
+      // Right-click = heavy attack (combat) / ADS when gun out.
+      // Prevent the context menu separately via handleContextMenu.
       this.mouseSecondaryPressed = true;
+      this.mouseSecondaryHeld = true;
     }
+  }
+
+  handleMouseUp(event) {
+    if (event.button === 0) this.mousePrimaryHeld = false;
+    else if (event.button === 1) this.mouseMiddleHeld = false;
+    else if (event.button === 2) this.mouseSecondaryHeld = false;
   }
 
   handleContextMenu(event) {
@@ -351,6 +395,11 @@ export class InputSystem {
 
   handlePointerLockChange() {
     this.pointerLocked = document.pointerLockElement === this.target;
+    if (!this.pointerLocked) {
+      this.mousePrimaryHeld = false;
+      this.mouseSecondaryHeld = false;
+      this.mouseMiddleHeld = false;
+    }
   }
 
   handleBlur() {
@@ -363,6 +412,11 @@ export class InputSystem {
     this.zoomDelta = 0;
     this.mousePrimaryPressed = false;
     this.mouseSecondaryPressed = false;
-    this.wingsuitPressed = false;
+    this.mouseMiddlePressed = false;
+    this.mousePrimaryHeld = false;
+    this.mouseSecondaryHeld = false;
+    this.mouseMiddleHeld = false;
+    this.abilityDoubleTapPending = false;
+    this.jumpDoubleTapRaw = false;
   }
 }

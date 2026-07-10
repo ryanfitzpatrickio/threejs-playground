@@ -22,10 +22,16 @@ const EXPERIENCES = [
     label: 'Wilds',
     blurb: 'Eroded alpine valley and dense forest.',
   },
+  {
+    id: 'range',
+    label: 'Shooting Range',
+    blurb: '60s warehouse breach — hit hostiles, spare friendlies.',
+    accent: true,
+  },
 ];
 
 /**
- * Four large experience tiles + optional Continue for last-played.
+ * Experience tiles + optional Continue for last-played.
  */
 export function MainMenu(props) {
   const preferred = () => props.preferredLevel ?? 'rally';
@@ -64,7 +70,7 @@ export function MainMenu(props) {
         e.preventDefault();
         props.onContinue();
       }
-    } else if (e.key >= '1' && e.key <= '4') {
+    } else if (e.key >= '1' && e.key <= String(order.length)) {
       e.preventDefault();
       select(order[Number(e.key) - 1]);
     }
@@ -122,7 +128,7 @@ export function MainMenu(props) {
         </div>
 
         <p class="main-menu__hint">
-          Settings for graphics, garage, and editors · keys 1–4 select · C continue
+          Settings for graphics, garage, and editors · keys 1–{EXPERIENCES.length} select · C continue
         </p>
       </div>
     </div>
