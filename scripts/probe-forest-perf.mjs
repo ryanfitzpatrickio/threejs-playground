@@ -5,9 +5,10 @@
  * Set DREAMFALL_HEADLESS=false for representative desktop GPU measurements.
  */
 import { existsSync } from 'node:fs';
+import { dreamfallAppUrl } from './lib/dreamfallAppUrl.mjs';
 import { chromium } from 'playwright';
 
-const url = process.argv[2] ?? process.env.DREAMFALL_URL ?? 'http://127.0.0.1:5173';
+const url = process.argv[2] ?? dreamfallAppUrl();
 const durationSeconds = Math.max(2, Number(process.argv[3] ?? 12));
 const headless = process.env.DREAMFALL_HEADLESS !== 'false';
 const drive = process.env.DREAMFALL_DRIVE !== 'false';

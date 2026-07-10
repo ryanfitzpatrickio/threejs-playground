@@ -129,8 +129,13 @@ export class WingsuitFlightSystem {
     };
 
     const rig = character.wingsuitRig;
-    rig.deployed = true;
-    rig.group.visible = true;
+    if (rig) {
+      rig.deployed = true;
+      rig.group.visible = true;
+      // Force bone rebind + cloth history clear on the next WingsuitSystem tick so
+      // a deploy after climb/teleport never inherits a stale origin-trail pose.
+      rig.bonesResolved = false;
+    }
   }
 
   deactivate(character, { keepMomentum }) {

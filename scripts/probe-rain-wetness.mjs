@@ -10,7 +10,8 @@ import path from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { chromium } from 'playwright';
 
-const url = process.env.DREAMFALL_URL ?? 'http://127.0.0.1:5173';
+import { dreamfallAppUrl } from './lib/dreamfallAppUrl.mjs';
+const url = dreamfallAppUrl();
 const out = path.resolve('.codex-tmp', 'visual-smoke');
 await mkdir(out, { recursive: true });
 const browser = await chromium.launch({

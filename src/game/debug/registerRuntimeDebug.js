@@ -15,6 +15,7 @@ import {
 } from '../render/cloud/cloudConfig.js';
 import { listPhotorealismPresets } from '../config/photorealismPresets.js';
 import { getQualityPreset, getQualityLevel } from '../config/qualityPresets.js';
+import { GAME_CONFIG } from '../config/gameConfig.js';
 
 /** Local overlay state (not always in snapshot). */
 const overlayState = {
@@ -77,6 +78,7 @@ function setSpectatorCrowdAndReload(on) {
  */
 export function registerRuntimeDebug(runtime = null) {
   registerShaderDebugFolder('Runtime', { expanded: true });
+  registerShaderDebugFolder('Third Person', { expanded: true });
   registerShaderDebugFolder('Look', { expanded: false });
   registerShaderDebugFolder('Weather Control', { expanded: true });
   registerShaderDebugFolder('Cloud Mode', { expanded: false });
@@ -218,6 +220,49 @@ export function registerRuntimeDebug(runtime = null) {
       globalThis.setTimeout(() => {
         console.info('[dreamfall] allocation sample', b.allocationSampleReport?.());
       }, 3200);
+    },
+  });
+
+  // --- Third person (on-foot mesh + capsule vertical offsets) ---
+  registerShaderDebugParam({
+    id: 'runtime.playerMeshOffset',
+    label: 'Mesh offset height',
+    folder: 'Third Person',
+    type: 'float',
+    min: -0.5,
+    max: 0.5,
+    step: 0.005,
+    pinPolicy: 'allow',
+    help: 'Visual model Y vs physics feet. Negative lowers the mesh (stops floating feet). Applies every frame.',
+    get: () => {
+      const n = Number(GAME_CONFIG.character.playerGroundOffset);
+      return Number.isFinite(n) ? n : 0;
+    },
+    set: (v) => {
+      const n = Number(v);
+      GAME_CONFIG.character.playerGroundOffset = Number.isFinite(n) ? n : 0;
+      applyPlayerMeshOffsetNow();
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'runtime.playerColliderOffset',
+    label: 'Collider offset height',
+    folder: 'Third Person',
+    type: 'float',
+    min: -0.5,
+    max: 0.5,
+    step: 0.005,
+    pinPolicy: 'allow',
+    help: 'Physics capsule Y vs mesh feet. Positive raises the capsule (feet sink); negative lowers it. Turn on Collision overlays to see the capsule.',
+    get: () => {
+      const n = Number(GAME_CONFIG.character.playerColliderOffset);
+      return Number.isFinite(n) ? n : 0;
+    },
+    set: (v) => {
+      const n = Number(v);
+      GAME_CONFIG.character.playerColliderOffset = Number.isFinite(n) ? n : 0;
+      applyPlayerColliderOffsetNow();
     },
   });
 
@@ -406,4 +451,24 @@ function formatTimeOfDay(timeOfDay) {
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+}
+
+function gameRuntime() {
+  return globalThis.__DREAMFALL_SHADER_DEBUG_RUNTIME__ ?? null;
+}
+
+/** Push mesh Y immediately so the slider is visible without waiting a frame. */
+function applyPlayerMeshOffsetNow() {
+  const controller = gameRuntime()?.characterSystem?.character?.animationController;
+  controller?.applyModelVisualOffset?.();
+}
+
+/** Reposition the kinematic capsule immediately when collider offset changes. */
+function applyPlayerColliderOffsetNow() {
+  const rt = gameRuntime();
+  const character = rt?.characterSystem?.character;
+  if (!character || !rt?.physicsSystem?.syncCharacterBody) {
+    return;
+  }
+  rt.physicsSystem.syncCharacterBody(character);
 }

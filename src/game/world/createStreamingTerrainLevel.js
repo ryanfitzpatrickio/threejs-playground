@@ -38,6 +38,7 @@ import {
 } from '../../world/worldMap/roadProfile.js';
 import { buildRiverProfile, applyRiverCorridorHeight } from '../../world/worldMap/riverProfile.js';
 import { createTerrainBiomeMaterial } from '../materials/createTerrainBiomeMaterial.js';
+import { createMaterialWarmupGroup } from './createMaterialWarmupGroup.js';
 import { createTerrainHorizon } from './createTerrainHorizon.js';
 import { createTerrainParallaxLayers } from './createTerrainParallaxLayers.js';
 import { createDistantForest } from './createDistantForest.js';
@@ -970,6 +971,14 @@ export function createStreamingTerrainLevel(qualityPreset = {}, { worldMap = nul
   return {
     name: worldMap ? `World Map: ${worldMap.name ?? 'Untitled'}` : 'Streaming Terrain',
     group,
+    // Initial ring is built synchronously at factory time — play-ready for
+    // pure terrain does not wait on further streaming.
+    isNearFieldReady: () => true,
+
+    createPipelineWarmupGroup: () => {
+      // Reuse the live terrain material so the real TSL pipeline is compiled.
+      return createMaterialWarmupGroup([terrainMaterial], 'Terrain Pipeline Warmup');
+    },
     // The generic camera distance includes 284 m city chunks and can exceed
     // this 32 m terrain streamer's guaranteed coverage by more than a kilometre.
     // Terrain-only levels use this reach so unloaded ground is never exposed.

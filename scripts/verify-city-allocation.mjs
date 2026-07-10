@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { chromium } from 'playwright';
 
-const url = process.env.DREAMFALL_URL ?? 'http://127.0.0.1:5173';
+import { dreamfallAppUrl } from './lib/dreamfallAppUrl.mjs';
+const url = dreamfallAppUrl();
 const timeout = Number(process.env.CITY_VERIFY_TIMEOUT_MS ?? 120000);
 const sampleMs = Number(process.env.CITY_ALLOC_SAMPLE_MS ?? 3000);
 const RETAINED_KB_PER_SEC_CEILING = Number(process.env.HEAP_GROWTH_KB_PER_SEC_CEILING ?? 1500);

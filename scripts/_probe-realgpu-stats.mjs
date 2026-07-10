@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { chromium } from 'playwright';
-const url = process.argv[2] ?? 'http://127.0.0.1:5174';
+import { dreamfallAppUrl } from './lib/dreamfallAppUrl.mjs';
+const url = dreamfallAppUrl();
 const exe = existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
   ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : undefined;
 const browser = await chromium.launch({ headless: false, executablePath: exe, args: ['--enable-unsafe-webgpu','--enable-features=Vulkan'] });

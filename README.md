@@ -194,10 +194,10 @@ Additional Three.js helpers are vendored under `src/three-addons/` when the pinn
 
 ### Characters, Animation, and Models
 
-- Default player rig route: [Mesh2Motion](https://github.com/Mesh2Motion/mesh2motion-app) skeleton + clips (`playernew-mesh2motion.glb`); assets CC0 per Mesh2Motion
-- Alternate player/enemy route: [Adobe Mixamo](https://www.mixamo.com/) skeleton and animation packs under `public/assets/animation-packs/`
+- Default player mesh: Mixamo-compatible T-pose body (`player-tpose.glb`) driven by Mixamo packs under `public/assets/animation-packs/` (`?playerModel=player`)
+- Previous Mara/climber body kept for A/B: `climber.glb` (`?playerModel=climber` or `?playerModel=mixamo`)
+- Alternate skeleton route: [Mesh2Motion](https://github.com/Mesh2Motion/mesh2motion-app) (`playernew-mesh2motion.glb`, `?playerModel=mesh2motion`); assets CC0 per Mesh2Motion
 - Several character and vehicle meshes (climber, soldier, crowd base, overlays): [Tripo](https://www.tripo3d.ai/) exports retargeted onto Mixamo-compatible armatures
-- Legacy climber FBX under `public/assets/models/climber.fbx`
 
 ### Audio
 

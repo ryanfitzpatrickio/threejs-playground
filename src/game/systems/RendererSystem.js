@@ -358,7 +358,11 @@ export class RendererSystem {
   }
 
   render({ scene, camera, deferExpensivePasses = false }) {
+    if (!scene || !camera || !this.renderer) return;
     this.ensureRenderPipeline(scene, camera);
+    // Pipeline can be missing if ensure was interrupted (dispose / invalidate
+    // re-entry during boot). Skip the frame rather than throw mid-load.
+    if (!this.renderPipeline) return;
     this._renderCamera = camera;
     // Drives the SSAO updateInterval gate (and any other every-Nth-frame node
     // throttles installed by ensureRenderPipeline).

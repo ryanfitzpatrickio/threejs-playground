@@ -2,7 +2,8 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
 
-const appUrl = process.env.DREAMFALL_URL ?? 'http://127.0.0.1:5173';
+import { dreamfallAppUrl } from './lib/dreamfallAppUrl.mjs';
+const appUrl = dreamfallAppUrl();
 const outputDir = path.resolve('.codex-tmp', 'verify-soldier');
 const chromePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 await mkdir(outputDir, { recursive: true });

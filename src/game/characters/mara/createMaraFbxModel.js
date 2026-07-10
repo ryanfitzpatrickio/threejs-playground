@@ -121,18 +121,24 @@ export async function createMaraFbxModel({
   modelUrl = MARA_MODEL_URL,
   modelId = 'mixamo',
   skeletonSource = 'mixamo',
+  // Counter-rotate residual +90° X that FBX→GLB leaves on Mixamo armatures.
+  standUpright = false,
+  // Climber: rotate before normalize (rest bones already measure tall on Y after -90).
+  // Player T-pose: rotate after normalize — rest bones cancel to upright so height
+  // must be measured first; -90 then aligns Mixamo clip space so idle stands up.
+  standUprightAfterNormalize = false,
 } = {}) {
   const isGlb = modelUrl.toLowerCase().endsWith('.glb') || modelUrl.toLowerCase().endsWith('.gltf');
   const baseLoader = isGlb ? createGltfLoader() : new FBXLoader();
   const fbxLoader = new FBXLoader(); // always used for animation clip FBXs
 
   const group = new THREE.Group();
-  group.name = isGlb ? 'Mara Vey GLB Character' : 'Mara Vey FBX Character';
+  group.name = isGlb ? 'Player GLB Character' : 'Player FBX Character';
 
   let loaded = await baseLoader.loadAsync(assetUrl(modelUrl));
   // GLTFLoader returns { scene, ... }; FBXLoader returns the root object directly
   let object = isGlb ? (loaded.scene || loaded) : loaded;
-  object.name = isGlb ? 'Mara Climber GLB' : 'Mara Climber FBX';
+  object.name = isGlb ? `Player ${modelId} GLB` : `Player ${modelId} FBX`;
 
   // Make sure world matrices + skeleton are ready as early as possible for GLB skinned models.
   object.updateMatrixWorld(true);
@@ -152,7 +158,7 @@ export async function createMaraFbxModel({
   // bounding-box / bind-pose work that reads the geometry. See prepareWebGPUGeometry.js.
   flattenObjectForWebGPU(object);
 
-  if (isGlb) {
+  if (isGlb && standUpright && !standUprightAfterNormalize) {
     // climber.glb is a Tripo mesh rigged onto a Mixamo skeleton, then FBX→GLB
     // converted. That conversion leaves a residual +90° X rotation (and a 0.01
     // cm→m scale) on both the Armature and SkinnedMesh nodes — FBXLoader baked
@@ -168,6 +174,11 @@ export async function createMaraFbxModel({
   const targetNames = collectTargetNames(object);
 
   const modelScale = normalizeCharacterObject(object);
+
+  if (isGlb && standUpright && standUprightAfterNormalize) {
+    object.rotation.x = -Math.PI / 2;
+    object.updateMatrixWorld(true);
+  }
 
   // IMPORTANT: do NOT call skeleton.calculateInverses() here. A properly
   // exported GLB already ships correct inverse-bind matrices, and three's

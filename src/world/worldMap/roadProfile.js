@@ -11,7 +11,7 @@
  * Exposes a spatial-hash corridorAt(x,z) for cheap per-vertex queries.
  */
 
-import { buildRoadIntersections } from './roadIntersections.js';
+import { buildRoadIntersections, levelIntersectionApproaches } from './roadIntersections.js';
 import { surfaceForRoad } from './roadSurface.js';
 import { roadElevationMode } from './worldMapSchema.js';
 
@@ -98,6 +98,57 @@ function smooth(values, radius) {
     out[i] = count > 0 ? sum / count : values[i];
   }
   return out;
+}
+
+/**
+ * For junctions whose approaches are free (terrain-follow, not fixed elevation),
+ * re-seat floating pads onto the heightfield and clamp nearby samples so grade-
+ * smoothing cannot leave bridge decks under the junction (cars clipping under a
+ * floating slab). Fixed / overpass approaches are left alone.
+ */
+function pinTerrainFollowJunctions(built, intersections) {
+  // Stay under BRIDGE_THRESH so re-grounded samples never spawn deck colliders.
+  const maxClearance = BRIDGE_THRESH * 0.85;
+
+  for (const intersection of intersections) {
+    if (!intersection.connections?.length) continue;
+    const anyFixed = intersection.connections.some((ref) => built[ref.roadIndex]?.fixed);
+    if (anyFixed) continue;
+
+    let sumTerrain = 0;
+    let count = 0;
+    for (const ref of intersection.connections) {
+      const road = built[ref.roadIndex];
+      if (!road) continue;
+      const k = Math.max(0, Math.min(road.n - 1, Math.round(ref.at)));
+      sumTerrain += road.terrainY[k];
+      count += 1;
+    }
+    if (count === 0) continue;
+
+    const terrainY = sumTerrain / count;
+    // Re-pin the flat pad when it would float as a bridge surface.
+    if (intersection.y - terrainY > BRIDGE_THRESH * 0.45) {
+      intersection.y = terrainY;
+      levelIntersectionApproaches(intersection, built);
+    }
+
+    // Clamp every free approach sample inside the junction influence zone so
+    // intermediate grade-smoothed samples can't leave a deck under the pad.
+    for (const ref of intersection.connections) {
+      const road = built[ref.roadIndex];
+      if (!road || road.fixed) continue;
+      const transition = ref.transition ?? 12;
+      const influence = (intersection.radius ?? 4) + transition;
+      for (let i = 0; i < road.n; i += 1) {
+        const dx = road.samples[i].x - intersection.x;
+        const dz = road.samples[i].z - intersection.z;
+        if (dx * dx + dz * dz > influence * influence) continue;
+        const ceiling = road.terrainY[i] + maxClearance;
+        if (road.roadY[i] > ceiling) road.roadY[i] = ceiling;
+      }
+    }
+  }
 }
 
 /** Constant grade from terrain at the road start to terrain at the road end. */
@@ -254,6 +305,13 @@ export function buildRoadProfile({
   }
 
   const intersections = buildRoadIntersections(built);
+
+  // Terrain-follow seams that grade-smoothing left high above the heightfield
+  // otherwise spawn floating intersection pads + deck colliders (cars clip under
+  // the slab). Re-seat those at-grade junctions onto local terrain so the pad,
+  // ribbon, and ground conform share one elevation.
+  pinTerrainFollowJunctions(built, intersections);
+
   for (const b of built) {
     for (let k = 0; k < b.n; k += 1) {
       b.grounded[k] = b.fixed || (!b.wilds[k] && b.roadY[k] - b.terrainY[k] <= BRIDGE_THRESH) ? 1 : 0;
@@ -311,16 +369,19 @@ export function buildRoadProfile({
 
   for (let i = 0; i < intersections.length; i += 1) {
     const intersection = intersections[i];
-    if (!intersection.grounded) continue;
+    // Tunnel portal/intersection terrain must remain governed by the tunnel road
+    // corridor so portal carving, buried cover and hole-mask tagging survive.
+    // A generic flat pad reports tunnel:false and otherwise plugs the bore.
+    if (!intersection.grounded || intersection.tunnelConnection) continue;
     const connected = built[intersection.connections?.[0]?.roadIndex];
     const blend = connected?.edgeBlend ?? EDGE_BLEND;
-    const reach = intersection.radius + blend;
+    const bounds = polygonBounds(intersection.footprint);
     addToGrid(
       intersectionGrid,
-      intersection.x - reach,
-      intersection.z - reach,
-      intersection.x + reach,
-      intersection.z + reach,
+      bounds.minX - blend,
+      bounds.minZ - blend,
+      bounds.maxX + blend,
+      bounds.maxZ + blend,
       i,
     );
   }
@@ -343,15 +404,10 @@ export function buildRoadProfile({
       const intersection = intersections[intersectionIndex];
       const connected = built[intersection.connections?.[0]?.roadIndex];
       const blend = connected?.edgeBlend ?? EDGE_BLEND;
-      const reach = intersection.radius + blend;
-      const ddx = x - intersection.x;
-      if (ddx > reach || ddx < -reach) continue;
-      const ddz = z - intersection.z;
-      if (ddz > reach || ddz < -reach) continue;
-      const dSq = ddx * ddx + ddz * ddz;
-      if (dSq > reach * reach) continue;
-      const d = Math.sqrt(dSq);
-      const w = d <= intersection.radius ? 1 : 1 - (d - intersection.radius) / blend;
+      const signedDistance = signedDistanceToPolygon(x, z, intersection.footprint);
+      if (signedDistance > blend) continue;
+      const d = Math.max(0, signedDistance);
+      const w = signedDistance <= 0 ? 1 : 1 - signedDistance / blend;
       if (w <= 0 || w < bestWeight || (w === bestWeight && d >= bestDist)) continue;
       bestWeight = w;
       bestDist = d;
@@ -423,6 +479,30 @@ export function buildRoadProfile({
   };
 
   return { roads: built, intersections, corridorAt };
+}
+
+function polygonBounds(points = []) {
+  let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
+  for (const point of points) {
+    minX = Math.min(minX, point.x); minZ = Math.min(minZ, point.z);
+    maxX = Math.max(maxX, point.x); maxZ = Math.max(maxZ, point.z);
+  }
+  return Number.isFinite(minX) ? { minX, minZ, maxX, maxZ } : { minX: 0, minZ: 0, maxX: 0, maxZ: 0 };
+}
+
+function signedDistanceToPolygon(x, z, points = []) {
+  let inside = false;
+  let distanceSq = Infinity;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i, i += 1) {
+    const a = points[j], b = points[i];
+    if (((a.z > z) !== (b.z > z)) && x < (b.x - a.x) * (z - a.z) / ((b.z - a.z) || 1e-9) + a.x) inside = !inside;
+    const dx = b.x - a.x, dz = b.z - a.z;
+    const t = Math.max(0, Math.min(1, ((x - a.x) * dx + (z - a.z) * dz) / (dx * dx + dz * dz || 1)));
+    const qx = a.x + dx * t, qz = a.z + dz * t;
+    distanceSq = Math.min(distanceSq, (x - qx) ** 2 + (z - qz) ** 2);
+  }
+  const distance = Math.sqrt(distanceSq);
+  return inside ? -distance : distance;
 }
 
 // Apply the road corridor's height transform to a sampled terrain height `h` at a

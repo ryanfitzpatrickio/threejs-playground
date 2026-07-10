@@ -31,6 +31,7 @@ const stubLevel = {
   getRoadSurfaceAt: spy('getRoadSurfaceAt', 'dirt'),
   getBlockingColliderAt: spy('getBlockingColliderAt', null),
   ensureGroundCollider: spy('ensureGroundCollider', true),
+  isNearFieldReady: spy('isNearFieldReady', true),
   geometryIndex: {
     entries: [],
     raycast: spy('geometryIndex.raycast', []),
@@ -50,6 +51,7 @@ const cases = [
   ['updateStreaming', () => ls.updateStreaming(new THREE.Vector3()), 'updateStreaming'],
   ['raycastGeometry', () => ls.raycastGeometry({}), 'geometryIndex.raycast'],
   ['warmupGeometryRaycasts', () => ls.warmupGeometryRaycasts({}), 'geometryIndex.warmupBoundsTrees'],
+  ['isNearFieldReady', () => ls.isNearFieldReady(), 'isNearFieldReady'],
 ];
 
 for (const [method, invoke, underlying] of cases) {

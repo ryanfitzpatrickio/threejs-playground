@@ -3,6 +3,13 @@ export const GAME_CONFIG = {
     planeSize: 180,
     planeSegments: 72,
   },
+  /** Boot / main-menu flow (load-startup-main-menu-plan). */
+  boot: {
+    /** When false, always skip the main menu (rollback / power-user). */
+    mainMenuEnabled: true,
+    /** Soft wall-clock budget for shared Rapier + optional prefetch. */
+    sharedWarmupBudgetMs: 2000,
+  },
   camera: {
     followHeight: 2.75,
     followDistance: 6,
@@ -158,8 +165,9 @@ export const GAME_CONFIG = {
   },
   character: {
     // Selects a profile from playerModelProfiles.js. Override at runtime with
-    // ?playerModel=mixamo or ?playerModel=mesh2motion for side-by-side testing.
-    playerModel: 'mixamo',
+    // ?playerModel=player | climber | mixamo | mesh2motion for side-by-side testing.
+    // Default is the Mixamo-compatible T-pose body; climber/mixamo keep the old Mara mesh.
+    playerModel: 'player',
     // Jacket / cloth experiments (three-simplecloth). Disabled by default — set
     // jacketExperiments: true to re-enable, or force a one-off test with
     // ?jacket=cloth or ?jacket=procedural in the URL.
@@ -201,8 +209,12 @@ export const GAME_CONFIG = {
     groundSnapHeight: 0.18,
     groundSnapDownHeight: 0.52,
     // Visual model offset relative to ground snap / physics feet.
-    // Negative lowers the character (fixes floating feet).
-    playerGroundOffset: -0.05,
+    // Tuned for the default Mixamo T-pose player body (debug → Third Person).
+    playerGroundOffset: 0.215,
+    // Physics capsule vertical offset relative to mesh feet (group.position.y).
+    // Positive raises the capsule (feet sink relative to ground contact); negative
+    // lowers it (feet float). Tunable in debug → Third Person.
+    playerColliderOffset: 0,
     // Swim domain: entering a river (feet below the water surface) replaces gravity
     // with a buoyancy spring, slows horizontal movement, and plays the swim state.
     water: {

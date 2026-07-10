@@ -123,6 +123,22 @@ export function SettingsDialog(props) {
 
             <div class="settings-dialog__panel">
               <Show when={tab() === 'scenes'}>
+                <Show when={props.canReturnToMenu && props.onReturnToMenu}>
+                  <SettingSection
+                    title="Main menu"
+                    hint="Leave the current experience and return to the title menu."
+                  >
+                    <ChipGroup
+                      label="Main menu"
+                      value=""
+                      onChange={() => props.onReturnToMenu?.()}
+                      options={[
+                        { id: 'menu', label: 'Main menu', title: 'Return to experience select', accent: true },
+                      ]}
+                    />
+                  </SettingSection>
+                </Show>
+
                 <SettingSection
                   title="Playable scenes"
                   hint="Switching scenes reloads the active world."

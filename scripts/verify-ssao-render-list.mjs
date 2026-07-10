@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { dreamfallAppUrl } from './lib/dreamfallAppUrl.mjs';
 import { existsSync } from 'node:fs';
 import { chromium } from 'playwright';
 
@@ -21,7 +22,7 @@ try {
     localStorage.setItem('dreamfall:level', 'world');
     localStorage.setItem('dreamfall:controls-dismissed', 'true');
   });
-  await page.goto(process.env.DREAMFALL_URL ?? 'http://127.0.0.1:5173', {
+  await page.goto(dreamfallAppUrl(), {
     waitUntil: 'domcontentloaded', timeout: 30000,
   });
   await page.waitForSelector('canvas.game-canvas');

@@ -6,6 +6,7 @@ import { createWingsuit } from '../characters/mara/createWingsuit.js';
 import { createProceduralJacket } from '../characters/mara/createProceduralJacket.js';
 import { createMesh2MotionPlayerModel } from '../characters/player/createMesh2MotionPlayerModel.js';
 import { getPlayerModelProfile } from '../characters/player/playerModelProfiles.js';
+import { createPlayerSunglasses } from '../characters/player/createPlayerSunglasses.js';
 import { attachJacketCloth, disposeJacketCloth } from '../characters/mara/attachJacketCloth.js';
 import { isJacketExperimentsEnabled, resolveJacketMode } from '../characters/mara/jacketConfig.js';
 import { disposeObject3D } from '../utils/disposeObject3D.js';
@@ -42,6 +43,7 @@ export class CharacterSystem {
     };
 
     await this.attachSword(this.character);
+    await this.attachSunglasses(this.character);
     this.attachWingsuit(this.character, scene);
 
     await nextFrame();
@@ -129,6 +131,36 @@ export class CharacterSystem {
     }
 
     character.sword = sword;
+  }
+
+  // The optimized model is baked at 0.15 m wide. Bone-local coordinates are in
+  // the source rig's units, while inherited scale is cancelled to retain metres.
+  async attachSunglasses(character, factory = createPlayerSunglasses) {
+    if (character?.modelId !== 'player') return;
+
+    const head = character.animationController?.modelRoot?.getObjectByName('mixamorigHead');
+    if (!head) {
+      warnSunglassesOnce('Default player has no mixamorigHead bone; sunglasses skipped.');
+      return;
+    }
+
+    try {
+      const sunglasses = await factory();
+      sunglasses.group.position.set(0, 12, 9);
+      sunglasses.group.rotation.set(0, 0, 0);
+      head.add(sunglasses.group);
+
+      head.updateWorldMatrix(true, false);
+      const elements = head.matrixWorld.elements;
+      const inherited = Math.hypot(elements[0], elements[1], elements[2]);
+      if (Number.isFinite(inherited) && inherited > 1e-6) {
+        sunglasses.group.scale.setScalar(1 / inherited);
+      }
+
+      character.sunglasses = sunglasses;
+    } catch (error) {
+      warnSunglassesOnce('Player sunglasses failed to load; continuing without them.', error);
+    }
   }
 
   snapshot() {
@@ -334,6 +366,8 @@ async function loadBestMaraModel() {
       modelUrl: profile.url,
       modelId: profile.id,
       skeletonSource: profile.skeletonSource,
+      standUpright: profile.standUpright === true,
+      standUprightAfterNormalize: profile.standUprightAfterNormalize === true,
     });
   } catch (error) {
     console.warn(`Falling back to procedural Mara model after ${profile.id} failed to load.`, error);
@@ -366,4 +400,11 @@ function vectorSnapshot(vector) {
     y: Number(vector.y.toFixed(3)),
     z: Number(vector.z.toFixed(3)),
   };
+}
+
+let didWarnSunglasses = false;
+function warnSunglassesOnce(message, error) {
+  if (didWarnSunglasses) return;
+  didWarnSunglasses = true;
+  console.warn(`[sunglasses] ${message}`, ...(error ? [error] : []));
 }

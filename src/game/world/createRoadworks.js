@@ -31,6 +31,8 @@ import { buildRibbonFrame, offsetPoint } from '../../world/worldMap/trackFrame.j
 import { chunkGeometriesByGrid } from '../utils/chunkGeometryByGrid.js';
 import { roadWantsTread, surfaceForRoad } from '../../world/worldMap/roadSurface.js';
 import { getQualityPreset, getQualityLevel } from '../config/qualityPresets.js';
+import { TrafficlightGenerator } from '../../three-addons/generators/city/TrafficlightGenerator.js';
+import { StreetlightGenerator } from '../../three-addons/generators/city/StreetlightGenerator.js';
 
 // Parallax occlusion mapping for rally surfaces is quality-gated (ultra-only).
 // Read once at module load — the dirt material below is a build-once singleton,
@@ -82,8 +84,10 @@ const intersectionPaintMaterial = new THREE.MeshStandardMaterial({
   polygonOffsetFactor: -2,
   polygonOffsetUnits: -2,
 });
+const islandMaterial = new THREE.MeshStandardMaterial({ color: 0xb8b5aa, roughness: 0.92, metalness: 0 });
 disablePbrEnvironment(pierMaterial);
 disablePbrEnvironment(intersectionPaintMaterial);
+disablePbrEnvironment(islandMaterial);
 
 // POM marches in tangent space, so the rally ribbon meshes need a `tangent`
 // attribute. THREE.computeTangents() requires an index, but chunkGeometriesByGrid
@@ -267,6 +271,10 @@ export function createRoadworks({ profile, sampleHeight, mudField = null, riverC
   group.userData.noCollision = true;
 
   const colliders = [];
+  const trafficLightPlacements = [];
+  const streetLightPlacements = [];
+  const stopSignPlacements = [];
+  const islandGeometries = [];
   const ribbonGeoms = [];
   const dirtRibbonGeoms = [];
   const wetRibbonGeoms = [];
@@ -519,9 +527,15 @@ export function createRoadworks({ profile, sampleHeight, mudField = null, riverC
     // Bridged spans → deck colliders + piers.
     let lastPierS = -Infinity;
     let accumS = 0;
+    const groundedJunctions = (profile.intersections ?? []).filter((ix) => ix.grounded !== false);
     for (let i = 0; i < n - 1; i += 1) {
       const segLen = Math.hypot(samples[i + 1].x - samples[i].x, samples[i + 1].z - samples[i].z);
       accumS += segLen;
+      // Never put a free-floating deck under an at-grade junction pad — the
+      // leveled ribbon is meant to sit on conformed terrain there.
+      if (!forceDeckCollider && segmentInsideGroundedJunction({
+        samples, i, junctions: groundedJunctions,
+      })) continue;
       // Profile grounded flags are sampled before river carves; re-check clearance
       // against the final shaped surface so roads over water still get deck boxes.
       if (!forceDeckCollider && grounded[i] && grounded[i + 1]
@@ -616,6 +630,10 @@ export function createRoadworks({ profile, sampleHeight, mudField = null, riverC
   // guarantees a level driving surface while the leveled road profiles ease every
   // connected approach onto it.
   for (const intersection of profile.intersections ?? []) {
+    // A two-road seam is only a shared terrain/elevation transition. The authored
+    // ribbons retain their own surface and markings; no junction polygon or
+    // furniture should make an ordinary bend look like an intersection.
+    if (intersection.kind === 'continuation') continue;
     // Junction pads use the shared dirt look for any loose (dirt/mud) approach —
     // no deform on the flat pad in v1; paint only on paved approaches.
     const loose = intersection.connections?.some((connection) => {
@@ -624,6 +642,13 @@ export function createRoadworks({ profile, sampleHeight, mudField = null, riverC
     });
     (loose ? dirtRibbonGeoms : ribbonGeoms).push(createIntersectionSurface(intersection));
     if (!loose) paintGeoms.push(...createIntersectionPaint(intersection));
+    if (!loose) addIntersectionFurniture(intersection, trafficLightPlacements, streetLightPlacements, stopSignPlacements);
+    if (!loose && intersection.sizeClass === 'large' && intersection.wayCount >= 3) {
+      for (const island of createTrafficIslands(intersection)) {
+        islandGeometries.push(island.geometry);
+        colliders.push(island.collider);
+      }
+    }
   }
 
   if (ribbonGeoms.length > 0) {
@@ -712,12 +737,37 @@ export function createRoadworks({ profile, sampleHeight, mudField = null, riverC
     }
   }
 
+  if (islandGeometries.length > 0) {
+    const merged = mergeGeometries(islandGeometries, false);
+    for (const geometry of islandGeometries) geometry.dispose();
+    if (merged) {
+      const mesh = new THREE.Mesh(merged, islandMaterial);
+      mesh.name = 'Intersection Traffic Islands';
+      mesh.castShadow = mesh.receiveShadow = true;
+      group.add(mesh);
+    }
+  }
+
+  if (trafficLightPlacements.length > 0) {
+    const mesh = new TrafficlightGenerator().build(trafficLightPlacements);
+    mesh.userData.lodDistance = 260;
+    group.add(mesh);
+  }
+  if (streetLightPlacements.length > 0) {
+    const mesh = new StreetlightGenerator({ height: 8, reach: 2.1 }).build(streetLightPlacements);
+    mesh.userData.lodDistance = 260;
+    group.add(mesh);
+  }
+  if (stopSignPlacements.length > 0) group.add(createStopSigns(stopSignPlacements));
+
   group.userData.intersections = (profile.intersections ?? []).map((intersection) => ({
     id: intersection.id,
     x: intersection.x,
     z: intersection.z,
     elevation: intersection.y + RIBBON_LIFT,
     wayCount: intersection.wayCount,
+    kind: intersection.kind,
+    sizeClass: intersection.sizeClass,
   }));
 
   return {
@@ -745,27 +795,22 @@ function updateDistanceLOD(root, position) {
 }
 
 function createIntersectionSurface(intersection) {
-  const sides = 20;
-  const vertexCount = sides + 1;
+  const outline = intersection.footprint ?? [];
+  const vertexCount = outline.length;
   const positions = new Float32Array(vertexCount * 3);
   const roadMark = new Float32Array(vertexCount * 3);
   const roadIntersection = new Float32Array(vertexCount);
   const uvs = new Float32Array(vertexCount * 2);
   const y = intersection.y + RIBBON_LIFT + 0.008;
-  positions[0] = intersection.x;
-  positions[1] = y;
-  positions[2] = intersection.z;
-  for (let i = 0; i < sides; i += 1) {
-    const angle = (i / sides) * Math.PI * 2;
-    const offset = (i + 1) * 3;
-    positions[offset] = intersection.x + Math.cos(angle) * intersection.radius;
+  for (let i = 0; i < vertexCount; i += 1) {
+    const offset = i * 3;
+    positions[offset] = outline[i].x;
     positions[offset + 1] = y;
-    positions[offset + 2] = intersection.z + Math.sin(angle) * intersection.radius;
-    uvs[(i + 1) * 2] = Math.cos(angle) * 0.5 + 0.5;
-    uvs[(i + 1) * 2 + 1] = Math.sin(angle) * 0.5 + 0.5;
+    positions[offset + 2] = outline[i].z;
+    uvs[i * 2] = (outline[i].x - intersection.x) / (intersection.radius * 2) + 0.5;
+    uvs[i * 2 + 1] = (outline[i].z - intersection.z) / (intersection.radius * 2) + 0.5;
   }
-  const indices = [];
-  for (let i = 0; i < sides; i += 1) indices.push(0, ((i + 1) % sides) + 1, i + 1);
+  const indices = THREE.ShapeUtils.triangulateShape(outline.map((p) => new THREE.Vector2(p.x, p.z)), []).flat();
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   geometry.setAttribute('roadMark', new THREE.BufferAttribute(roadMark, 3));
@@ -778,6 +823,7 @@ function createIntersectionSurface(intersection) {
 
 function createIntersectionPaint(intersection) {
   const geometries = [];
+  if (intersection.kind === 'continuation') return geometries;
   const y = intersection.y + RIBBON_LIFT + 0.035;
   for (const arm of intersection.arms) {
     const lateralX = -arm.z;
@@ -826,8 +872,112 @@ function createIntersectionPaint(intersection) {
         }));
       }
     }
+
+    // Large approaches get a real widened asphalt throat plus explicit turn-lane
+    // channelisation. The refuge islands below separate this right slip path from
+    // through traffic; these dashed marks define the left-turn pocket.
+    if (intersection.sizeClass === 'large') {
+      for (const lateral of [-arm.half * 0.34, arm.half * 0.34]) {
+        geometries.push(createPaintQuad({
+          cx: intersection.x + arm.x * (intersection.radius - 8) + lateralX * lateral,
+          cz: intersection.z + arm.z * (intersection.radius - 8) + lateralZ * lateral,
+          y,
+          axisX: arm.x,
+          axisZ: arm.z,
+          length: 7,
+          depth: 0.16,
+        }));
+      }
+    }
   }
   return geometries;
+}
+
+function placementMatrix(x, y, z, towardX, towardZ) {
+  const yaw = Math.atan2(towardX, towardZ);
+  return new THREE.Matrix4().compose(
+    new THREE.Vector3(x, y, z),
+    new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw),
+    new THREE.Vector3(1, 1, 1),
+  );
+}
+
+function addIntersectionFurniture(intersection, trafficLights, streetLights, stopSigns) {
+  if (intersection.kind === 'continuation') return;
+  for (const arm of intersection.arms) {
+    const lateralX = -arm.z, lateralZ = arm.x;
+    const station = intersection.radius + 1.5;
+    const curb = arm.half + 0.9;
+    const x = intersection.x + arm.x * station + lateralX * curb;
+    const z = intersection.z + arm.z * station + lateralZ * curb;
+    if (intersection.sizeClass !== 'small') {
+      trafficLights.push(placementMatrix(x, intersection.y + RIBBON_LIFT, z, -arm.x, -arm.z));
+    } else {
+      stopSigns.push(placementMatrix(x, intersection.y + RIBBON_LIFT, z, -arm.x, -arm.z));
+    }
+    if (intersection.kind === 'cross') {
+      const sx = intersection.x + arm.x * (station + 1.2) - lateralX * curb;
+      const sz = intersection.z + arm.z * (station + 1.2) - lateralZ * curb;
+      streetLights.push(placementMatrix(sx, intersection.y + RIBBON_LIFT, sz, -arm.x, -arm.z));
+    }
+  }
+}
+
+function createStopSigns(placements) {
+  const group = new THREE.Group();
+  group.name = 'Stop Signs';
+  const poleMaterial = new THREE.MeshStandardMaterial({ color: 0x777b78, roughness: 0.55, metalness: 0.7 });
+  const signMaterial = new THREE.MeshStandardMaterial({ color: 0xb51d18, roughness: 0.72, metalness: 0.02 });
+  const pole = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.045, 0.055, 2.4, 7).translate(0, 1.2, 0), poleMaterial, placements.length);
+  const faceGeometry = new THREE.CylinderGeometry(0.42, 0.42, 0.06, 8).rotateX(Math.PI / 2).translate(0, 2.45, 0);
+  const faces = new THREE.InstancedMesh(faceGeometry, signMaterial, placements.length);
+  for (let i = 0; i < placements.length; i += 1) {
+    pole.setMatrixAt(i, placements[i]);
+    faces.setMatrixAt(i, placements[i]);
+  }
+  pole.castShadow = faces.castShadow = true;
+  group.add(pole, faces);
+  group.userData.lodDistance = 180;
+  return group;
+}
+
+function createTrafficIslands(intersection) {
+  const islands = [];
+  for (const arm of intersection.arms) {
+    const lateralX = -arm.z, lateralZ = arm.x;
+    const side = 1;
+    const baseX = intersection.x + arm.x * (intersection.radius - 4) + lateralX * (arm.half + 1.8) * side;
+    const baseZ = intersection.z + arm.z * (intersection.radius - 4) + lateralZ * (arm.half + 1.8) * side;
+    const tipX = baseX - arm.x * 5;
+    const tipZ = baseZ - arm.z * 5;
+    const halfWidth = 1.25;
+    const y = intersection.y + RIBBON_LIFT + 0.13;
+    const shape = new THREE.Shape([
+      new THREE.Vector2(baseX + lateralX * halfWidth, baseZ + lateralZ * halfWidth),
+      new THREE.Vector2(baseX - lateralX * halfWidth, baseZ - lateralZ * halfWidth),
+      new THREE.Vector2(tipX, tipZ),
+    ]);
+    const geometry = new THREE.ExtrudeGeometry(shape, { depth: 0.22, bevelEnabled: false });
+    geometry.rotateX(Math.PI / 2);
+    geometry.translate(0, y, 0);
+    const minX = Math.min(baseX - Math.abs(lateralX) * halfWidth, baseX + Math.abs(lateralX) * halfWidth, tipX);
+    const maxX = Math.max(baseX - Math.abs(lateralX) * halfWidth, baseX + Math.abs(lateralX) * halfWidth, tipX);
+    const minZ = Math.min(baseZ - Math.abs(lateralZ) * halfWidth, baseZ + Math.abs(lateralZ) * halfWidth, tipZ);
+    const maxZ = Math.max(baseZ - Math.abs(lateralZ) * halfWidth, baseZ + Math.abs(lateralZ) * halfWidth, tipZ);
+    islands.push({
+      geometry,
+      collider: {
+        name: `Traffic Island ${intersection.id}-${arm.roadIndex}-${arm.direction}`,
+        minX, maxX, minZ, maxZ,
+        topY: y, bottomY: y - 0.22,
+        center: { x: (baseX + tipX) * 0.5, y: y - 0.11, z: (baseZ + tipZ) * 0.5 },
+        halfExtents: { x: halfWidth, y: 0.11, z: 2.5 },
+        orientation: { x: 0, y: Math.sin(Math.atan2(arm.x, arm.z) * 0.5), z: 0, w: Math.cos(Math.atan2(arm.x, arm.z) * 0.5) },
+        width: maxX - minX, depth: maxZ - minZ, vaultable: false,
+      },
+    });
+  }
+  return islands;
 }
 
 function createPaintQuad({ cx, cz, y, axisX, axisZ, length, depth }) {
@@ -861,6 +1011,24 @@ function segmentCrossesRiver({ samples, roadY, i, corridorAt, riverCorridorAt })
     const road = corridorAt(p.x, p.z);
     const river = riverCorridorAt(p.x, p.z);
     if (road?.weight > 0.5 && river?.weight > 0.5) return true;
+  }
+  return false;
+}
+
+/** True when a road segment sits inside an at-grade junction footprint. */
+function segmentInsideGroundedJunction({ samples, i, junctions }) {
+  if (!junctions?.length) return false;
+  const a = samples[i];
+  const c = samples[i + 1];
+  const mx = (a.x + c.x) * 0.5;
+  const mz = (a.z + c.z) * 0.5;
+  for (const ix of junctions) {
+    const r = (ix.radius ?? 4) + 2;
+    const r2 = r * r;
+    const d0 = (a.x - ix.x) * (a.x - ix.x) + (a.z - ix.z) * (a.z - ix.z);
+    const d1 = (c.x - ix.x) * (c.x - ix.x) + (c.z - ix.z) * (c.z - ix.z);
+    const dm = (mx - ix.x) * (mx - ix.x) + (mz - ix.z) * (mz - ix.z);
+    if (d0 <= r2 || d1 <= r2 || dm <= r2) return true;
   }
   return false;
 }

@@ -3,7 +3,8 @@
 import { existsSync } from 'node:fs';
 import { chromium } from 'playwright';
 
-const url = process.env.DREAMFALL_URL ?? 'http://127.0.0.1:5173';
+import { dreamfallAppUrl } from './lib/dreamfallAppUrl.mjs';
+const url = dreamfallAppUrl();
 const browser = await chromium.launch({
   headless: true,
   executablePath: existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')

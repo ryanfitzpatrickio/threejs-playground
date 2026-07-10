@@ -526,6 +526,7 @@ export class CameraSystem {
       delta,
       targetSmoothing,
       maxLag: Math.max(tuning.maxTargetLag, maxChaseLag * 3),
+      planarOnly: true,
     });
 
     // Vertical suspension heave is filtered harder than planar follow so bumps
@@ -702,7 +703,7 @@ export class CameraSystem {
     }
   }
 
-  updateSmoothedTarget({ target, delta, targetSmoothing, maxLag }) {
+  updateSmoothedTarget({ target, delta, targetSmoothing, maxLag, planarOnly = false }) {
     if (
       !this.hasSmoothedTarget ||
       !Number.isFinite(delta) ||
@@ -717,11 +718,18 @@ export class CameraSystem {
     }
 
     this.lastTargetSmoothing = targetSmoothing;
-    // Planar follow only — vertical heave is handled by the dedicated height filter
-    // so suspension bounce does not yank the chase cam every physics step.
     const alpha = 1 - Math.exp(-targetSmoothing * delta);
     this.smoothedTarget.x = THREE.MathUtils.lerp(this.smoothedTarget.x, target.x, alpha);
     this.smoothedTarget.z = THREE.MathUtils.lerp(this.smoothedTarget.z, target.z, alpha);
+    // On foot, follow vertical motion (climb / jump / hang). Vehicle chase keeps
+    // planar-only and applies its own suspension-filtered height after this call —
+    // without Y follow here the third-person cam freezes at the old altitude while
+    // the player climbs city buildings.
+    if (!planarOnly) {
+      this.smoothedTarget.y = THREE.MathUtils.lerp(this.smoothedTarget.y, target.y, alpha);
+      this.smoothedTargetHeight = this.smoothedTarget.y;
+      this.hasSmoothedTargetHeight = true;
+    }
   }
 
   resize({ aspect }) {
@@ -730,11 +738,30 @@ export class CameraSystem {
   }
 
   snapshot() {
+    if (!this.camera) {
+      return {
+        aspect: 1,
+        fov: 0,
+        yaw: 0,
+        pitch: 0,
+        distance: 0,
+        positionSmoothing: 0,
+        targetSmoothing: 0,
+        driving: false,
+        vehicleCameraMode: this.vehicleCameraMode ?? 'close',
+        comfortEnabled: this.comfortEnabled !== false,
+        cameraFeel: this.cameraFeel ?? 'comfort',
+        focusReticle: false,
+        rearViewBlend: 0,
+        photoMode: false,
+        onFootFirstPerson: false,
+      };
+    }
     const modeBlendT = this.modeBlend
       ? Number((this.modeBlend.elapsed / Math.max(this.modeBlend.duration, 1e-4)).toFixed(3))
       : 1;
     return {
-      aspect: Number(this.camera.aspect.toFixed(3)),
+      aspect: Number((this.camera.aspect ?? 1).toFixed(3)),
       fov: this.camera.fov,
       yaw: Number(this.yaw.toFixed(3)),
       pitch: Number(this.pitch.toFixed(3)),

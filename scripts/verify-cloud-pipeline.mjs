@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { dreamfallAppUrl } from './lib/dreamfallAppUrl.mjs';
 import { existsSync } from 'node:fs';
 import { chromium } from 'playwright';
 import {
@@ -129,7 +130,7 @@ try {
     globalThis.__CLOUD_TEST_QUALITY__ = quality;
     localStorage.setItem('dreamfall:quality', quality);
   }, browserQuality);
-  await page.goto(process.env.DREAMFALL_URL ?? 'http://127.0.0.1:5173', {
+  await page.goto(dreamfallAppUrl(), {
     waitUntil: 'domcontentloaded',
     timeout: 30000,
   });

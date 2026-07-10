@@ -16,6 +16,7 @@ import * as THREE from 'three';
 import { TerrainGenerator } from 'three/examples/jsm/generators/TerrainGenerator.js';
 import { ForestGenerator } from 'three/examples/jsm/generators/ForestGenerator.js';
 import { createLevelGeometryIndex } from './createLevelGeometryIndex.js';
+import { createMaterialWarmupGroup } from './createMaterialWarmupGroup.js';
 import { disposeObject3D } from '../utils/disposeObject3D.js';
 import { getRecommendedCameraFar } from '../config/qualityPresets.js';
 
@@ -70,6 +71,27 @@ export function createWildsLevel(qualityPreset = {}) {
     ropes: [],
     geometryIndex,
     spawnPoint: new THREE.Vector3(0, spawnY, 0),
+    // Finite terrain + forest built sync at factory time.
+    isNearFieldReady: () => true,
+
+    createPipelineWarmupGroup: () => {
+      // Collect materials already on the level; SSS foliage is hidden during
+      // compileAsync by GameRuntime.hideUnsafeAsyncCompileObjects.
+      const materials = [];
+      terrainGroup.traverse((obj) => {
+        if (obj.isMesh && obj.material) {
+          const list = Array.isArray(obj.material) ? obj.material : [obj.material];
+          materials.push(...list);
+        }
+      });
+      // Forest instanced material — may be MeshSSSNodeMaterial; still include for
+      // rAF batch path after compileAsync unhide.
+      if (forest.mesh?.material) {
+        materials.push(forest.mesh.material);
+      }
+      return createMaterialWarmupGroup(materials, 'Wilds Pipeline Warmup');
+    },
+
     // One big Rapier heightfield matching the visual mesh. heights are row-major
     // [iz*N+ix] (i=x, j=z) — exactly what PhysicsSystem.createTerrainHeightfield expects.
     terrainChunks: [

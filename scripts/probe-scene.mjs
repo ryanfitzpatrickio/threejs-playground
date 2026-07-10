@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { existsSync } from 'node:fs';
+import { dreamfallAppUrl } from './lib/dreamfallAppUrl.mjs';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
 
-const appUrl = process.env.DREAMFALL_URL ?? 'http://127.0.0.1:5174';
+const appUrl = dreamfallAppUrl() /* was 5174 default */;
 const outDir = path.resolve('.codex-tmp', 'probe-browser');
 const chromePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const browser = await chromium.launch({ headless: true, executablePath: existsSync(chromePath) ? chromePath : undefined, args: ['--enable-unsafe-webgpu', '--enable-features=Vulkan'] });

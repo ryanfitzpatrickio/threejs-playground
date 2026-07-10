@@ -5,11 +5,12 @@
  * so we can see whether skinned models crash, fall back to procedural, or spike.
  */
 import { existsSync } from 'node:fs';
+import { dreamfallAppUrl } from './lib/dreamfallAppUrl.mjs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
 
-const appUrl = process.env.DREAMFALL_URL ?? 'http://127.0.0.1:5174';
+const appUrl = dreamfallAppUrl() /* was 5174 default */;
 const outDir = path.resolve('.codex-tmp', 'probe-browser');
 await mkdir(outDir, { recursive: true });
 

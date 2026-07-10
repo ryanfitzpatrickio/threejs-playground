@@ -1,4 +1,6 @@
-export const MARA_MODEL_URL = '/assets/models/climber.glb';
+// Default runtime player mesh (Mixamo skeleton + external Mixamo clip pack).
+// Old Mara body remains at /assets/models/climber.glb via ?playerModel=climber.
+export const MARA_MODEL_URL = '/assets/models/player-tpose.glb';
 
 const INJURED_PACK = '/assets/animation-packs/male-injured-pack';
 

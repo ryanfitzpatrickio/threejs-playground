@@ -83,7 +83,30 @@ export function createComposedWorldLevel(qualityPreset = {}, { worldMap = null, 
     terrainChunks: terrain.terrainChunks,
     cityChunks: city.cityChunks,
     cityChunkStride: city.cityChunkStride,
-    createPipelineWarmupGroup: city.createPipelineWarmupGroup,
+    createPipelineWarmupGroup: () => {
+      // Merge city material pairs with terrain biome warmup children.
+      const cityGroup = city.createPipelineWarmupGroup?.() ?? null;
+      const terrainGroup = terrain.createPipelineWarmupGroup?.() ?? null;
+      if (!cityGroup && !terrainGroup) return null;
+      if (cityGroup && !terrainGroup) return cityGroup;
+      if (terrainGroup && !cityGroup) return terrainGroup;
+      const merged = new THREE.Group();
+      merged.name = 'Composed Pipeline Warmup';
+      merged.userData.pipelineWarmup = true;
+      while (cityGroup.children.length) merged.add(cityGroup.children[0]);
+      while (terrainGroup.children.length) merged.add(terrainGroup.children[0]);
+      merged.userData.disposeWarmup = () => {
+        cityGroup.userData?.disposeWarmup?.();
+        terrainGroup.userData?.disposeWarmup?.();
+      };
+      return merged;
+    },
+    // Terrain rings are sync; city near-field still needs the stream pump.
+    isNearFieldReady: () => {
+      const terrainOk = terrain.isNearFieldReady?.() ?? true;
+      const cityOk = !city || (city.isNearFieldReady?.() ?? false);
+      return terrainOk && cityOk;
+    },
     ready: terrain.ready,
 
     updateForestEnvironment: (env) => terrain.updateForestEnvironment?.(env),

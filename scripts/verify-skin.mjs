@@ -94,11 +94,15 @@ async function run(file) {
     if (c.isSkinnedMesh && c.skeleton) c.skeleton.update();
   });
 
-  // Mirror createMaraFbxModel: flatten for WebGPU, stand upright, normalize.
+  // Mirror createMaraFbxModel: flatten for WebGPU, optional stand-upright, normalize.
   // Crucially we do NOT call skeleton.calculateInverses() — the authored
   // inverse-binds are correct and recomputing them deforms the mesh.
   flattenObjectForWebGPU(object);
-  object.rotation.x = -Math.PI / 2;
+  // Legacy climber.glb needs -90° X; Blender Y-up player-tpose.glb does not.
+  const needsStandUpright = /climber/i.test(file);
+  if (needsStandUpright) {
+    object.rotation.x = -Math.PI / 2;
+  }
   object.updateMatrixWorld(true);
   const modelScale = normalizeCharacterObject(object);
   object.updateMatrixWorld(true);
@@ -132,10 +136,13 @@ async function run(file) {
     size.y.toFixed(3), 'x', size.x.toFixed(3), 'x', size.z.toFixed(3),
     `(${verts} samples)`,
   );
-  const ok = size.y > 1.4 && size.y < 2.2 && size.x < 1.6 && size.z < 1.6;
+  // T-pose bind meshes can be wider than 1.6m across the arms; allow up to ~2.1m span.
+  const ok = size.y > 1.4 && size.y < 2.2 && size.x < 2.1 && size.z < 2.1;
   console.log(ok ? '  => LOOKS CORRECT (humanlike ~1.72m)' : '  => DEFORMED / WRONG SCALE');
 }
 
 const files = process.argv.slice(2);
-if (!files.length) files.push('public/assets/models/climber.glb');
+if (!files.length) {
+  files.push('public/assets/models/player-tpose.glb', 'public/assets/models/climber.glb');
+}
 for (const f of files) await run(f);

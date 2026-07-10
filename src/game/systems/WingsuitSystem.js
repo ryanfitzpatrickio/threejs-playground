@@ -25,6 +25,10 @@ const SPATIAL_U = 0.7; // ripple phase step across the sheet (u)
 const SPATIAL_V = 1.1; // ripple phase step across the sheet (v)
 const MAX_DT = 1 / 30; // verlet stability clamp
 const COLLISION_RADIUS = 0.2; // torso sphere the cloth can't sink inside
+// If pinned corners jump farther than this in one frame (climb snap / teleport),
+// zero cloth history so the membrane reattaches instead of trailing behind.
+const REST_SNAP_DISTANCE = 1.75;
+const REST_SNAP_DISTANCE_SQ = REST_SNAP_DISTANCE * REST_SNAP_DISTANCE;
 
 const _c00 = new THREE.Vector3();
 const _c10 = new THREE.Vector3();
@@ -55,10 +59,30 @@ export class WingsuitSystem {
       return;
     }
 
-    if (!rig.bonesResolved) {
+    // Keep the world-space membrane group at identity so written vertex positions
+    // are not double-transformed if something moved the group.
+    if (rig.group) {
+      rig.group.position.set(0, 0, 0);
+      rig.group.rotation.set(0, 0, 0);
+      rig.group.scale.set(1, 1, 1);
+      rig.group.matrix.identity();
+      rig.group.matrixWorld.identity();
+    }
+
+    // Re-bind if any corner lost its bone (model swap / late skeleton ready).
+    if (!rig.bonesResolved || !bonesResolvedValid(rig)) {
       resolveBones(rig, modelRoot);
       rig.bonesResolved = true;
+      // Fresh bind: wipe cloth history so the sheet doesn't trail from the origin.
+      for (const panel of rig.panels) {
+        resetPanelOffsets(panel);
+      }
     }
+
+    // Ancestor matrices must be current before sampling — climb / flight can move
+    // the root after the last scene graph update.
+    character.group?.updateMatrixWorld?.(true);
+    modelRoot.updateMatrixWorld(true);
 
     const dt = Math.min(Math.max(delta ?? 0, 0), MAX_DT);
     this.time += dt;
@@ -87,6 +111,7 @@ function resolveBones(rig, modelRoot) {
   for (const panel of rig.panels) {
     for (const corner of panel.corners) {
       corner.boneRef = modelRoot.getObjectByName(corner.bone) ?? null;
+      corner._lastRest = null;
     }
   }
   rig.torsoBone =
@@ -94,6 +119,35 @@ function resolveBones(rig, modelRoot) {
     modelRoot.getObjectByName('mixamorigSpine') ??
     modelRoot.getObjectByName('mixamorigHips') ??
     null;
+}
+
+function bonesResolvedValid(rig) {
+  if (!rig?.panels?.length) {
+    return false;
+  }
+  for (const panel of rig.panels) {
+    for (const corner of panel.corners) {
+      if (!corner.boneRef) {
+        return false;
+      }
+    }
+  }
+  return Boolean(rig.torsoBone);
+}
+
+function resetPanelOffsets(panel) {
+  if (!panel) {
+    return;
+  }
+  if (panel.offset) {
+    panel.offset.fill(0);
+  }
+  if (panel.offsetPrev) {
+    panel.offsetPrev.fill(0);
+  }
+  for (const corner of panel.corners ?? []) {
+    corner._lastRest = null;
+  }
 }
 
 function ensureBuffers(panel) {
@@ -116,12 +170,47 @@ function cornerWorld(corner, target) {
   return target.setFromMatrixPosition(bone.matrixWorld);
 }
 
+function cornersJumped(corners, worlds) {
+  for (let i = 0; i < corners.length; i += 1) {
+    const last = corners[i]._lastRest;
+    if (!last) {
+      continue;
+    }
+    const w = worlds[i];
+    const dx = w.x - last.x;
+    const dy = w.y - last.y;
+    const dz = w.z - last.z;
+    if (dx * dx + dy * dy + dz * dz > REST_SNAP_DISTANCE_SQ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function storeCornerRests(corners, worlds) {
+  for (let i = 0; i < corners.length; i += 1) {
+    const w = worlds[i];
+    if (!corners[i]._lastRest) {
+      corners[i]._lastRest = new THREE.Vector3();
+    }
+    corners[i]._lastRest.set(w.x, w.y, w.z);
+  }
+}
+
 function updatePanel(panel, { dt, time, speed, torso }) {
   const [h00, h10, h01, h11] = panel.corners;
   cornerWorld(h00, _c00); // hand
   cornerWorld(h10, _c10); // foot
   cornerWorld(h01, _c01); // shoulder / hips
   cornerWorld(h11, _c11); // hip / hips
+
+  // Climb / hang snaps move the skeleton several meters in a frame. Verlet history
+  // then trails the old rest pose and the suit looks detached until it damps out.
+  if (cornersJumped(panel.corners, [_c00, _c10, _c01, _c11])) {
+    resetPanelOffsets(panel);
+    ensureBuffers(panel);
+  }
+  storeCornerRests(panel.corners, [_c00, _c10, _c01, _c11]);
 
   // Approximate wing-plane normal from the corner quad — the airflow billows the
   // cloth along this axis.

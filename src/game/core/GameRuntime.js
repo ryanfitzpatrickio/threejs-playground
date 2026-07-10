@@ -127,6 +127,27 @@ export class GameRuntime {
     this._prewarmingStarted = false;
     this._streamingCompileQueue = [];
     this._streamingCompileActive = false;
+    // Play-ready barrier (single writer of stage='running' via _tryEnterRunning).
+    this._loadGeneration = 0;
+    this._systemsReady = false;
+    this._prewarmFinished = false;
+    this._nearFieldReady = false;
+    this.simEnabled = false;
+    this.inputEnabled = false;
+    this._loadSubs = {
+      level: 0,
+      character: 0,
+      near_field: 0,
+      pipelines: 0,
+      systems: 0,
+    };
+    this.loadProgress = {
+      phase: 'level',
+      label: 'Loading…',
+      fraction: 0,
+      detail: {},
+      ready: false,
+    };
 
     this.sceneSystem = new SceneSystem();
     this.rendererSystem = new RendererSystem({ canvas, qualityPreset: this.qualityPreset });
@@ -191,6 +212,15 @@ export class GameRuntime {
     }
 
     this.stage = 'loading';
+    // Do not emitSnapshot yet — camera/renderer are not initialized (snapshot
+    // reads camera.aspect). Progress is seeded here; first emit is after camera init.
+    this.loadProgress = {
+      phase: 'level',
+      label: 'Starting…',
+      fraction: 0,
+      detail: {},
+      ready: false,
+    };
     this.installDebugBridge();
     this.sceneSystem.initialize(this.qualityPreset);
     // Register after sky/provider init so uniform defaults match the live preset.
@@ -316,11 +346,119 @@ export class GameRuntime {
     ];
   }
 
+  _aborted(generation) {
+    return this.disposed || generation !== this._loadGeneration;
+  }
+
+  _setLoadProgress({ phase, label, detail, sub } = {}) {
+    if (sub && typeof sub === 'object') {
+      for (const [key, value] of Object.entries(sub)) {
+        if (!(key in this._loadSubs)) continue;
+        const next = Math.min(1, Math.max(0, Number(value) || 0));
+        this._loadSubs[key] = Math.max(this._loadSubs[key] ?? 0, next);
+      }
+    }
+    const weights = {
+      level: 0.15,
+      character: 0.15,
+      near_field: 0.25,
+      pipelines: 0.3,
+      systems: 0.15,
+    };
+    let fraction = 0;
+    for (const [key, weight] of Object.entries(weights)) {
+      fraction += weight * (this._loadSubs[key] ?? 0);
+    }
+    fraction = Math.max(this.loadProgress.fraction, Math.min(1, fraction));
+    this.loadProgress = {
+      phase: phase ?? this.loadProgress.phase,
+      label: label ?? this.loadProgress.label,
+      fraction,
+      detail: { ...this.loadProgress.detail, ...(detail ?? {}) },
+      ready: this.stage === 'running',
+    };
+    this.emitSnapshot(performance.now(), { force: true });
+  }
+
+  _tryEnterRunning() {
+    if (this.disposed) return;
+    if (!this._systemsReady || !this._prewarmFinished || !this._nearFieldReady) return;
+    if (this.stage === 'running') return;
+    // Prewarm deliberately renders expensive first-seen shader/shadow contexts.
+    // Do not report those loading frames as gameplay FPS.
+    this.frameStats.reset();
+    this.stage = 'running';
+    this.inputEnabled = true;
+    this.simEnabled = true;
+    this._setLoadProgress({
+      phase: 'ready',
+      label: 'Ready',
+      sub: {
+        level: 1,
+        character: 1,
+        near_field: 1,
+        pipelines: 1,
+        systems: 1,
+      },
+      detail: { prewarm: null },
+    });
+    // _setLoadProgress sets ready from stage; ensure ready true after stage write
+    this.loadProgress = { ...this.loadProgress, ready: true, fraction: 1 };
+    this.emitSnapshot(performance.now(), { force: true });
+  }
+
+  async _waitNearFieldReady({ generation, timeoutMs = 20_000 } = {}) {
+    if (this.levelSystem.isNearFieldReady()) {
+      this._setLoadProgress({
+        phase: 'near_field',
+        label: 'Near field ready',
+        sub: { near_field: 1 },
+      });
+      return true;
+    }
+    const start = performance.now();
+    while (!this._aborted(generation)) {
+      if (this.levelSystem.isNearFieldReady()) {
+        this._setLoadProgress({
+          phase: 'near_field',
+          label: 'Near field ready',
+          sub: { near_field: 1 },
+        });
+        return true;
+      }
+      const elapsed = performance.now() - start;
+      if (elapsed > timeoutMs) {
+        console.warn('[GameRuntime] near-field wait timed out; entering play fail-open');
+        this._setLoadProgress({
+          phase: 'near_field',
+          label: 'Near field timeout',
+          sub: { near_field: 1 },
+        });
+        return true;
+      }
+      const fraction = Math.min(0.95, elapsed / timeoutMs);
+      this._setLoadProgress({
+        phase: 'near_field',
+        label: 'Streaming nearby world…',
+        sub: { near_field: fraction },
+        detail: {
+          nearField: { completed: 0, total: 1, label: 'streaming' },
+        },
+      });
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+    return false;
+  }
+
   async _streamAssetsInBackground() {
+    const gen = this._loadGeneration;
+    this._setLoadProgress({ phase: 'level', label: 'Loading world…', sub: { level: 0.05 } });
+
     await this.levelSystem.loadBaseLevel(this.sceneSystem.scene, this.qualityPreset, this.levelMode, this.rendererSystem.renderer);
-    if (this.disposed) {
+    if (this._aborted(gen)) {
       return;
     }
+    this._setLoadProgress({ phase: 'level', label: 'World loaded', sub: { level: 1 } });
 
     const levelViewDistance = this.levelSystem.level?.viewDistance;
     if (Number.isFinite(levelViewDistance) && levelViewDistance > 0) {
@@ -348,8 +486,9 @@ export class GameRuntime {
       }
     }
 
+    this._setLoadProgress({ phase: 'character', label: 'Loading character…', sub: { character: 0.1 } });
     await this.characterSystem.loadMara(this.sceneSystem.scene);
-    if (this.disposed || !this.characterSystem.character) {
+    if (this._aborted(gen) || !this.characterSystem.character) {
       return;
     }
 
@@ -358,9 +497,26 @@ export class GameRuntime {
     if (resolveJacketMode() !== 'off') {
       await this.characterSystem.attachJacketCloth(this.rendererSystem.renderer);
     }
+    if (this._aborted(gen)) return;
 
+    this._setLoadProgress({ phase: 'character', label: 'Character ready', sub: { character: 1 } });
     this.coreSceneReady = true;
-    this._triggerShaderPrewarm();
+    // Unlock stream + full render path. Never wait on near-field under 'loading'.
+    this.stage = 'prewarming';
+    this._prewarmingStarted = true;
+    this.inputEnabled = false;
+    this.simEnabled = false;
+    this.emitSnapshot(performance.now(), { force: true });
+
+    // Prewarm needs live rAF renders (pipeline batches); start under prewarming.
+    const prewarmPromise = this._runPrewarm(gen);
+    // Near-field wait yields so update() can pump city streaming.
+    const nearFieldPromise = this._waitNearFieldReady({ generation: gen, timeoutMs: 20_000 })
+      .then((ok) => {
+        if (this._aborted(gen)) return;
+        this._nearFieldReady = ok !== false;
+        this._tryEnterRunning();
+      });
 
     // Snap character to the actual ground height of the (possibly edited) terrain.
     // This prevents spawning inside or below the heightfield surface, which causes "stuck" behavior.
@@ -391,6 +547,8 @@ export class GameRuntime {
       }
     }
 
+    this._setLoadProgress({ phase: 'systems', label: 'Loading systems…', sub: { systems: 0.05 } });
+
     // Rally has purpose-built roadside crowds and starts focused on driving;
     // omit the horse, combat enemies, ambient ring, and destructible city props.
     if (this.levelMode !== 'rally') {
@@ -398,33 +556,34 @@ export class GameRuntime {
         position: horseSpawnPosition(character?.group.position, this.levelSystem),
         getGroundHeightAt: (position) => horseGroundHeight(this.levelSystem, position),
       });
-      if (this.disposed) return;
+      if (this._aborted(gen)) return;
 
       await this.enemySystem.load(this.sceneSystem.scene, {
         playerPosition: character?.group.position,
         level: this.levelSystem,
       });
-      if (this.disposed) return;
+      if (this._aborted(gen)) return;
 
       await this.crowdSystem.load(this.sceneSystem.scene, {
         level: this.levelSystem,
         playerPosition: character?.group.position ?? new THREE.Vector3(),
       });
-      if (this.disposed) return;
+      if (this._aborted(gen)) return;
 
       await this.propSystem.load(this.sceneSystem.scene, {
         playerPosition: character?.group.position,
         level: this.levelSystem,
       });
-      if (this.disposed) return;
+      if (this._aborted(gen)) return;
     }
+    this._setLoadProgress({ phase: 'systems', label: 'Initializing physics…', sub: { systems: 0.45 } });
 
     await this.physicsSystem.initialize({
       level: this.levelSystem.level,
       character: this.characterSystem.character,
       enemies: [...this.enemySystem.enemies, ...this.propSystem.props],
     });
-    if (this.disposed) {
+    if (this._aborted(gen)) {
       return;
     }
 
@@ -449,6 +608,8 @@ export class GameRuntime {
       physics: this.physicsSystem,
       scene: this.sceneSystem.scene,
     });
+
+    this._setLoadProgress({ phase: 'systems', label: 'Spawning vehicles…', sub: { systems: 0.7 } });
 
     // One garage build beside the player on every map except the collision test
     // track, which spawns two autopilot chassis cars from opposite directions.
@@ -490,7 +651,7 @@ export class GameRuntime {
         }
       }
     }
-    if (this.disposed) {
+    if (this._aborted(gen)) {
       return;
     }
 
@@ -500,8 +661,17 @@ export class GameRuntime {
       character: this.characterSystem.character,
     });
 
-    this.stage = 'running';
-    this.emitSnapshot();
+    this._systemsReady = true;
+    this._setLoadProgress({ phase: 'systems', label: 'Systems ready', sub: { systems: 1 } });
+    this._tryEnterRunning();
+
+    await prewarmPromise;
+    if (this._aborted(gen)) return;
+    this._tryEnterRunning();
+
+    await nearFieldPromise;
+    if (this._aborted(gen)) return;
+    this._tryEnterRunning();
   }
 
   // The driven car ragdolls + flings any live enemy it runs into. Detection is a
@@ -532,31 +702,35 @@ export class GameRuntime {
     }
   }
 
-  _triggerShaderPrewarm() {
-    if (this._prewarmingStarted || this.stage === 'running') return;
-    this._prewarmingStarted = true;
-    this.stage = 'prewarming';
-    this.emitSnapshot();
-
-    const finishPrewarm = () => {
-      if (!this.disposed) {
-        // Prewarm deliberately renders expensive first-seen shader/shadow
-        // contexts. Do not report those loading frames as gameplay FPS.
-        this.frameStats.reset();
-        this.stage = 'running';
-        this.emitSnapshot();
-      }
-    };
-    this._prewarmShaders().then(finishPrewarm).catch(finishPrewarm);
+  async _runPrewarm(generation) {
+    try {
+      await this._prewarmShaders(generation);
+    } catch {
+      // Non-fatal — first real frames may still compile anything missed.
+    }
+    if (this._aborted(generation)) return;
+    this._prewarmFinished = true;
+    this._setLoadProgress({
+      phase: 'pipelines',
+      label: 'Shaders ready',
+      sub: { pipelines: 1 },
+      detail: { prewarm: this._cityPrewarmProgress },
+    });
+    this._tryEnterRunning();
   }
 
-  async _prewarmShaders() {
+  async _prewarmShaders(generation) {
     const renderer = this.rendererSystem.renderer;
     const scene = this.sceneSystem.scene;
     const camera = this.cameraSystem.camera;
     const warmup = this.levelSystem.level?.createPipelineWarmupGroup?.() ?? null;
 
     try {
+      this._setLoadProgress({
+        phase: 'pipelines',
+        label: 'Warming shaders…',
+        sub: { pipelines: 0.05 },
+      });
       // compileAsync turns small instance/skeleton arrays into vertex uniform
       // buffers. WebGPU rejects zero-byte bindings, so strip impossible empty
       // render objects before Three builds the asynchronous render list.
@@ -573,15 +747,25 @@ export class GameRuntime {
           restoreUnsafeMaterials();
         }
       }
+      if (this._aborted(generation)) return;
 
       // Compile one material's Mesh + InstancedMesh pair at a time. A single
       // scene containing every city TSL material monopolized Chromium for
       // minutes; small batches keep the loading loop responsive while still
       // presenting each variant to the real lights, shadows, and SSAO pass.
       const children = warmup ? [...warmup.children] : [];
-      const totalBatches = Math.ceil(children.length / 2);
+      const totalBatches = Math.max(1, Math.ceil(children.length / 2));
       this._cityPrewarmProgress = { completed: 0, total: totalBatches };
+      if (children.length === 0) {
+        this._setLoadProgress({
+          phase: 'pipelines',
+          label: 'Warming shaders…',
+          sub: { pipelines: 0.85 },
+          detail: { prewarm: this._cityPrewarmProgress },
+        });
+      }
       for (let index = 0; index < children.length; index += 2) {
+        if (this._aborted(generation)) return;
         const batch = new THREE.Group();
         batch.name = `City Pipeline Warmup Batch ${index / 2}`;
         batch.add(...children.slice(index, index + 2));
@@ -597,20 +781,34 @@ export class GameRuntime {
           batch.removeFromParent();
         }
         this._cityPrewarmProgress.completed += 1;
+        const pipelineFrac = this._cityPrewarmProgress.completed / totalBatches;
+        this._setLoadProgress({
+          phase: 'pipelines',
+          label: 'Warming shaders…',
+          sub: { pipelines: 0.1 + pipelineFrac * 0.85 },
+          detail: { prewarm: { ...this._cityPrewarmProgress } },
+        });
       }
 
     } catch (e) {
       // Non-fatal
     } finally {
       // compileAsync can reject before covering every real RenderPipeline
-      // context. Always keep the loading stage up while actual shadow/SSAO
-      // renders populate their caches; finishPrewarm then resets these samples.
+      // context. Keep a few full render frames so shadow/SSAO caches populate.
       for (let frame = 0; frame < 4; frame += 1) {
+        if (this._aborted(generation)) break;
         await new Promise((resolve) => requestAnimationFrame(resolve));
       }
       warmup?.removeFromParent();
       warmup?.userData?.disposeWarmup?.();
-      this._cityPrewarmProgress = null;
+      if (!this._aborted(generation) && this._cityPrewarmProgress) {
+        this._cityPrewarmProgress = {
+          completed: this._cityPrewarmProgress.total,
+          total: this._cityPrewarmProgress.total,
+        };
+      } else {
+        this._cityPrewarmProgress = null;
+      }
     }
   }
 
@@ -635,9 +833,44 @@ export class GameRuntime {
       return;
     }
 
+    // During prewarming: pump streaming + full render so city near-field and
+    // pipeline batches advance. Gameplay sim/input stay off until play-ready.
+    if (this.stage === 'prewarming' && this.simEnabled === false) {
+      this._updatePrewarmingFrame(timeMs, delta, frameMs);
+      return;
+    }
+
     let input = this.inputSystem.getState();
+    if (!this.inputEnabled) {
+      input = {
+        ...input,
+        moveX: 0,
+        moveZ: 0,
+        jump: false,
+        jumpPressed: false,
+        brace: false,
+        bracePressed: false,
+        slide: false,
+        slidePressed: false,
+        lightAttackPressed: false,
+        heavyAttackPressed: false,
+        drawSheathePressed: false,
+        shoulderThrowPressed: false,
+        cutModePressed: false,
+        telekinesisPressed: false,
+        hookFirePressed: false,
+        hookAimHeld: false,
+        dodgeDirection: null,
+        mountPressed: false,
+        lookX: 0,
+        lookY: 0,
+        photoModePressed: false,
+        collisionDebugPressed: false,
+      };
+    }
     if (
-      !this._forestAmbienceAwake
+      this.inputEnabled
+      && !this._forestAmbienceAwake
       && (input.forward || input.backward || input.left || input.right || input.jumpPressed)
     ) {
       if (this.levelSystem.level?.wakeForestAmbience?.()) {
@@ -645,7 +878,7 @@ export class GameRuntime {
       }
     }
     const character = this.characterSystem.character;
-    if (input.photoModePressed) {
+    if (this.inputEnabled && input.photoModePressed) {
       this.setPhotoMode(!this.cameraSystem.photoMode);
     }
     if (this.cameraSystem.photoMode) {
@@ -1242,6 +1475,85 @@ export class GameRuntime {
     this.emitSnapshot(timeMs);
   }
 
+  /**
+   * Stream + render only while stage is prewarming. Keeps city radius attach and
+   * pipeline batch rAF compiles alive without running movement/combat/vehicles.
+   */
+  _updatePrewarmingFrame(timeMs, delta, frameMs) {
+    const character = this.characterSystem.character;
+    if (!character) {
+      this.emitSnapshot();
+      return;
+    }
+
+    this.rendererSystem.resizeIfNeeded((viewport) => {
+      this.cameraSystem.resize(viewport);
+    });
+
+    let streamingMs = 0;
+    let streamingActive = false;
+    const streamStart = performance.now();
+    const streamingFocus = character.group.position;
+    const viewPos = this.cameraSystem?.camera?.position ?? streamingFocus;
+    const streamingChanges = this.levelSystem.updateStreaming(streamingFocus, {
+      viewPosition: viewPos,
+    });
+    const builtColliders = this.physicsSystem.applyStreamingChanges?.(streamingChanges) ?? 0;
+    streamingMs = performance.now() - streamStart;
+    streamingActive =
+      builtColliders > 0 ||
+      (streamingChanges?.addedChunks?.length ?? 0) > 0 ||
+      (streamingChanges?.removedChunkKeys?.length ?? 0) > 0 ||
+      (streamingChanges?.terrainVisualChanges ?? 0) > 0;
+
+    if ((streamingChanges?.addedChunks?.length ?? 0) > 0) {
+      this.queueStreamingCompile(streamingChanges.addedChunks.map((chunk) => chunk.group));
+    }
+
+    this.sceneSystem.updateShadowFollow?.(streamingFocus);
+    this.sceneSystem.updateStreetLights?.(streamingFocus);
+    this.frameStats.recordSystem('streaming', streamingMs);
+
+    this.frameStats.start('bvh');
+    this.levelSystem.warmupGeometryRaycasts({
+      maxMs: streamingActive ? 1 : 2,
+      maxCount: streamingActive ? 2 : 8,
+    });
+    this.frameStats.endSection();
+
+    this.levelSystem.level?.updateForestEnvironment?.({
+      sunDirection: this.sceneSystem.skySystem?.sunDirection,
+      windVector: rainWind.value,
+    });
+
+    // Hold camera on spawn so prewarm batches and shadows compile from a stable view.
+    this.cameraSystem.update({
+      delta,
+      target: character.group.position,
+      viewport: this.rendererSystem.getViewport(),
+      input: { lookX: 0, lookY: 0, rearViewHeld: false },
+      rootMotionActive: false,
+      character,
+      vehicle: null,
+    });
+
+    if (this.sceneSystem.skySystem?.update(delta, this.cameraSystem?.camera)) {
+      this.rendererSystem.installEnvironment(this.sceneSystem.scene, this.sceneSystem.skySystem);
+    }
+    this._syncTerrainEnvironment(delta);
+
+    const renderStart = performance.now();
+    this.rendererSystem.render({
+      scene: this.sceneSystem.scene,
+      camera: this.cameraSystem.camera,
+      deferExpensivePasses: streamingActive || this._streamingCompileActive,
+    });
+    const renderMs = performance.now() - renderStart;
+    this.frameStats.recordSystem('render', renderMs);
+    this.frameStats.record(frameMs, streamingMs, renderMs, streamingActive);
+    this.emitSnapshot(timeMs);
+  }
+
   queueStreamingCompile(roots = []) {
     const renderer = this.rendererSystem.renderer;
     const camera = this.cameraSystem.camera;
@@ -1751,6 +2063,7 @@ export class GameRuntime {
       return {
         ...this._lastFullSnapshot,
         stage: this.stage,
+        loadProgress: this.loadProgress,
         prewarm: this._cityPrewarmProgress,
         frame: this.frameStats.summary(),
         allocation: this.allocationSampler.status(),
@@ -1777,6 +2090,7 @@ export class GameRuntime {
 
     const result = {
       stage: this.stage,
+      loadProgress: this.loadProgress,
       prewarm: this._cityPrewarmProgress,
       frame: this.frameStats.summary(),
       allocation: this.allocationSampler.status(),
@@ -2790,7 +3104,9 @@ export class GameRuntime {
   }
 
   dispose() {
+    if (this.disposed) return;
     this.disposed = true;
+    this._loadGeneration += 1;
     this.stage = 'disposed';
     this.frameLoop.stop();
     this.rendererSystem.setAnimationLoop(null);

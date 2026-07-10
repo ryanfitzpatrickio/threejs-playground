@@ -7,7 +7,10 @@
 const SNAP_DISTANCE = 2.5;
 const MAX_HEIGHT_DELTA = 1.75; // larger crossings are overpasses, not junctions
 const CLUSTER_DISTANCE = 7;
-const LEVEL_TRANSITION = 10;
+const MIN_LEVEL_TRANSITION = 12;
+// smoothstep's peak derivative is 1.5, so a 6% sizing target keeps the actual
+// eased ribbon near 9% even on abrupt terrain steps.
+const TARGET_APPROACH_GRADE = 0.06;
 
 export function buildRoadIntersections(roads) {
   const hits = [];
@@ -29,10 +32,22 @@ export function buildRoadIntersections(roads) {
           if (closest.distance > snap) continue;
           const alongA = ia + closest.ta;
           const alongB = ib + closest.tb;
+          if (ra === rb) {
+            // Sampling is ~2.5 m, so the old fixed four-segment skip still made a
+            // wide bend collide with itself only 10 m farther along the same
+            // ribbon. A real self-crossing has substantial arc separation.
+            const arcA = distanceAtFraction(a.s, alongA);
+            const arcB = distanceAtFraction(a.s, alongB);
+            if (Math.abs(arcA - arcB) < Math.max(30, a.width * 2.5)) continue;
+          }
           const aLength = Math.hypot(a1.x - a0.x, a1.z - a0.z) || 1;
           const bLength = Math.hypot(b1.x - b0.x, b1.z - b0.z) || 1;
           const parallel = Math.abs(((a1.x - a0.x) * (b1.x - b0.x) + (a1.z - a0.z) * (b1.z - b0.z)) / (aLength * bLength)) > 0.966;
           const joinsAtRoadEnd = alongA < 1.25 || alongA > a.n - 2.25 || alongB < 1.25 || alongB > b.n - 2.25;
+          // A tunnel may join another road at a portal, but an interior crossing
+          // is grade-separated even when their sampled centreline heights happen
+          // to match. Treating it as a junction blocks the bore with pad terrain.
+          if ((a.road?.trackStyle === 'tunnel' || b.road?.trackStyle === 'tunnel') && !joinsAtRoadEnd) continue;
           if (parallel && !joinsAtRoadEnd) continue;
           const ay = lerp(a.roadY[ia], a.roadY[ia + 1], closest.ta);
           const by = lerp(b.roadY[ib], b.roadY[ib + 1], closest.tb);
@@ -52,28 +67,42 @@ export function buildRoadIntersections(roads) {
   }
 
   const clusters = clusterHits(hits);
-  const intersections = clusters.map((cluster, index) => finalizeIntersection(cluster, roads, index));
+  const intersections = clusters
+    .map((cluster, index) => finalizeIntersection(cluster, roads, index))
+    .filter((intersection) => intersection.wayCount >= 2);
 
   // Level every connected centerline before corridorAt captures the road arrays.
   // Samples in the junction core are exactly horizontal; approaches ease onto it.
   for (const intersection of intersections) {
-    for (const ref of intersection.connections) {
-      const road = roads[ref.roadIndex];
-      const along = cumulativeDistances(road.samples);
-      const atDistance = distanceAtFraction(along, ref.at);
-      for (let i = 0; i < road.n; i += 1) {
-        const d = Math.abs(along[i] - atDistance);
-        if (d > intersection.radius + LEVEL_TRANSITION) continue;
-        const weight = d <= intersection.radius
-          ? 1
-          : 1 - smoothstep(intersection.radius, intersection.radius + LEVEL_TRANSITION, d);
-        if (!road.fixed) road.roadY[i] = lerp(road.roadY[i], intersection.y, weight);
+    levelIntersectionApproaches(intersection, roads);
+  }
+
+  return intersections;
+}
+
+/**
+ * Re-level every free (non-fixed) approach onto `intersection.y`. Shared by the
+ * initial build and the terrain-pin pass so at-grade junctions can be re-seated
+ * onto the heightfield without floating bridge decks.
+ */
+export function levelIntersectionApproaches(intersection, roads) {
+  for (const ref of intersection.connections) {
+    const road = roads[ref.roadIndex];
+    const along = cumulativeDistances(road.samples);
+    const atDistance = distanceAtFraction(along, ref.at);
+    for (let i = 0; i < road.n; i += 1) {
+      const d = Math.abs(along[i] - atDistance);
+      const transition = ref.transition ?? MIN_LEVEL_TRANSITION;
+      if (d > intersection.radius + transition) continue;
+      const weight = d <= intersection.radius
+        ? 1
+        : 1 - smoothstep(intersection.radius, intersection.radius + transition, d);
+      if (!road.fixed) road.roadY[i] = lerp(road.roadY[i], intersection.y, weight);
+      if (intersection.kind !== 'continuation') {
         road.intersectionMask[i] = Math.min(road.intersectionMask[i], 1 - weight);
       }
     }
   }
-
-  return intersections;
 }
 
 function finalizeIntersection(cluster, roads, index) {
@@ -107,7 +136,6 @@ function finalizeIntersection(cluster, roads, index) {
     ? fixedRoad.roadY[Math.max(0, Math.min(fixedRoad.n - 1, Math.round(fixedConnection.at)))]
     : cluster.hits.reduce((sum, hit) => sum + hit.y, 0) / cluster.hits.length;
   const maxHalf = Math.max(...connections.map((ref) => roads[ref.roadIndex].half));
-  const radius = Math.max(5, maxHalf + 2.5);
   const arms = [];
 
   for (const ref of connections) {
@@ -119,11 +147,11 @@ function finalizeIntersection(cluster, roads, index) {
     const pz = lerp(road.samples[i].z, road.samples[i + 1].z, t);
     const startDistance = polylineDistance(road.samples, 0, at);
     const endDistance = polylineDistance(road.samples, at, road.n - 1);
-    if (startDistance > radius * 0.65) {
+    if (startDistance > maxHalf * 0.65) {
       const dir = directionAway(road.samples, at, -1);
       addUniqueArm(arms, { ...dir, width: road.width, half: road.half, roadIndex: ref.roadIndex, direction: -1 });
     }
-    if (endDistance > radius * 0.65) {
+    if (endDistance > maxHalf * 0.65) {
       const dir = directionAway(road.samples, at, 1);
       addUniqueArm(arms, { ...dir, width: road.width, half: road.half, roadIndex: ref.roadIndex, direction: 1 });
     }
@@ -136,27 +164,96 @@ function finalizeIntersection(cluster, roads, index) {
     }
   }
 
+  const sourceWidth = Math.max(...connections.map((ref) => roads[ref.roadIndex].road?.width ?? roads[ref.roadIndex].width / 1.5));
+  const sizeClass = sourceWidth < 8 ? 'small' : (sourceWidth <= 14 ? 'medium' : 'large');
+  const kind = arms.length === 2 ? 'continuation' : (arms.length === 3 ? 't' : (arms.length === 4 ? 'cross' : 'multi'));
+  // Large junctions need room for a painted left-turn pocket, a right-turn slip
+  // lane and its triangular refuge island. Other junctions stay compact and
+  // width-driven instead of inheriting one arbitrary circular radius.
+  const radius = Math.max(4, maxHalf + (sizeClass === 'large' ? 10 : sizeClass === 'medium' ? 4 : 2));
+  const footprint = buildFootprint({ x, z, arms, maxHalf, radius, kind, sizeClass });
+
+  // Make each approach long enough to meet the level pad at a civil-looking
+  // grade. Terrain is cut to the resulting road profile later; this protects the
+  // ribbon itself from the abrupt fixed-length ramp that used to form a cliff.
+  for (const ref of connections) {
+    const road = roads[ref.roadIndex];
+    const along = cumulativeDistances(road.samples);
+    const atDistance = distanceAtFraction(along, ref.at);
+    let required = Math.max(MIN_LEVEL_TRANSITION, road.half * 2);
+    for (let i = 0; i < road.n; i += 1) {
+      const d = Math.abs(along[i] - atDistance);
+      if (d < radius || d > 120) continue;
+      required = Math.max(required, Math.abs(road.roadY[i] - y) / TARGET_APPROACH_GRADE - radius);
+    }
+    ref.transition = Math.min(120, required);
+  }
+
   return {
     id: `intersection-${index}`,
     x, z, y, radius,
     connections,
     arms,
     wayCount: arms.length,
+    kind,
+    sizeClass,
+    footprint,
+    tunnelConnection: connections.some((ref) => roads[ref.roadIndex].road?.trackStyle === 'tunnel'),
   };
+}
+
+function buildFootprint({ x, z, arms, maxHalf, radius, kind, sizeClass }) {
+  const coreHalf = maxHalf;
+  const armReach = radius + (sizeClass === 'large' ? 5 : 1);
+  const primary = arms[0] ?? { x: 1, z: 0 };
+  const basisX = primary.x, basisZ = primary.z;
+  const inside = (px, pz) => {
+    // A square/rectangular core gives a T its requested flat back side. Approach
+    // rectangles then make the outline follow the actual topology rather than a
+    // disc occupying corners where no road exists.
+    const coreAlong = px * basisX + pz * basisZ;
+    const coreLateral = px * -basisZ + pz * basisX;
+    if (Math.abs(coreAlong) <= coreHalf && Math.abs(coreLateral) <= coreHalf) return true;
+    return arms.some((arm) => {
+      const along = px * arm.x + pz * arm.z;
+      const lateral = Math.abs(px * -arm.z + pz * arm.x);
+      // Eight metres at the throat leaves a usable ~3 m bypass outside the
+      // 2.5 m-wide refuge island, so the right slip lane is actual asphalt rather
+      // than paint squeezed against the ordinary ribbon edge.
+      const flare = sizeClass === 'large' ? Math.min(8, along * 0.3) : 0;
+      return along >= 0 && along <= armReach && lateral <= arm.half + flare;
+    });
+  };
+  const points = [];
+  const maxReach = armReach + maxHalf + 5;
+  for (let i = 0; i < 96; i += 1) {
+    const angle = (i / 96) * Math.PI * 2;
+    const dx = Math.cos(angle), dz = Math.sin(angle);
+    let low = 0, high = maxReach;
+    for (let step = 0; step < 12; step += 1) {
+      const mid = (low + high) * 0.5;
+      if (inside(dx * mid, dz * mid)) low = mid;
+      else high = mid;
+    }
+    points.push({ x: x + dx * low, z: z + dz * low });
+  }
+  return points;
 }
 
 function clusterHits(hits) {
   const clusters = [];
   for (const hit of hits) {
-    let cluster = clusters.find((item) => Math.hypot(item.x - hit.x, item.z - hit.z) <= CLUSTER_DISTANCE);
+    let cluster = clusters.find((item) => Math.hypot(item.x - hit.x, item.z - hit.z) <= CLUSTER_DISTANCE
+      && Math.abs(item.y - hit.y) <= MAX_HEIGHT_DELTA);
     if (!cluster) {
-      cluster = { x: hit.x, z: hit.z, hits: [] };
+      cluster = { x: hit.x, z: hit.z, y: hit.y, hits: [] };
       clusters.push(cluster);
     }
     cluster.hits.push(hit);
     const count = cluster.hits.length;
     cluster.x += (hit.x - cluster.x) / count;
     cluster.z += (hit.z - cluster.z) / count;
+    cluster.y += (hit.y - cluster.y) / count;
   }
   return clusters;
 }

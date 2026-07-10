@@ -2,13 +2,15 @@ import { createSignal, createMemo, createEffect, onCleanup, onMount, Show } from
 import { GameCanvas } from './components/GameCanvas.jsx';
 import { Hud } from './components/Hud.jsx';
 import { StatsPanel } from './components/StatsPanel.jsx';
-import { ControlsGuide, ControlsHelpButton } from './components/ControlsGuide.jsx';
+import { ControlsGuide } from './components/ControlsGuide.jsx';
 import { CutTestCanvas } from './components/CutTestCanvas.jsx';
 import { Minimap } from './components/Minimap.jsx';
 import { PhotoModeControls } from './components/PhotoModeControls.jsx';
 import { GarageScene } from './components/GarageScene.jsx';
 import { ClothColliderEditor } from './components/ClothColliderEditor.jsx';
 import { SettingsDialog } from './components/SettingsDialog.jsx';
+import { LoadingScreen } from './components/LoadingScreen.jsx';
+import { MainMenu } from './components/MainMenu.jsx';
 import { isJacketClothUiEnabled } from '../game/characters/mara/jacketConfig.js';
 import {
   setActiveSceneId,
@@ -31,23 +33,67 @@ import {
   resolveCloudMode,
   setCloudModeOverride,
 } from '../game/render/cloud/cloudConfig.js';
+import { GAME_CONFIG } from '../game/config/gameConfig.js';
+import { runSharedWarmup } from '../game/boot/sharedWarmup.js';
 import { createDevTools, BodyshopScene } from 'virtual:dreamfall-dev-tools';
 import { mountShaderDebugPane } from 'virtual:dreamfall-shader-debug';
 import { loadGarageChassisOptions } from '../game/vehicles/bodyshopChassisRegistry.js';
 
+const LEVELS = new Set(['city', 'world', 'wilds', 'rally']);
+
 function readStoredLevel() {
   try {
     const v = localStorage.getItem('dreamfall:level');
-    return v === 'world' || v === 'wilds' || v === 'rally' || v === 'city' ? v : 'rally';
+    return LEVELS.has(v) ? v : 'rally';
   } catch {
     return 'rally';
   }
 }
 
+function isTruthyParam(v) {
+  return v === '1' || v === 'true' || v === 'yes';
+}
+
+function resolveBootIntent() {
+  const params = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
+  const levelParam = params.get('level');
+  const level = LEVELS.has(levelParam) ? levelParam : null;
+  const menuEnabled = GAME_CONFIG.boot?.mainMenuEnabled !== false;
+
+  let skipLocal = false;
+  try {
+    skipLocal = localStorage.getItem('dreamfall:skip-menu') === '1';
+  } catch {
+    skipLocal = false;
+  }
+
+  const skipMenu = !menuEnabled
+    || isTruthyParam(params.get('autostart'))
+    || skipLocal;
+
+  return {
+    skipMenu,
+    forcedLevel: skipMenu ? (level ?? readStoredLevel()) : null,
+    preferredLevel: level ?? readStoredLevel(),
+  };
+}
+
 export function App() {
+  const bootIntent = resolveBootIntent();
+  const initialLevel = bootIntent.forcedLevel ?? bootIntent.preferredLevel;
+
   const [viewMode, setViewMode] = createSignal('game'); // 'game' | 'garage' | 'bodyshop' | dev-tool views
+  const [appPhase, setAppPhase] = createSignal(
+    bootIntent.skipMenu ? 'loading_experience' : 'booting',
+  );
+  const [sharedProgress, setSharedProgress] = createSignal({
+    phase: 'shared',
+    label: 'Starting…',
+    fraction: 0,
+  });
+  const [sharedReady, setSharedReady] = createSignal(false);
   const [chassisRefreshToken, setChassisRefreshToken] = createSignal(0);
-  const [levelMode, setLevelModeSignal] = createSignal(readStoredLevel());
+  const [levelMode, setLevelModeSignal] = createSignal(initialLevel);
   const [gameSnapshot, setGameSnapshot] = createSignal(null);
   const [quality, setQuality] = createSignal(getQualityLevel());
   const [toneMapping, setToneMapping] = createSignal(getToneMappingMode());
@@ -59,25 +105,49 @@ export function App() {
   const [showClothEditor, setShowClothEditor] = createSignal(false);
   const [showSettings, setShowSettings] = createSignal(false);
   let gameRuntime = null;
+  let controlsAutoOpened = false;
 
-  // First-time player guide: show automatically unless previously dismissed
+  // Shared boot warmup → main menu (skipped when autostart / skip-menu).
   onMount(() => {
     void loadGarageChassisOptions();
+    if (bootIntent.skipMenu) {
+      return undefined;
+    }
+    let cancelled = false;
+    setAppPhase('warming_shared');
+    void runSharedWarmup({
+      onProgress: (p) => {
+        if (!cancelled) setSharedProgress(p);
+      },
+    }).then(() => {
+      if (!cancelled) setSharedReady(true);
+    }).catch((err) => {
+      console.warn('[App] shared warmup failed; continuing to menu', err);
+      if (!cancelled) setSharedReady(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  // Controls guide: only after first transition into playing (not during menu/load).
+  createEffect(() => {
+    if (appPhase() !== 'playing') return;
+    if (controlsAutoOpened) return;
     try {
-      const dismissed = localStorage.getItem('dreamfall:controls-dismissed') === 'true';
-      if (!dismissed) {
-        // small delay so the world has time to appear
-        const t = setTimeout(() => setShowControls(true), 620);
-        onCleanup(() => clearTimeout(t));
+      if (localStorage.getItem('dreamfall:controls-dismissed') === 'true') {
+        controlsAutoOpened = true;
+        return;
       }
     } catch {
-      // localStorage may be unavailable; show once
-      setTimeout(() => setShowControls(true), 620);
+      // show once
     }
+    controlsAutoOpened = true;
+    const t = setTimeout(() => setShowControls(true), 620);
+    onCleanup(() => clearTimeout(t));
   });
 
   // Unified render/shader debug Tweakpane (dev-only virtual module; prod stub).
-  // P key toggles; includes former Solid DebugPanel discrete controls.
   /** @type {{ setVisible: (v: boolean) => void, dispose: () => void } | null} */
   let shaderPaneHandle = null;
   onMount(() => {
@@ -88,7 +158,7 @@ export function App() {
         return;
       }
       shaderPaneHandle = handle;
-      const open = showDebugPanel() && viewMode() === 'game' && hudVisible();
+      const open = showDebugPanel() && viewMode() === 'game' && hudVisible() && appPhase() === 'playing';
       handle?.setVisible?.(open);
     });
     onCleanup(() => {
@@ -98,7 +168,10 @@ export function App() {
     });
   });
   createEffect(() => {
-    const open = showDebugPanel() && viewMode() === 'game' && hudVisible();
+    const open = showDebugPanel()
+      && viewMode() === 'game'
+      && hudVisible()
+      && appPhase() === 'playing';
     shaderPaneHandle?.setVisible?.(open);
   });
 
@@ -130,36 +203,131 @@ export function App() {
     window.location.reload();
   };
 
-  // Which saved scene the World scene plays; bumps the GameCanvas key so picking
-  // a scene rebuilds the runtime with that map.
   const [activeSceneId, setActiveSceneIdSignal] = createSignal(getActiveSceneId());
-  // Bumped on every explicit "play" so replaying the SAME scene id (the usual
-  // draft loop: edit → ▶ Play) still remounts GameCanvas. Without this, the keyed
-  // Show sees an unchanged `world:__draft__` key and keeps the stale level built
-  // from the draft as it was when the canvas first mounted.
   const [playRevision, setPlayRevision] = createSignal(0);
+  // Bumped on every enterExperience so re-selecting the same level remounts the runtime.
+  const [playSession, setPlaySession] = createSignal(bootIntent.skipMenu ? 1 : 0);
 
-  // Load a saved world-map scene into the playable World scene.
-  const playScene = (id) => {
-    setActiveSceneId(id);              // persist for LevelSystem.getActiveWorldMap
-    setActiveSceneIdSignal(id);
-    setPlayRevision((n) => n + 1);
-    try { localStorage.setItem('dreamfall:level', 'world'); } catch {}
-    setLevelModeSignal('world');
+  const isGame = () => viewMode() === 'game';
+  const isGarage = () => viewMode() === 'garage';
+  const isBodyshop = () => viewMode() === 'bodyshop';
+  const isCutTest = () => viewMode() === 'cutTest';
+
+  const gameKey = createMemo(() => {
+    const mode = levelMode();
+    const session = playSession();
+    if (mode === 'world') return `world:${activeSceneId() ?? 'draft'}:${playRevision()}:${session}`;
+    if (mode === 'rally') return `rally:${getDefaultRallySceneId() ?? 'builtin'}:${session}`;
+    return `${mode}:${session}`;
+  });
+
+  createEffect((prevKey) => {
+    const key = gameKey();
+    if (prevKey != null && prevKey !== key) {
+      setGameSnapshot(null);
+    }
+    return key;
+  });
+
+  const showCanvas = createMemo(
+    () => isGame()
+      && (appPhase() === 'loading_experience' || appPhase() === 'playing'),
+  );
+  const showMenu = createMemo(() => isGame() && appPhase() === 'menu');
+  const showSharedLoader = createMemo(
+    () => isGame() && (appPhase() === 'booting' || appPhase() === 'warming_shared'),
+  );
+  const showExperienceLoader = createMemo(
+    () => isGame() && appPhase() === 'loading_experience',
+  );
+  const isLoadBlocked = createMemo(
+    () => appPhase() === 'booting'
+      || appPhase() === 'warming_shared'
+      || appPhase() === 'loading_experience',
+  );
+  const isPlaying = createMemo(() => isGame() && appPhase() === 'playing');
+
+  const activeWorldMap = createMemo(() =>
+    levelMode() === 'world'
+      ? (activeSceneId(), playRevision(), getActiveWorldMapSync())
+      : levelMode() === 'rally' ? getRallyWorldMapSync() : null,
+  );
+
+  const returnToMenu = () => {
+    setShowSettings(false);
+    setShowControls(false);
+    setGameSnapshot(null);
+    setAppPhase('menu');
+    // Canvas unmounts via showCanvas; GameCanvas onCleanup disposes runtime.
+  };
+
+  // Centralized switch; leaving game disposes any mounted play runtime.
+  const switchTo = (mode) => {
+    const current = viewMode();
+    if (current === mode) return;
+
+    if (
+      current === 'game'
+      && mode !== 'game'
+      && (appPhase() === 'playing' || appPhase() === 'loading_experience')
+    ) {
+      setGameSnapshot(null);
+      setAppPhase('menu');
+    }
+
+    devTools.beforeSwitch(current, mode);
+    setViewMode(mode);
+  };
+
+  /**
+   * Sole entry that mounts/remounts a playable experience.
+   * @param {'city'|'world'|'wilds'|'rally'} mode
+   * @param {{ sceneId?: string|null }} [opts]
+   */
+  const enterExperience = (mode, opts = {}) => {
+    const next = LEVELS.has(mode) ? mode : 'city';
+    try {
+      localStorage.setItem('dreamfall:level', next);
+    } catch { /* ignore */ }
+
+    if (next === 'world') {
+      const id = opts.sceneId !== undefined
+        ? opts.sceneId
+        : (getDefaultWorldSceneId() || null);
+      setActiveSceneId(id);
+      setActiveSceneIdSignal(id);
+      setPlayRevision((n) => n + 1);
+    }
+
+    setLevelModeSignal(next);
+    setGameSnapshot(null);
+    setPlaySession((n) => n + 1);
     switchTo('game');
+    setAppPhase('loading_experience');
+  };
+
+  const playScene = (id) => {
+    enterExperience('world', { sceneId: id });
+  };
+
+  const setLevelMode = (mode) => {
+    enterExperience(mode);
   };
 
   const toggleMode = () => {
     devTools.toggleMode();
   };
 
-  // Global hotkey for mode switch (works from either canvas)
   const onGlobalKey = (e) => {
-    // Don't hijack typing in form fields (e.g. 'p' toggling the debug panel, 'm'
-    // switching mode) while the focus is in an input/textarea/select/contentEditable.
     const t = e.target;
     if (t && (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement
       || t.tagName === 'SELECT' || t.isContentEditable)) return;
+
+    if (e.key === 'Escape' && appPhase() === 'loading_experience' && isGame()) {
+      e.preventDefault();
+      returnToMenu();
+      return;
+    }
     if (e.key === 'Escape' && showSettings()) {
       e.preventDefault();
       setShowSettings(false);
@@ -176,74 +344,22 @@ export function App() {
     }
     if (e.key === '?') {
       e.preventDefault();
-      if (viewMode() === 'game') {
+      if (viewMode() === 'game' && (appPhase() === 'playing' || appPhase() === 'menu')) {
         setShowControls(true);
       } else {
         toggleMode();
       }
     }
-    // 'p' toggles the render-feature debug panel (game mode only).
     if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'p') {
-      e.preventDefault();
-      setShowDebugPanel((v) => !v);
+      if (appPhase() === 'playing' && isGame()) {
+        e.preventDefault();
+        setShowDebugPanel((v) => !v);
+      }
     }
   };
 
-  // Attach once
   globalThis.addEventListener('keydown', onGlobalKey);
   onCleanup(() => globalThis.removeEventListener('keydown', onGlobalKey));
-
-  const isGame = () => viewMode() === 'game';
-  const isGarage = () => viewMode() === 'garage';
-  const isBodyshop = () => viewMode() === 'bodyshop';
-  const isCutTest = () => viewMode() === 'cutTest';
-
-  // Stable key for the playable canvas: changes only when the scene actually
-  // changes (City⇄World, or a different World map). Memoized so equal values
-  // don't re-fire — and the keyed child must NOT read signals, or it remounts
-  // on every game snapshot.
-  const gameKey = createMemo(() => {
-    const mode = levelMode();
-    if (mode === 'world') return `world:${activeSceneId() ?? 'draft'}:${playRevision()}`;
-    if (mode === 'rally') return `rally:${getDefaultRallySceneId() ?? 'builtin'}`;
-    return mode;
-  });
-
-  // The world map currently being played (for the minimap). Recomputed when the
-  // active scene changes; null in City mode.
-  const activeWorldMap = createMemo(() =>
-    levelMode() === 'world'
-      ? (activeSceneId(), playRevision(), getActiveWorldMapSync())
-      : levelMode() === 'rally' ? getRallyWorldMapSync() : null,
-  );
-
-  // Centralized switch that forces terrain save when leaving the editor
-  const switchTo = (mode) => {
-    const current = viewMode();
-    if (current === mode) return;
-
-    devTools.beforeSwitch(current, mode);
-
-    setViewMode(mode);
-  };
-
-  // Switch the playable scene (City ⇄ World). Persisted so reloads restore it.
-  // Changing levelMode while in game remounts GameCanvas (keyed Show below), so a
-  // fresh GameRuntime builds the chosen level.
-  const setLevelMode = (mode) => {
-    const next = ['world', 'wilds', 'rally'].includes(mode) ? mode : 'city';
-    try {
-      localStorage.setItem('dreamfall:level', next);
-    } catch {}
-    if (next === 'world') {
-      const defId = getDefaultWorldSceneId();
-      setActiveSceneId(defId || null);
-      setActiveSceneIdSignal(defId || null);
-      setPlayRevision((n) => n + 1);
-    }
-    setLevelModeSignal(next);
-    switchTo('game');
-  };
 
   let bodyshopApi = null;
 
@@ -255,14 +371,16 @@ export function App() {
 
   return (
     <main class="app-shell">
-      {/* Persistent minimal switchers (visible on both "pages") */}
-      <Show when={!gameSnapshot()?.camera?.photoMode || hudVisible()}>
+      <Show when={(!gameSnapshot()?.camera?.photoMode || hudVisible()) && !isLoadBlocked()}>
       <div class="top-bar-switchers" style="position: absolute; top: 10px; right: 12px; z-index: 20; display: flex; gap: 6px; pointer-events: none;">
         <div class="top-bar-actions">
           <button
             type="button"
             class="settings-btn"
-            onClick={() => setShowSettings(true)}
+            onClick={() => {
+              if (isLoadBlocked()) return;
+              setShowSettings(true);
+            }}
             title="Settings"
             aria-label="Open settings"
           >
@@ -287,7 +405,7 @@ export function App() {
       </Show>
 
       <SettingsDialog
-        open={showSettings()}
+        open={showSettings() && !isLoadBlocked()}
         onClose={() => setShowSettings(false)}
         snapshot={gameSnapshot()}
         viewMode={viewMode()}
@@ -300,6 +418,11 @@ export function App() {
         clothEditorOpen={showClothEditor()}
         debugPanelOpen={showDebugPanel()}
         devModeButtons={<devTools.ModeButtons />}
+        canReturnToMenu={isPlaying()}
+        onReturnToMenu={() => {
+          setShowSettings(false);
+          returnToMenu();
+        }}
         onLevelModeChange={setLevelMode}
         onOpenGarage={() => {
           setShowSettings(false);
@@ -318,33 +441,55 @@ export function App() {
         onDebugPanelChange={setShowDebugPanel}
       />
 
-      {isGame() && (
+      <Show when={showSharedLoader()}>
+        <LoadingScreen
+          progress={() => sharedProgress()}
+          ready={() => sharedReady()}
+          onDismissed={() => setAppPhase('menu')}
+        />
+      </Show>
+
+      <Show when={showMenu()}>
+        <MainMenu
+          preferredLevel={bootIntent.preferredLevel}
+          lastLevel={readStoredLevel()}
+          onSelectExperience={(id) => enterExperience(id)}
+          onContinue={() => enterExperience(readStoredLevel())}
+        />
+      </Show>
+
+      {isGame() && showCanvas() && (
         <>
-          {/* keyed so switching City⇄World (or picking a different World scene)
-              remounts GameCanvas, disposing the old GameRuntime and building the
-              chosen level fresh. The child derives mode from the key value and
-              reads NO signals — reading one here caused an infinite remount loop. */}
           <Show when={gameKey()} keyed>
             {(key) => (
-              <GameCanvas
-                levelMode={key.startsWith('world') ? 'world' : key.startsWith('rally') ? 'rally' : key}
-                onSnapshot={setGameSnapshot}
-                onRuntime={(runtime) => { gameRuntime = runtime; }}
-              />
+              <>
+                <GameCanvas
+                  levelMode={key.startsWith('world') ? 'world' : key.startsWith('rally') ? 'rally' : key}
+                  onSnapshot={setGameSnapshot}
+                  onRuntime={(runtime) => { gameRuntime = runtime; }}
+                />
+                <Show when={showExperienceLoader()}>
+                  <LoadingScreen
+                    progress={() => gameSnapshot()?.loadProgress}
+                    ready={() => gameSnapshot()?.stage === 'running'}
+                    onDismissed={() => setAppPhase('playing')}
+                  />
+                </Show>
+              </>
             )}
           </Show>
-          {hudVisible() && <StatsPanel snapshot={gameSnapshot()} />}
-          {hudVisible() && <Hud snapshot={gameSnapshot()} />}
-          <Show when={hudVisible() && isJacketClothUiEnabled() && showClothEditor()}>
+          {hudVisible() && isPlaying() && <StatsPanel snapshot={gameSnapshot()} />}
+          {hudVisible() && isPlaying() && <Hud snapshot={gameSnapshot()} />}
+          <Show when={hudVisible() && isPlaying() && isJacketClothUiEnabled() && showClothEditor()}>
             <ClothColliderEditor
               runtime={() => gameRuntime}
               onClose={() => setShowClothEditor(false)}
             />
           </Show>
-          {hudVisible() && (levelMode() === 'world' || levelMode() === 'rally') && activeWorldMap() && (
+          {hudVisible() && isPlaying() && (levelMode() === 'world' || levelMode() === 'rally') && activeWorldMap() && (
             <Minimap map={activeWorldMap()} player={gameSnapshot()?.player} />
           )}
-          <Show when={gameSnapshot()?.camera?.photoMode && hudVisible()}>
+          <Show when={gameSnapshot()?.camera?.photoMode && hudVisible() && isPlaying()}>
             <PhotoModeControls
               snapshot={gameSnapshot()}
               hudVisible={hudVisible()}
@@ -356,30 +501,16 @@ export function App() {
               onSetting={(name, value) => gameRuntime?.setPhotoSetting(name, value)}
             />
           </Show>
-          <Show when={hudVisible()}>
+          <Show when={hudVisible() && (isPlaying() || showMenu())}>
             <ControlsGuide open={showControls()} onOpenChange={setShowControls} />
           </Show>
-          {gameSnapshot()?.stage === 'prewarming' && (
-            <div
-              style={{
-                position: 'fixed',
-                inset: 0,
-                background: 'rgba(0,0,0,0.75)',
-                color: '#fff',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontFamily: 'system-ui, sans-serif',
-                fontSize: '18px',
-                zIndex: 9999,
-                pointerEvents: 'none'
-              }}
-            >
-              Warming shaders...
-            </div>
-          )}
         </>
       )}
+
+      {/* Controls guide also available on pure menu (no canvas branch) */}
+      <Show when={showMenu() && hudVisible()}>
+        <ControlsGuide open={showControls()} onOpenChange={setShowControls} />
+      </Show>
 
       {isCutTest() && <CutTestCanvas />}
 
@@ -387,7 +518,7 @@ export function App() {
         <GarageScene
           chassisRefreshToken={chassisRefreshToken()}
           onOpenBodyshop={() => switchTo('bodyshop')}
-          onDrive={() => setLevelMode(levelMode())}
+          onDrive={() => enterExperience(levelMode())}
         />
       )}
 

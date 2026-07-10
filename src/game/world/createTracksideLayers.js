@@ -492,6 +492,7 @@ function smoothstep01(t) {
 function buildIntersectionGate(intersections = [], roadIndex, frame) {
   const exclusions = [];
   for (const intersection of intersections) {
+    if (intersection.kind === 'continuation') continue;
     for (const connection of intersection.connections) {
       if (connection.roadIndex !== roadIndex) continue;
       const at = Math.max(0, Math.min(frame.n - 1, connection.at));

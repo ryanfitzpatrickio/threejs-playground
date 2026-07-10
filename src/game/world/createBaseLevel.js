@@ -37,6 +37,8 @@ export function createBaseLevel(qualityPreset = {}) {
     cityChunkStride: generatedCity.cityChunkStride,
     snapshot: generatedCity.snapshot,
     createPipelineWarmupGroup: generatedCity.createPipelineWarmupGroup,
+    // Prefer false when the method is missing so city is not falsely ready.
+    isNearFieldReady: () => generatedCity.isNearFieldReady?.() ?? false,
 
     getGroundHeightAt: (position, radius = 0.28, options = {}) => {
       return getGroundHeightAt({

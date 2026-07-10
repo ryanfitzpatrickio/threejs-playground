@@ -213,6 +213,22 @@ export class LevelSystem {
     return this.level?.geometryIndex?.warmupBoundsTrees?.(options) ?? 0;
   }
 
+  /**
+   * Play-ready near-spawn gate. Prefer the level's explicit method; fall back to
+   * city snapshot.initialLoadComplete so a missing method does not mean ready
+   * while the city is still streaming its initial radius.
+   */
+  isNearFieldReady() {
+    if (typeof this.level?.isNearFieldReady === 'function') {
+      return this.level.isNearFieldReady() === true;
+    }
+    const citySnap = this.level?.snapshot?.();
+    if (citySnap && typeof citySnap.initialLoadComplete === 'boolean') {
+      return citySnap.initialLoadComplete === true;
+    }
+    return true;
+  }
+
   findRopeCandidate({
     position,
     maxDistance = 0.86,

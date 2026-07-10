@@ -46,7 +46,25 @@ function loadFbx(filePath) {
   return loader.parse(arrayBuffer, '');
 }
 
-const model = loadFbx(path.join(PUBLIC, MARA_MODEL_URL));
+// Prefer the FBX source rig for node diagnostics (MARA_MODEL_URL may be a GLB).
+const modelCandidates = [
+  path.join(PUBLIC, 'assets/models/playernew.fbx'),
+  path.join(process.cwd(), 'assets-source/models/player-tpose.fbx'),
+  path.join(process.cwd(), 'assets-source/models/climber.fbx'),
+  path.join(PUBLIC, MARA_MODEL_URL),
+];
+const modelPath = modelCandidates.find((p) => {
+  try {
+    readFileSync(p);
+    return p.endsWith('.fbx');
+  } catch {
+    return false;
+  }
+});
+if (!modelPath) {
+  throw new Error('No FBX player model found for great-sword clip diagnose');
+}
+const model = loadFbx(modelPath);
 const rootBindPosition = model.getObjectByName('mixamorigHips')?.position.clone() ?? new THREE.Vector3();
 const targetBindRotations = collectBindRotations(model);
 const targetNames = collectTargetNames(model);

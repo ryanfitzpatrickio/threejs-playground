@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
+import { ensureRapier } from '../physics/rapierInit.js';
 import { GAME_CONFIG } from '../config/gameConfig.js';
 import { buildTerrainTrimeshData, hasTerrainHoles } from '../../world/terrain/TerrainChunk.js';
 
@@ -72,7 +73,7 @@ export class PhysicsSystem {
     }
 
     this.status = 'loading';
-    await RAPIER.init();
+    await ensureRapier();
     this.RAPIER = RAPIER;
     this.world = new RAPIER.World(GRAVITY);
     this.world.numSolverIterations = 8;
@@ -916,9 +917,11 @@ export class PhysicsSystem {
     const radius = config.footRadius;
     const collisionHeight = character.collisionHeight ?? config.collisionHeight;
     const capsuleHalfHeight = Math.max(0.05, (collisionHeight - radius * 2) * 0.5);
+    const colliderOffsetRaw = Number(config.playerColliderOffset);
+    const colliderOffset = Number.isFinite(colliderOffsetRaw) ? colliderOffsetRaw : 0;
     const initialBodyPosition = {
       x: character.group.position.x,
-      y: character.group.position.y + radius + capsuleHalfHeight,
+      y: character.group.position.y + radius + capsuleHalfHeight + colliderOffset,
       z: character.group.position.z,
     };
     const bodyDesc = this.RAPIER.RigidBodyDesc.kinematicPositionBased()
@@ -1008,16 +1011,19 @@ export class PhysicsSystem {
     const config = GAME_CONFIG.character;
     const collisionHeight = character.collisionHeight ?? config.collisionHeight;
     const capsuleHalfHeight = Math.max(0.05, (collisionHeight - config.footRadius * 2) * 0.5);
-    const centerY = character.group.position.y + config.footRadius + capsuleHalfHeight;
+    const colliderOffsetRaw = Number(config.playerColliderOffset);
+    const colliderOffset = Number.isFinite(colliderOffsetRaw) ? colliderOffsetRaw : 0;
+    const centerY = character.group.position.y + config.footRadius + capsuleHalfHeight + colliderOffset;
 
     // Avoid resizing or reading Rapier handles during the movement frame.
     // Some Rapier WASM builds throw aliasing errors when a borrowed handle is
     // read and then mutated in the same JS turn.
     const current = this.characterBodyPosition;
     if (
-      Math.abs(current.x - character.group.position.x) > 0.0001 ||
-      Math.abs(current.y - centerY) > 0.0001 ||
-      Math.abs(current.z - character.group.position.z) > 0.0001
+      !current
+      || Math.abs(current.x - character.group.position.x) > 0.0001
+      || Math.abs(current.y - centerY) > 0.0001
+      || Math.abs(current.z - character.group.position.z) > 0.0001
     ) {
       const nextPosition = {
         x: character.group.position.x,

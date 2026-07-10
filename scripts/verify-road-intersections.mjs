@@ -36,6 +36,25 @@ const tProfile = buildRoadProfile({
 });
 assert.equal(tProfile.intersections.length, 1);
 assert.equal(tProfile.intersections[0].wayCount, 3);
+assert.equal(tProfile.intersections[0].kind, 't');
+assert.equal(tProfile.intersections[0].sizeClass, 'medium');
+
+// Two endpoint-joined roads are a continuous terrain/width transition, not a
+// marked intersection. The runtime may still retain an internal seam footprint
+// so unequal road widths are fully backed by cut terrain.
+const continuation = buildRoadProfile({
+  roads: [
+    { id: 'west', width: 6, points: [{ x: -30, z: 0 }, { x: 0, z: 0 }] },
+    { id: 'east', width: 10, points: [{ x: 0, z: 0 }, { x: 30, z: 8 }] },
+  ],
+  sampleHeight: flat,
+  smoothRadius: 0,
+  maxGrade: Infinity,
+});
+assert.equal(continuation.intersections[0].kind, 'continuation');
+assert.equal(continuation.intersections[0].wayCount, 2);
+assert.ok(continuation.roads.every((road) => [...road.intersectionMask].every((value) => value === 1)),
+  'a continuous seam must retain ordinary road markings');
 
 // A single spline can cross itself; its two distant longitudinal sections are
 // treated as four approaches rather than averaged into one connection.
@@ -73,6 +92,19 @@ const parallel = buildRoadProfile({
   maxGrade: Infinity,
 });
 assert.ok(parallel.intersections.length <= 2);
+
+// A wide ordinary bend must not collide with itself merely because dense samples
+// on the two sides of the curve fall within the road's own snap width.
+const wideBend = buildRoadProfile({
+  roads: [{
+    id: 'wide-bend', width: 24,
+    points: [{ x: -60, z: 0 }, { x: -20, z: 0 }, { x: 0, z: 20 }, { x: 0, z: 60 }],
+  }],
+  sampleHeight: flat,
+  smoothRadius: 0,
+  maxGrade: Infinity,
+});
+assert.equal(wideBend.intersections.length, 0, 'a continuous wide bend must not produce one-arm junction pads');
 
 // Runtime geometry includes one flat asphalt polygon plus dedicated white paint,
 // and exposes detected way counts for diagnostics/editor overlays.
@@ -113,8 +145,8 @@ for (const vertexIndex of walls.geometry.index.array) {
 }
 layers.dispose();
 
-// Wide-road junction conform: the flat junction pad (disc of radius maxHalf+2.5)
-// must be fully backed by weight-1 terrain conform at the leveled height —
+// Wide-road junction conform: the topology-shaped junction polygon must be fully
+// backed by weight-1 terrain conform at the leveled height —
 // including past an unequal-width butt joint (where nearest-centerline selection
 // once let the narrow road's feather shadow the wide road's full corridor) and
 // in the pad corners of a perpendicular crossing.
@@ -145,16 +177,32 @@ layers.dispose();
   });
   const pad = crossProfile.intersections[0];
   assert.ok(pad && pad.grounded, 'crossing junction detected and grounded');
-  // Sweep the whole pad disc: every point must conform at full weight.
-  for (let angle = 0; angle < 360; angle += 15) {
-    for (const frac of [0.5, 0.9, 1.0]) {
-      const qx = pad.x + Math.cos(angle * Math.PI / 180) * pad.radius * frac;
-      const qz = pad.z + Math.sin(angle * Math.PI / 180) * pad.radius * frac;
-      const c = crossProfile.corridorAt(qx, qz);
-      assert.ok(c && c.weight >= 0.999,
-        `junction pad conform hole at angle ${angle} frac ${frac}: ${c ? `weight ${c.weight.toFixed(2)}` : 'null'}`);
-    }
+  for (const point of pad.footprint) {
+    const c = crossProfile.corridorAt(point.x, point.z);
+    assert.ok(c && c.weight >= 0.999,
+      `junction polygon conform hole at (${point.x.toFixed(2)},${point.z.toFixed(2)}): ${c ? `weight ${c.weight.toFixed(2)}` : 'null'}`);
   }
+}
+
+// Large roads automatically receive a widened footprint, turn/slip markings,
+// physical refuge islands, and instanced traffic/street lights.
+{
+  const largeProfile = buildRoadProfile({
+    roads: [
+      { id: 'large-ew', width: 18, points: [{ x: -80, z: 0 }, { x: 80, z: 0 }] },
+      { id: 'large-ns', width: 18, points: [{ x: 0, z: -80 }, { x: 0, z: 80 }] },
+    ],
+    sampleHeight: flat,
+    smoothRadius: 0,
+    maxGrade: Infinity,
+  });
+  assert.equal(largeProfile.intersections[0].sizeClass, 'large');
+  const works = createRoadworks({ profile: largeProfile, sampleHeight: flat });
+  assert.ok(works.group.getObjectByName('Trafficlights'));
+  assert.ok(works.group.getObjectByName('Streetlights'));
+  assert.ok(works.group.getObjectByName('Intersection Traffic Islands'));
+  assert.equal(works.colliders.filter((entry) => entry.name.startsWith('Traffic Island')).length, 4);
+  works.dispose();
 }
 
 console.log('road intersection regression passed');

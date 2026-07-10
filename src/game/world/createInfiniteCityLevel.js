@@ -244,6 +244,10 @@ export function createInfiniteCityLevel(qualityPreset = {}, { chunkFilter = null
       return warmup;
     },
 
+    // Play-ready gate: true once the initial load radius is attached (streamed
+    // under stage=prewarming). Polled via LevelSystem.isNearFieldReady().
+    isNearFieldReady: () => initialLoadComplete,
+
     updateStreaming: (position, { debugVisible = false } = {}) => {
       const current = worldToChunk(position, currentChunk);
 

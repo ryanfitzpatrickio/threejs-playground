@@ -179,6 +179,8 @@ const ok = (name) => { passed += 1; console.log(`  ✓ ${name}`); };
     sampleHeight, smoothRadius: 2, maxGrade: Infinity,
   });
   assert.ok(atJunction.intersections.length > 0, 'test setup actually produced a junction at the tunnel mouth');
+  assert.equal(atJunction.corridorAt(1, 0)?.tunnel, true,
+    'a continuation seam at the portal must not override tunnel terrain carving');
 
   const isolatedLayers = createTracksideLayers({ profile: isolated, sampleHeight });
   const junctionLayers = createTracksideLayers({ profile: atJunction, sampleHeight });

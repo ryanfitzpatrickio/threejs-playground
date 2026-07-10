@@ -650,9 +650,19 @@ export class MaraAnimationController {
       return;
     }
 
+    // Always-applied mesh height bias (debug / GAME_CONFIG). Separate from the
+    // per-state foot-plant micro-adjust so idle and other non-grounding states
+    // still respond live to playerGroundOffset.
+    const meshOffset = Number(GAME_CONFIG.character.playerGroundOffset);
+    const meshY = Number.isFinite(meshOffset) ? meshOffset : 0;
+
     this.modelRoot.position.set(
       this.baseModelPosition.x,
-      this.baseModelY + this.footGroundingOffset + this.landingVisualOffset + this.traversalVisualOffset.y,
+      this.baseModelY
+        + this.footGroundingOffset
+        + this.landingVisualOffset
+        + this.traversalVisualOffset.y
+        + meshY,
       this.baseModelPosition.z,
     );
   }
@@ -949,11 +959,12 @@ export class MaraAnimationController {
       return 0;
     }
 
-    // Include playerGroundOffset so the visual model sits lower/higher than
-    // the raw ground snap (negative lowers to stop floating).
-    const playerGroundOffset = GAME_CONFIG.character.playerGroundOffset ?? 0;
+    // Plant feet at ground + mesh offset so foot-plant does not fight the
+    // always-on playerGroundOffset applied in applyModelVisualOffset.
+    const meshOffset = Number(GAME_CONFIG.character.playerGroundOffset);
+    const meshY = Number.isFinite(meshOffset) ? meshOffset : 0;
     return THREE.MathUtils.clamp(
-      this.footGroundingOffset + (groundHeight + playerGroundOffset) - lowestFootY,
+      this.footGroundingOffset + (groundHeight + meshY) - lowestFootY,
       -settings.maxDrop,
       settings.maxRaise,
     );

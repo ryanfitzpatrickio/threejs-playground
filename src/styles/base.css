@@ -2599,6 +2599,216 @@ select {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* Loading / prewarm screen (play-ready gate) */
+/* ------------------------------------------------------------------ */
+
+.loading-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(12 11 9 / 0.88);
+  backdrop-filter: blur(6px);
+  color: #f7f4e8;
+  pointer-events: auto;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+.loading-screen__panel {
+  width: min(360px, calc(100vw - 48px));
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  padding: 28px 24px 22px;
+  background: rgb(22 21 18 / 92%);
+  border: 1px solid rgb(247 244 232 / 14%);
+  border-radius: 14px;
+  box-shadow: 0 20px 60px rgb(0 0 0 / 55%);
+}
+
+.loading-screen__wordmark {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: #d0a15c;
+  text-align: center;
+}
+
+.loading-screen__label {
+  font-size: 14px;
+  text-align: center;
+  color: rgb(247 244 232 / 88%);
+  min-height: 1.25em;
+}
+
+.loading-screen__bar {
+  height: 6px;
+  border-radius: 999px;
+  background: rgb(247 244 232 / 12%);
+  overflow: hidden;
+}
+
+.loading-screen__bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #a67c3d, #d0a15c 55%, #e8c27a);
+  transition: width 0.18s ease-out;
+}
+
+.loading-screen__percent {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-align: center;
+  color: rgb(247 244 232 / 55%);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------------ */
+/* Main menu — four experience cards */
+/* ------------------------------------------------------------------ */
+
+.main-menu {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px 16px;
+  background:
+    radial-gradient(ellipse 80% 60% at 50% 20%, rgb(208 161 92 / 0.12), transparent 55%),
+    rgb(10 9 8 / 0.96);
+  color: #f7f4e8;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  overflow: auto;
+}
+
+.main-menu__inner {
+  width: min(720px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.main-menu__header {
+  text-align: center;
+}
+
+.main-menu__wordmark {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: #d0a15c;
+}
+
+.main-menu__tagline {
+  margin: 8px 0 0;
+  font-size: 14px;
+  color: rgb(247 244 232 / 70%);
+}
+
+.main-menu__continue {
+  align-self: center;
+  padding: 10px 18px;
+  border-radius: 999px;
+  border: 1px solid rgb(208 161 92 / 0.55);
+  background: rgb(208 161 92 / 0.14);
+  color: #f7f4e8;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.main-menu__continue:hover,
+.main-menu__continue:focus-visible {
+  background: rgb(208 161 92 / 0.28);
+  outline: none;
+  box-shadow: 0 0 0 2px rgb(208 161 92 / 0.45);
+}
+
+.main-menu__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.main-menu__card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  min-height: 118px;
+  padding: 18px 16px;
+  text-align: left;
+  border-radius: 14px;
+  border: 1px solid rgb(247 244 232 / 14%);
+  background: rgb(22 21 18 / 92%);
+  color: #f7f4e8;
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: 0 12px 40px rgb(0 0 0 / 35%);
+  transition: border-color 0.15s ease, transform 0.12s ease, background 0.15s ease;
+}
+
+.main-menu__card:hover {
+  border-color: rgb(247 244 232 / 28%);
+  transform: translateY(-1px);
+}
+
+.main-menu__card:focus-visible {
+  outline: none;
+  border-color: #d0a15c;
+  box-shadow: 0 0 0 2px rgb(208 161 92 / 0.45);
+}
+
+.main-menu__card--accent {
+  border-color: rgb(208 161 92 / 0.45);
+  background:
+    linear-gradient(160deg, rgb(208 161 92 / 0.12), transparent 55%),
+    rgb(22 21 18 / 94%);
+}
+
+.main-menu__card--preferred {
+  box-shadow: 0 0 0 1px rgb(208 161 92 / 0.35), 0 12px 40px rgb(0 0 0 / 35%);
+}
+
+.main-menu__card-label {
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+}
+
+.main-menu__card-blurb {
+  font-size: 12px;
+  line-height: 1.4;
+  color: rgb(247 244 232 / 62%);
+}
+
+.main-menu__hint {
+  margin: 0;
+  text-align: center;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  color: rgb(247 244 232 / 42%);
+}
+
+@media (max-width: 520px) {
+  .main-menu__grid {
+    grid-template-columns: 1fr;
+  }
+
+  .main-menu__card {
+    min-height: 96px;
+  }
+}
+
 @media (max-width: 600px) {
   .stats-panel {
     top: 8px;

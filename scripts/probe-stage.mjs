@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { chromium } from 'playwright';
-const url = process.argv[2];
+import { dreamfallAppUrl } from './lib/dreamfallAppUrl.mjs';
+const url = dreamfallAppUrl();
 const browser = await chromium.launch({ headless: true, executablePath: existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome') ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : undefined });
 const page = await browser.newPage({});
 const errs = [];
