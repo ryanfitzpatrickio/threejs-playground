@@ -318,6 +318,21 @@ export function SettingsDialog(props) {
                 </SettingSection>
 
                 <SettingSection
+                  title="Weapon shake"
+                  hint="Optional high-frequency firing shake. Recoil and weapon animation stay enabled."
+                >
+                  <ChipGroup
+                    label="Weapon shake"
+                    value={(snapshot()?.camera?.weaponShakeScale ?? 1) > 0 ? 'on' : 'off'}
+                    onChange={(value) => props.onWeaponShakeChange?.(value === 'on')}
+                    options={[
+                      { id: 'on', label: 'On', title: 'Add a small firing shake' },
+                      { id: 'off', label: 'Off', title: 'Disable firing shake only' },
+                    ]}
+                  />
+                </SettingSection>
+
+                <SettingSection
                   title="Photo mode"
                   hint="Pause gameplay and fly a free camera. Shortcut: K"
                 >

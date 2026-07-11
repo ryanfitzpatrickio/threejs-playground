@@ -1,0 +1,329 @@
+{
+  "version": 5,
+  "id": "desert-ar15",
+  "label": "Desert Tan AR-15",
+  "glbUrl": "/assets/guns/desert-ar15.glb",
+  "weaponKind": "rifle",
+  "statsId": "rifle",
+  "statOverrides": {},
+  "sounds": {
+    "fire": "snake-556-single-full",
+    "reloadStart": "snake-ar-reload-full",
+    "reloadComplete": "snake-ar-bolt-release",
+    "pump": "",
+    "dryFire": ""
+  },
+  "anchorSpace": "weapon",
+  "anchors": [
+    {
+      "name": "grip_mount",
+      "position": [
+        0,
+        0.0745974510657994,
+        0.19929909018346711
+      ],
+      "quaternion": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "left_hand_ik_target",
+      "position": [
+        -0.0015138071273501086,
+        0.16750946339839531,
+        -0.15748691053184372
+      ],
+      "quaternion": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "muzzle",
+      "position": [
+        -0.0008896687415283974,
+        0.1973644316972696,
+        -0.45
+      ],
+      "quaternion": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "adsCamera",
+      "position": [
+        -0.0014287524944519014,
+        0.2666445625154908,
+        0.2894679016626477
+      ],
+      "quaternion": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "mag_socket",
+      "position": [
+        0,
+        0.14473257130405742,
+        0.05
+      ],
+      "quaternion": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "ejection_port",
+      "position": [
+        0.03,
+        0.20139191267691842,
+        0.043218759138235974
+      ],
+      "quaternion": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "stock_shoulder",
+      "position": [
+        0,
+        0.19974734061790872,
+        0.4482531677835951
+      ],
+      "quaternion": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ]
+    }
+  ],
+  "parts": [
+    {
+      "meshName": "mesh_0",
+      "identity": "misc",
+      "surfaceClass": "metal",
+      "appearance": {
+        "mode": "pbr",
+        "textureSet": "field-panel",
+        "uvScale": 1,
+        "metalness": 0.78,
+        "roughness": 0.34
+      },
+      "skin": null,
+      "behaviors": [],
+      "behaviorParams": null
+    },
+    {
+      "meshName": "mesh_1",
+      "identity": "misc",
+      "surfaceClass": "metal",
+      "appearance": {
+        "mode": "pbr",
+        "textureSet": "field-panel",
+        "uvScale": 1,
+        "metalness": 0.78,
+        "roughness": 0.34
+      },
+      "skin": null,
+      "behaviors": [],
+      "behaviorParams": null
+    },
+    {
+      "meshName": "mesh_2",
+      "identity": "misc",
+      "surfaceClass": "metal",
+      "appearance": {
+        "mode": "pbr",
+        "textureSet": "field-panel",
+        "uvScale": 1,
+        "metalness": 0.78,
+        "roughness": 0.34
+      },
+      "skin": null,
+      "behaviors": [],
+      "behaviorParams": null
+    },
+    {
+      "meshName": "mesh_3",
+      "identity": "misc",
+      "surfaceClass": "metal",
+      "appearance": {
+        "mode": "pbr",
+        "textureSet": "field-panel",
+        "uvScale": 1,
+        "metalness": 0.78,
+        "roughness": 0.34
+      },
+      "skin": null,
+      "behaviors": [],
+      "behaviorParams": null
+    },
+    {
+      "meshName": "mesh_4",
+      "identity": "misc",
+      "surfaceClass": "metal",
+      "appearance": {
+        "mode": "pbr",
+        "textureSet": "field-panel",
+        "uvScale": 1,
+        "metalness": 0.78,
+        "roughness": 0.34
+      },
+      "skin": null,
+      "behaviors": [],
+      "behaviorParams": null
+    },
+    {
+      "meshName": "mesh_5",
+      "identity": "misc",
+      "surfaceClass": "metal",
+      "appearance": {
+        "mode": "pbr",
+        "textureSet": "field-panel",
+        "uvScale": 1,
+        "metalness": 0.78,
+        "roughness": 0.34
+      },
+      "skin": null,
+      "behaviors": [],
+      "behaviorParams": null
+    },
+    {
+      "meshName": "mesh_6",
+      "identity": "misc",
+      "surfaceClass": "metal",
+      "appearance": {
+        "mode": "pbr",
+        "textureSet": "field-panel",
+        "uvScale": 1,
+        "metalness": 0.78,
+        "roughness": 0.34
+      },
+      "skin": null,
+      "behaviors": [],
+      "behaviorParams": null
+    },
+    {
+      "meshName": "mesh_7",
+      "identity": "misc",
+      "surfaceClass": "metal",
+      "appearance": {
+        "mode": "pbr",
+        "textureSet": "field-panel",
+        "uvScale": 1,
+        "metalness": 0.78,
+        "roughness": 0.34
+      },
+      "skin": null,
+      "behaviors": [],
+      "behaviorParams": null
+    },
+    {
+      "meshName": "mesh_8",
+      "identity": "misc",
+      "surfaceClass": "metal",
+      "appearance": {
+        "mode": "pbr",
+        "textureSet": "field-panel",
+        "uvScale": 1,
+        "metalness": 0.78,
+        "roughness": 0.34
+      },
+      "skin": null,
+      "behaviors": [],
+      "behaviorParams": null
+    },
+    {
+      "meshName": "mesh_9",
+      "identity": "misc",
+      "surfaceClass": "metal",
+      "appearance": {
+        "mode": "pbr",
+        "textureSet": "field-panel",
+        "uvScale": 1,
+        "metalness": 0.78,
+        "roughness": 0.34
+      },
+      "skin": null,
+      "behaviors": [],
+      "behaviorParams": null
+    }
+  ],
+  "scopeViewport": {
+    "enabled": true,
+    "position": [
+      -0.0008126397291516319,
+      0.2515148295408103,
+      0.12931621056281786
+    ],
+    "quaternion": [
+      0,
+      0,
+      0,
+      1
+    ],
+    "scale": [
+      1,
+      1,
+      1
+    ],
+    "radius": 0.015,
+    "depth": 0.007,
+    "magnification": 24,
+    "resolution": 384,
+    "viewRotationDeg": 90
+  },
+  "updatedAt": 1783731533628
+}

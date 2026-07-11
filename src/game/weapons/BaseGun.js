@@ -5,9 +5,13 @@
  * slide lock, etc.). Visual articulation (M7) and hitscan (M5) plug into hooks.
  */
 
-import { GUN_FIRE_MODES, resolveGunStats } from './gunConfig.js';
+import { GUN_FIRE_MODES, GUN_KIND_DEFAULTS, resolveGunStats } from './gunConfig.js';
 import { findAnchor, normalizeAnchorList } from './gunAnchors.js';
 import { normalizeProfile } from './gunProfile.js';
+import {
+  reloadDebugShouldPinProgress,
+  reloadDebugSocket,
+} from './reloadDebugSocket.js';
 
 export const GUN_STATE = Object.freeze({
   idle: 'idle',
@@ -15,6 +19,47 @@ export const GUN_STATE = Object.freeze({
   reloading: 'reloading',
   inspecting: 'inspecting',
 });
+
+/**
+ * Discrete reload phases (docs/advanced-reload-system-plan.md, AR0). `reach` is
+ * the implicit span before the first event; the rest are one-shot events fired
+ * as normalized reload progress crosses their `reloadPhaseTiming` threshold.
+ */
+export const GUN_RELOAD_PHASE = Object.freeze({
+  reach: 'reach',
+  mag_release: 'mag_release',
+  mag_drop: 'mag_drop',
+  mag_spawn: 'mag_spawn',
+  mag_seat: 'mag_seat',
+  charge: 'charge',
+});
+
+/** Event order — also the order phases fire and the "current phase" precedence. */
+const RELOAD_PHASE_ORDER = Object.freeze([
+  GUN_RELOAD_PHASE.mag_release,
+  GUN_RELOAD_PHASE.mag_drop,
+  GUN_RELOAD_PHASE.mag_spawn,
+  GUN_RELOAD_PHASE.mag_seat,
+  GUN_RELOAD_PHASE.charge,
+]);
+
+/**
+ * Merge a kind's default phase timing with an explicit override, clamped to
+ * [0,1] and restricted to known phases. Returns null when no timing applies
+ * (e.g. shotgun's per-shell reload, which keeps the plain start/complete path).
+ */
+export function normalizeReloadPhaseTiming(value, kind = 'rifle') {
+  const base = GUN_KIND_DEFAULTS[kind]?.reloadPhaseTiming ?? null;
+  const explicit = value && typeof value === 'object' ? value : null;
+  if (!base && !explicit) return null;
+  const merged = { ...(base ?? {}), ...(explicit ?? {}) };
+  const out = {};
+  for (const phase of RELOAD_PHASE_ORDER) {
+    const t = Number(merged[phase]);
+    if (Number.isFinite(t)) out[phase] = Math.min(1, Math.max(0, t));
+  }
+  return Object.keys(out).length ? out : null;
+}
 
 export class BaseGun {
   /**
@@ -33,7 +78,11 @@ export class BaseGun {
       ...(profile || {}),
       weaponKind: this.weaponKind,
       id: this.id,
-      statOverrides: options.statOverrides || profile?.statOverrides,
+      statOverrides: {
+        ...(profile?.statOverrides ?? {}),
+        ...(options.statOverrides ?? {}),
+        ...(profile?.presentation ? { presentation: profile.presentation } : {}),
+      },
     });
     if (options.stats) {
       this.stats = { ...this.stats, ...options.stats };
@@ -48,6 +97,17 @@ export class BaseGun {
     this.reserveAmmo = this.stats.magazineSize * (this.stats.reserveMags ?? 3);
     this.fireCooldown = 0;
     this.reloadTimer = 0;
+    // Normalized reload timeline (AR0). Progress 0..1 over reloadDuration;
+    // phase events fire once each as thresholds are crossed.
+    this.reloadDuration = 0;
+    this.reloadElapsed = 0;
+    this.reloadProgress = 0;
+    this.reloadPhaseTiming = normalizeReloadPhaseTiming(this.stats.reloadPhaseTiming, this.weaponKind);
+    /** Refill the magazine at 'seat' (tactical) or 'complete' (animation end). */
+    this.reloadRefillAt = this.stats.reloadRefillAt
+      ?? (this.reloadPhaseTiming ? 'seat' : 'complete');
+    this._reloadPhasesFired = new Set();
+    this._ammoRefilled = false;
     this.ads = 0; // 0..1 blend
     this.adsTarget = 0;
     this.needsPump = false; // shotgun: must cycle between shots
@@ -66,6 +126,19 @@ export class BaseGun {
 
   get isReloading() {
     return this.state === GUN_STATE.reloading;
+  }
+
+  /** Current discrete reload phase (or null when not reloading). */
+  get reloadPhase() {
+    if (!this.isReloading) return null;
+    const timing = this.reloadPhaseTiming;
+    if (!timing) return GUN_RELOAD_PHASE.reach;
+    let current = GUN_RELOAD_PHASE.reach;
+    for (const phase of RELOAD_PHASE_ORDER) {
+      const t = timing[phase];
+      if (t != null && this.reloadProgress >= t) current = phase;
+    }
+    return current;
   }
 
   get canFire() {
@@ -101,8 +174,48 @@ export class BaseGun {
     this.ads += (this.adsTarget - this.ads) * adsAlpha;
 
     if (this.state === GUN_STATE.reloading) {
-      this.reloadTimer -= dt;
-      if (this.reloadTimer <= 0) {
+      // Interrupt (sprint / traversal / explicit cancel) leaves a clean state;
+      // the visual rollback is a later milestone's concern.
+      if (input.cancelReload) {
+        this.cancelReload();
+        events.push('reloadCancel');
+        return { shot: null, events };
+      }
+
+      const duration = this.reloadDuration || Math.max(0.1, this.stats.reloadTime || 1.5);
+      // Debug scrub: freeze timeline at scrubT so hand path + mag phases stay
+      // locked while fitting offsets (see reloadDebugSocket / Reload pane).
+      if (reloadDebugShouldPinProgress(true)) {
+        const pin = Math.min(1, Math.max(0, Number(reloadDebugSocket.scrubT) || 0));
+        this.reloadProgress = pin;
+        this.reloadElapsed = pin * duration;
+        this.reloadTimer = Math.max(0, duration - this.reloadElapsed);
+      } else {
+        this.reloadElapsed += dt;
+        this.reloadProgress = duration > 0 ? Math.min(1, this.reloadElapsed / duration) : 1;
+        this.reloadTimer = Math.max(0, duration - this.reloadElapsed);
+      }
+
+      // One-shot phase events as their thresholds are crossed (in order).
+      const timing = this.reloadPhaseTiming;
+      if (timing) {
+        for (const phase of RELOAD_PHASE_ORDER) {
+          const t = timing[phase];
+          if (t == null || this._reloadPhasesFired.has(phase)) continue;
+          if (this.reloadProgress >= t) {
+            this._reloadPhasesFired.add(phase);
+            events.push(phase);
+          }
+        }
+        // Tactical refill happens the moment the fresh mag seats.
+        if (this.reloadRefillAt === 'seat' && !this._ammoRefilled
+          && timing.mag_seat != null && this.reloadProgress >= timing.mag_seat) {
+          this._refillMag();
+        }
+      }
+
+      // Never auto-complete while debug-pinned (scrub holds the pose).
+      if (this.reloadProgress >= 1 && !reloadDebugShouldPinProgress(true)) {
         this._finishReload();
         events.push('reloadComplete');
       }
@@ -184,23 +297,60 @@ export class BaseGun {
 
   beginReload() {
     if (this.isReloading) return false;
-    if (this.ammoInMag >= this.stats.magazineSize) return false;
     if (this.reserveAmmo <= 0) return false;
 
+    // Tactical reloads are still useful at a full magazine: they run the
+    // authored hand/magazine presentation cycle but `_refillMag` sees zero
+    // room, so no rounds are created, lost, or consumed.
+
     this.state = GUN_STATE.reloading;
-    this.reloadTimer = Math.max(0.1, this.stats.reloadTime || 1.5);
+    this.reloadDuration = Math.max(0.1, this.stats.reloadTime || 1.5);
+    this.reloadElapsed = 0;
+    this.reloadProgress = 0;
+    this.reloadTimer = this.reloadDuration;
+    this._reloadPhasesFired.clear();
+    this._ammoRefilled = false;
     this.needsPump = false;
     return true;
   }
 
-  _finishReload() {
+  /** Move rounds from reserve into the magazine (once per reload). */
+  _refillMag() {
+    if (this._ammoRefilled) return;
     const room = this.stats.magazineSize - this.ammoInMag;
     const take = Math.min(room, this.reserveAmmo);
     this.ammoInMag += take;
     this.reserveAmmo -= take;
+    this._ammoRefilled = true;
+  }
+
+  _finishReload() {
+    this._refillMag();
     this.reloadTimer = 0;
+    this.reloadElapsed = this.reloadDuration;
+    this.reloadProgress = 1;
     this.state = GUN_STATE.idle;
     this.needsPump = false;
+  }
+
+  /**
+   * Abort an in-progress reload. If the fresh mag has already seated (ammo
+   * refilled), finish cleanly; otherwise roll back to idle with no ammo change
+   * — the player keeps the partial magazine, nothing is lost or double-counted.
+   */
+  cancelReload() {
+    if (!this.isReloading) return false;
+    if (this._ammoRefilled) {
+      this._finishReload();
+    } else {
+      this.state = GUN_STATE.idle;
+      this.reloadTimer = 0;
+      this.reloadElapsed = 0;
+      this.reloadProgress = 0;
+      this.needsPump = false;
+    }
+    this._reloadPhasesFired.clear();
+    return true;
   }
 
   /** Force-complete reload (tests / animation events). */
@@ -230,6 +380,8 @@ export class BaseGun {
       ammoInMag: this.ammoInMag,
       magazineSize: this.stats.magazineSize,
       reserveAmmo: this.reserveAmmo,
+      reloadProgress: Number(this.reloadProgress.toFixed(3)),
+      reloadPhase: this.reloadPhase,
       fireCooldown: Number(this.fireCooldown.toFixed(3)),
       ads: Number(this.ads.toFixed(3)),
       needsPump: this.needsPump,

@@ -1,0 +1,235 @@
+{
+  "version": 1,
+  "id": "tactical-shotgun",
+  "label": "Tactical Pump Shotgun",
+  "glbUrl": "/assets/guns/tactical-shotgun.glb",
+  "weaponKind": "shotgun",
+  "statsId": "shotgun",
+  "statOverrides": {},
+  "anchors": [
+    {
+      "name": "grip_mount",
+      "position": [
+        0,
+        0,
+        0
+      ],
+      "quaternion": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "left_hand_ik_target",
+      "position": [
+        0.05,
+        0.02,
+        0.18
+      ],
+      "quaternion": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "muzzle",
+      "position": [
+        0,
+        0.04,
+        -0.45
+      ],
+      "quaternion": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "adsCamera",
+      "position": [
+        0,
+        0.08,
+        0.02
+      ],
+      "quaternion": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "mag_socket",
+      "position": [
+        0,
+        -0.06,
+        0.05
+      ],
+      "quaternion": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "ejection_port",
+      "position": [
+        0.03,
+        0.05,
+        0.02
+      ],
+      "quaternion": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "stock_shoulder",
+      "position": [
+        0,
+        0.02,
+        0.28
+      ],
+      "quaternion": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ]
+    }
+  ],
+  "parts": [
+    {
+      "meshName": "mesh_0",
+      "identity": "misc",
+      "surfaceClass": "metal",
+      "skin": null,
+      "behaviors": [],
+      "behaviorParams": null
+    },
+    {
+      "meshName": "mesh_1",
+      "identity": "misc",
+      "surfaceClass": "metal",
+      "skin": null,
+      "behaviors": [],
+      "behaviorParams": null
+    },
+    {
+      "meshName": "mesh_2",
+      "identity": "misc",
+      "surfaceClass": "metal",
+      "skin": null,
+      "behaviors": [],
+      "behaviorParams": null
+    },
+    {
+      "meshName": "mesh_3",
+      "identity": "misc",
+      "surfaceClass": "metal",
+      "skin": null,
+      "behaviors": [],
+      "behaviorParams": null
+    },
+    {
+      "meshName": "mesh_4",
+      "identity": "misc",
+      "surfaceClass": "metal",
+      "skin": null,
+      "behaviors": [],
+      "behaviorParams": null
+    },
+    {
+      "meshName": "mesh_5",
+      "identity": "misc",
+      "surfaceClass": "metal",
+      "skin": null,
+      "behaviors": [],
+      "behaviorParams": null
+    },
+    {
+      "meshName": "mesh_6",
+      "identity": "misc",
+      "surfaceClass": "metal",
+      "skin": null,
+      "behaviors": [],
+      "behaviorParams": null
+    },
+    {
+      "meshName": "mesh_7",
+      "identity": "misc",
+      "surfaceClass": "metal",
+      "skin": null,
+      "behaviors": [],
+      "behaviorParams": null
+    },
+    {
+      "meshName": "mesh_8",
+      "identity": "misc",
+      "surfaceClass": "metal",
+      "skin": null,
+      "behaviors": [],
+      "behaviorParams": null
+    },
+    {
+      "meshName": "mesh_9",
+      "identity": "misc",
+      "surfaceClass": "metal",
+      "skin": null,
+      "behaviors": [],
+      "behaviorParams": null
+    },
+    {
+      "meshName": "mesh_10",
+      "identity": "misc",
+      "surfaceClass": "metal",
+      "skin": null,
+      "behaviors": [],
+      "behaviorParams": null
+    }
+  ],
+  "updatedAt": 1783681744739
+}

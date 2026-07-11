@@ -181,7 +181,12 @@ export function dreamfallStorePlugin(options = {}) {
       attach(server);
     },
     async closeBundle() {
+      // Also chained explicitly from `npm run build` → `export:static-data`.
+      // Keep this hook so plain `vite build` / preview still ships dist/data.
       if (process.env.NODE_ENV === 'test') return;
+      if (process.env.DREAMFALL_SKIP_CLOSE_BUNDLE_EXPORT === '1') return;
+      // Rebuild better-sqlite3 if this Node ABI does not match the compiled addon.
+      await import('../scripts/ensure-better-sqlite3.mjs');
       const { exportStaticDataToDist } = await import('./export-static-data.mjs');
       await exportStaticDataToDist({ dbPath });
     },

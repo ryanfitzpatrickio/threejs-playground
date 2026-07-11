@@ -446,6 +446,7 @@ export function App() {
         onVehicleCameraModeChange={(mode) => gameRuntime?.setVehicleCameraMode(mode)}
         onComfortChange={(enabled) => gameRuntime?.setCameraComfortEnabled(enabled)}
         onOnFootFirstPersonChange={(enabled) => gameRuntime?.setOnFootFirstPersonEnabled(enabled)}
+        onWeaponShakeChange={(enabled) => gameRuntime?.setWeaponShakeScale(enabled ? 1 : 0)}
         onCameraFeelChange={(feel) => gameRuntime?.setCameraFeel(feel)}
         onPhotoModeChange={(enabled) => gameRuntime?.setPhotoMode(enabled)}
         onClothEditorChange={setShowClothEditor}

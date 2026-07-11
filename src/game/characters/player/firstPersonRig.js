@@ -182,7 +182,7 @@ export function resolveSpineAimBones(root) {
  * re-applying (idempotent — no accumulation).
  *
  * @param {Array<{bone:THREE.Bone, weight:number}>} spineAimBones
- * @param {number} aimPitch  camera pitch (rad), positive look-down convention may vary
+ * @param {number} aimPitch  signed view pitch (rad), + = look up (already scaled by aimPitchSpine)
  */
 export function applySpineAimPitch(spineAimBones, aimPitch = 0) {
   if (!spineAimBones?.length) return;

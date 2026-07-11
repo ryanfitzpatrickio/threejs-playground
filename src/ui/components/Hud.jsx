@@ -143,6 +143,11 @@ export function Hud(props) {
                     : 'HIT'}
               </div>
             </Show>
+            <Show when={range().breachPrompt}>
+              <div class="hud__range-breach">
+                Press <kbd>E</kbd> to breach door
+              </div>
+            </Show>
           </Show>
           <Show when={range().phase === 'finished' && range().result}>
             <div class="hud__range-banner hud__range-banner--results">

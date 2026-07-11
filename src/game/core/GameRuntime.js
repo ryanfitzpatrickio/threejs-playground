@@ -95,6 +95,10 @@ const SNAPSHOT_INTERVAL_NORMAL_MS = 100;
 const SNAPSHOT_INTERVAL_HEAVY_MS = 250;
 const SNAPSHOT_HEAVY_VEHICLE_SPEED = 18;
 const FULL_SNAPSHOT_INTERVAL_MS = 1000;
+// Pipeline prewarming is an optimization, not a play-ready requirement. Some
+// WebGPU driver/browser combinations leave compileAsync pending indefinitely;
+// fail open so the visible character never remains input-locked in a T-pose.
+const INITIAL_PIPELINE_COMPILE_TIMEOUT_MS = 8_000;
 
 // Deterministic seed for a building's interior so the same building regenerates
 // the same office each time (P1 WFC will consume it).
@@ -728,6 +732,8 @@ export class GameRuntime {
       });
       this.shootingRangeSystem.start(this.sceneSystem.scene, {
         spawns: this.levelSystem.level?.rangeTargets ?? [],
+        doors: this.levelSystem.level?.rangeDoors ?? [],
+        level: this.levelSystem.level,
       });
       const spawnYaw = this.levelSystem.level?.spawnYaw;
       if (Number.isFinite(spawnYaw) && this.characterSystem.character) {
@@ -853,7 +859,13 @@ export class GameRuntime {
         // through their real render context instead of compileAsync(scene).
         const restoreUnsafeMaterials = hideUnsafeAsyncCompileObjects(scene);
         try {
-          await renderer.compileAsync(scene, camera);
+          const compiled = await settleWithin(
+            renderer.compileAsync(scene, camera),
+            INITIAL_PIPELINE_COMPILE_TIMEOUT_MS,
+          );
+          if (!compiled) {
+            console.warn('[GameRuntime] initial shader compile timed out; entering play fail-open');
+          }
         } finally {
           restoreUnsafeMaterials();
         }
@@ -2118,7 +2130,7 @@ export class GameRuntime {
 
   /**
    * Player control lock for live photo mode: free-fly owns look/WASD, while
-   * physics, animation, and hand IK still advance each frame.
+   * physics, animation, hand IK, and an explicit weapon reload still advance.
    */
   _photoModeLockedInput(input) {
     return {
@@ -2151,6 +2163,9 @@ export class GameRuntime {
       mouseMiddlePressed: false,
       drawSheathePressed: false,
       grabSlamPressed: false,
+      // R remains a weapon-only action in live camera mode: reload survives,
+      // while its normal unarmed shoulder-throw alias stays locked.
+      reloadPressed: Boolean(input?.reloadPressed || input?.shoulderThrowPressed),
       shoulderThrowPressed: false,
       cutModePressed: false,
       cutModeReleased: false,
@@ -2272,6 +2287,12 @@ export class GameRuntime {
   setOnFootFirstPersonEnabled(enabled) {
     setOnFootFirstPerson(Boolean(enabled));
     this.cameraSystem.setOnFootFirstPerson(getOnFootFirstPerson());
+    this.emitSnapshot();
+    return this.snapshot();
+  }
+
+  setWeaponShakeScale(value) {
+    this.cameraSystem.setWeaponShakeScale(value);
     this.emitSnapshot();
     return this.snapshot();
   }
@@ -3486,6 +3507,17 @@ export class GameRuntime {
       delete globalThis.__DREAMFALL_DEBUG__;
     }
   }
+}
+
+function settleWithin(promise, timeoutMs) {
+  let timer = null;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(false), timeoutMs);
+  });
+  return Promise.race([
+    Promise.resolve(promise).then(() => true),
+    timeout,
+  ]).finally(() => clearTimeout(timer));
 }
 
 function hideUnsafeAsyncCompileObjects(scene) {

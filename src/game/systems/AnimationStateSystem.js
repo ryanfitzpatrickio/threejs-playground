@@ -275,9 +275,9 @@ export class AnimationStateSystem {
     return 'rifle_idle';
   }
 
-  // Procedural cover-peek lean (Q/E while a gun is out) applied as an additive
-  // spine roll after the mixer write. Shared by first and third person; the packs
-  // have no lean mocap. Rolls the camera-carrying neck for a real peek in FP.
+  // Procedural cover-peek lean (hold Q + A/D while a gun is out) applied as an
+  // additive spine roll after the mixer write. Shared by first and third person;
+  // the packs have no lean mocap. Rolls the camera-carrying neck for a real peek in FP.
   applyWeaponLean({ delta, input, character }) {
     const modelRoot = character.animationController?.modelRoot;
     if (!modelRoot) return;
@@ -574,7 +574,9 @@ export class AnimationStateSystem {
       return mapArmedState('sprint', character);
     }
 
-    if (input.brace) {
+    // Brace is the stationary stance only — while moving with Shift held but
+    // sprint suppressed (e.g. firing), fall through to jog rather than brace.
+    if (input.brace && !movement.wantsMove) {
       return mapArmedState('brace', character);
     }
 

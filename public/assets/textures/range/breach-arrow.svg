@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 128" width="256" height="128">
+  <!-- Three chevron arrows pointing right (→) -->
+  <g fill="none" stroke="#e87420" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" opacity="0.92">
+    <!-- Arrow 1 (leftmost) -->
+    <polyline points="30,20 62,64 30,108"/>
+    <!-- Arrow 2 (middle) -->
+    <polyline points="98,20 130,64 98,108"/>
+    <!-- Arrow 3 (rightmost) -->
+    <polyline points="166,20 198,64 166,108"/>
+  </g>
+</svg>

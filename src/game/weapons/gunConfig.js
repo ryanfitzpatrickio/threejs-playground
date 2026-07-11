@@ -21,9 +21,19 @@ export const GUN_KIND_DEFAULTS = Object.freeze({
     adsSpreadMul: 0.45,
     magazineSize: 30,
     reserveMags: 4,
-    reloadTime: 2.1,
+    reloadTime: 1.5,
+    // Normalized reload phase breakpoints (t ∈ [0,1] over reloadTime), consumed
+    // by the procedural reload (docs/advanced-reload-system-plan.md, AR0).
+    // Drop/spawn early so the spent clip clears the well before the hand is far
+    // down the belt path (live-fit 2026-07-11).
+    reloadPhaseTiming: { mag_release: 0.10, mag_drop: 0.22, mag_spawn: 0.22, mag_seat: 0.62, charge: 0.93 },
     pellets: 1,
     recoil: 0.028,
+    presentation: {
+      muzzleFlash: { scale: 1, durationMs: 38, color: '#ffb15a', smoke: 0.32 },
+      recoil: { cameraPitch: 0.017, cameraYaw: 0.004, weaponBack: 0.052, weaponPitch: 0.07, weaponYaw: 0.01, weaponRoll: 0.014, stiffness: 210, damping: 26, adsMultiplier: 0.72, maxAccumulation: 2.5 },
+      shake: { amplitude: 0.28, durationMs: 68, frequency: 38 },
+    },
     adsFov: 48,
     range: 120,
   }),
@@ -38,8 +48,15 @@ export const GUN_KIND_DEFAULTS = Object.freeze({
     magazineSize: 15,
     reserveMags: 5,
     reloadTime: 1.45,
+    // Pistol mag change is tighter/faster than a rifle; drop early like the rifle.
+    reloadPhaseTiming: { mag_release: 0.10, mag_drop: 0.22, mag_spawn: 0.22, mag_seat: 0.80, charge: 0.90 },
     pellets: 1,
     recoil: 0.032,
+    presentation: {
+      muzzleFlash: { scale: 0.78, durationMs: 34, color: '#ffd08a', smoke: 0.22 },
+      recoil: { cameraPitch: 0.02, cameraYaw: 0.005, weaponBack: 0.06, weaponPitch: 0.082, weaponYaw: 0.014, weaponRoll: 0.02, stiffness: 230, damping: 28, adsMultiplier: 0.7, maxAccumulation: 2.2 },
+      shake: { amplitude: 0.24, durationMs: 58, frequency: 42 },
+    },
     adsFov: 58,
     range: 55,
   }),
@@ -56,6 +73,11 @@ export const GUN_KIND_DEFAULTS = Object.freeze({
     reloadTime: 0.55, // per-shell pump cycle time for state machine ticks
     pellets: 8,
     recoil: 0.055,
+    presentation: {
+      muzzleFlash: { scale: 1.65, durationMs: 45, color: '#ff9a42', smoke: 0.58 },
+      recoil: { cameraPitch: 0.045, cameraYaw: 0.009, weaponBack: 0.105, weaponPitch: 0.14, weaponYaw: 0.022, weaponRoll: 0.03, stiffness: 160, damping: 22, adsMultiplier: 0.76, maxAccumulation: 1.7 },
+      shake: { amplitude: 0.58, durationMs: 105, frequency: 31 },
+    },
     adsFov: 52,
     range: 35,
     pumpRequired: true,
@@ -95,12 +117,21 @@ export function resolveGunStats(profileOrOpts = {}) {
   const idKey = profileOrOpts.id || profileOrOpts.statsId || null;
   const idOverrides = (idKey && GUN_ID_OVERRIDES[idKey]) || {};
   const profileOverrides = profileOrOpts.statOverrides || {};
+  const presentation = {
+    ...(base.presentation ?? {}),
+    ...(idOverrides.presentation ?? {}),
+    ...(profileOverrides.presentation ?? {}),
+    muzzleFlash: { ...(base.presentation?.muzzleFlash ?? {}), ...(idOverrides.presentation?.muzzleFlash ?? {}), ...(profileOverrides.presentation?.muzzleFlash ?? {}) },
+    recoil: { ...(base.presentation?.recoil ?? {}), ...(idOverrides.presentation?.recoil ?? {}), ...(profileOverrides.presentation?.recoil ?? {}) },
+    shake: { ...(base.presentation?.shake ?? {}), ...(idOverrides.presentation?.shake ?? {}), ...(profileOverrides.presentation?.shake ?? {}) },
+  };
 
   return {
     ...base,
     ...idOverrides,
     ...profileOverrides,
     weaponKind: kind,
+    presentation,
   };
 }
 

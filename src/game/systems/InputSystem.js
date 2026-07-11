@@ -18,11 +18,11 @@ const KEY_BINDINGS = {
   KeyF: 'ability',
   KeyT: 'telekinesis',
   KeyG: 'grabSlam',
-  // Q: cover lean left (armed) + vehicle rear-view hold. Wingsuit is an ability now.
-  KeyQ: 'leanLeft',
+  // Q: lean modifier (hold + A/D to peek left/right when armed) + vehicle rear-view hold.
+  KeyQ: 'leanMod',
   // Z: holster / draw equipped weapon (WeaponSystem loadout).
   KeyZ: 'drawSheathe',
-  // E: enter/exit vehicle or horse (was F). Cover lean right while held (armed).
+  // E: enter/exit vehicle, horse, doors, and other use/interact actions.
   KeyE: 'mount',
   // 1–0: equip catalog guns (index 0–9). Elevators re-read 1–9 when at a cab.
   Digit1: 'gunSlot1',
@@ -42,7 +42,7 @@ const KEY_BINDINGS = {
   ControlRight: 'slide',
   // X: inspect equipped gun (hold).
   KeyX: 'inspect',
-  KeyR: 'shoulderThrow',
+  KeyR: 'reload',
   KeyV: 'cutMode',
   KeyK: 'photoMode',
   Enter: 'cutCommit',
@@ -123,7 +123,10 @@ export class InputSystem {
     const abilityDoubleTapped = this.abilityDoubleTapPending;
     const drawSheathePressed = this.pressedActions.has('drawSheathe');
     const grabSlamPressed = this.pressedActions.has('grabSlam');
-    const shoulderThrowPressed = this.pressedActions.has('shoulderThrow');
+    const reloadPressed = this.pressedActions.has('reload');
+    // Preserve R's legacy unarmed shoulder throw outside camera mode, while
+    // keeping reload as a separately routable action for locked live-camera play.
+    const shoulderThrowPressed = reloadPressed;
     const cutModePressed = this.pressedActions.has('cutMode');
     const photoModePressed = this.pressedActions.has('photoMode');
     const cutModeReleased = this.releasedActions.has('cutMode');
@@ -163,6 +166,7 @@ export class InputSystem {
     this.pressedActions.delete('ability');
     this.pressedActions.delete('drawSheathe');
     this.pressedActions.delete('grabSlam');
+    this.pressedActions.delete('reload');
     this.pressedActions.delete('shoulderThrow');
     this.pressedActions.delete('cutMode');
     this.pressedActions.delete('photoMode');
@@ -187,8 +191,13 @@ export class InputSystem {
     this.mouseSecondaryPressed = false;
     this.mouseMiddlePressed = false;
 
+    // Hold Q: A/D lean instead of strafe (and vehicle rear-view). W/S stay free.
+    const leanModHeld = this.actions.has('leanMod');
+    const leftHeld = this.actions.has('left');
+    const rightHeld = this.actions.has('right');
+
     return {
-      moveX: Number(this.actions.has('right')) - Number(this.actions.has('left')),
+      moveX: leanModHeld ? 0 : Number(rightHeld) - Number(leftHeld),
       moveZ: Number(this.actions.has('backward')) - Number(this.actions.has('forward')),
       lookX,
       lookY,
@@ -200,8 +209,8 @@ export class InputSystem {
       wallRunJump: this.wallRunJumpHold && this.actions.has('jump'),
       jumpPressed,
       jumpReleased,
-      leftPressed,
-      rightPressed,
+      leftPressed: leanModHeld ? false : leftPressed,
+      rightPressed: leanModHeld ? false : rightPressed,
       slidePressed,
       slide: this.actions.has('slide'),
       collisionDebugPressed,
@@ -212,6 +221,7 @@ export class InputSystem {
       drawSheathePressed,
       grabSlamPressed,
       shoulderThrowPressed,
+      reloadPressed,
       cutModePressed,
       photoModePressed,
       cutModeReleased,
@@ -225,9 +235,9 @@ export class InputSystem {
       mouseMiddlePressed,
       // Hold C to crouch (weapon-locomotion stance layer).
       crouchHeld: this.actions.has('crouch'),
-      // Cover-peek leans (Q/E). Q is lean-only; E is mount/interact + lean-right hold.
-      leanLeftHeld: this.actions.has('leanLeft'),
-      leanRightHeld: this.actions.has('mount'),
+      // Cover-peek: hold Q, then A/D lean left/right (armed). E stays pure use/interact.
+      leanLeftHeld: leanModHeld && leftHeld,
+      leanRightHeld: leanModHeld && rightHeld,
       // X held: inspect gun while firearm is drawn (WeaponSystem).
       inspectHeld: this.actions.has('inspect'),
       telekinesisPressed,
@@ -239,13 +249,14 @@ export class InputSystem {
       hookFireDoubleTapped: false,
       hookAimHeld: this.actions.has('hookAim'),
       hookReleasePressed: jumpPressed,
-      dodgeDirection: GAME_CONFIG.character.enableDodge ? dodgeDirection : null,
+      // Q-held A/D is lean only — don't also fire a dodge from the same press.
+      dodgeDirection: (!leanModHeld && GAME_CONFIG.character.enableDodge) ? dodgeDirection : null,
       jumpDoubleTapped: GAME_CONFIG.character.enableAirDash ? jumpDoubleTapped : false,
       // Double-tap Space edge for wingsuit (AbilitySystem enables only while glider equipped).
       wingsuitTogglePressed,
-      // Q held: vehicle rear-view (GameRuntime) + cover lean left.
-      wingsuitHeld: this.actions.has('leanLeft'),
-      rearViewHeld: this.actions.has('leanLeft'),
+      // Q held: vehicle rear-view (GameRuntime). Legacy alias kept for rear-view fallback.
+      wingsuitHeld: this.actions.has('leanMod'),
+      rearViewHeld: this.actions.has('leanMod'),
       // Catalog gun hotkey (0–9 index into GUN_CATALOG), or null.
       gunSlotPressed,
       ...elevatorFloors,
@@ -292,7 +303,7 @@ export class InputSystem {
     }
 
     if (
-      (action === 'jump' || action === 'left' || action === 'right' || action === 'brace' || action === 'slide' || action === 'collisionDebug' || action === 'mount' || action === 'ability' || action === 'drawSheathe' || action === 'grabSlam' || action === 'shoulderThrow' || action === 'cutMode' || action === 'photoMode' || action === 'cutCommit' || action === 'cutCancel' || action === 'telekinesis'
+      (action === 'jump' || action === 'left' || action === 'right' || action === 'brace' || action === 'slide' || action === 'collisionDebug' || action === 'mount' || action === 'ability' || action === 'drawSheathe' || action === 'grabSlam' || action === 'reload' || action === 'shoulderThrow' || action === 'cutMode' || action === 'photoMode' || action === 'cutCommit' || action === 'cutCancel' || action === 'telekinesis'
         || action === 'gunSlot0' || action === 'gunSlot1' || action === 'gunSlot2' || action === 'gunSlot3'
         || action === 'gunSlot4' || action === 'gunSlot5' || action === 'gunSlot6' || action === 'gunSlot7'
         || action === 'gunSlot8' || action === 'gunSlot9') &&

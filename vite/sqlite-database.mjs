@@ -293,20 +293,27 @@ export function listExportableEntries(db, manifest = {}) {
     blueprints: new Set(manifest.blueprints ?? []),
     worldmaps: new Set(manifest.worldmaps ?? []),
     garage: new Set(manifest.garage ?? []),
+    gunsmith: new Set(manifest.gunsmith ?? []),
   };
 
   const includeExportStatic = manifest.includeExportStatic !== false;
+  // Production needs every catalog/authored gun profile, not only flagged ones.
+  const includeAllGunsmith = manifest.includeAllGunsmith !== false;
   const rows = db.prepare('SELECT collection, id, export_static FROM store_entries').all();
   const ids = {
     blueprints: new Set(),
     worldmaps: new Set(),
     garage: new Set(),
+    gunsmith: new Set(),
   };
 
   for (const row of rows) {
     if (!ids[row.collection]) continue;
+    // Editor autosaves / drafts never ship in production static data.
+    if (row.id === '_autosave' || row.id === '_draft') continue;
     if (wanted[row.collection].has(row.id)) ids[row.collection].add(row.id);
     if (includeExportStatic && row.export_static) ids[row.collection].add(row.id);
+    if (includeAllGunsmith && row.collection === 'gunsmith') ids.gunsmith.add(row.id);
   }
 
   const state = readAppState(db);

@@ -5,7 +5,9 @@ import { PNG } from 'pngjs';
 import { chromium } from 'playwright';
 
 import { dreamfallAppUrl } from './lib/dreamfallAppUrl.mjs';
-const appUrl = dreamfallAppUrl();
+// This smoke test exercises on-foot locomotion below. Pin the experience instead
+// of inheriting the stored/default level (Rally intentionally starts in a car).
+const appUrl = dreamfallAppUrl({ level: 'world' });
 const outputDir = path.resolve('.codex-tmp', 'visual-smoke');
 const chromePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
@@ -97,24 +99,39 @@ async function verifyViewport({ name, viewport, deviceScaleFactor, isMobile }) {
   }
 
   await page.keyboard.down('ShiftLeft');
-  await page.waitForFunction(() => globalThis.__DREAMFALL_DEBUG__.snapshot().character.animation.currentState === 'brace');
+  await page.waitForFunction(() => {
+    const animation = globalThis.__DREAMFALL_DEBUG__.snapshot().character.animation;
+    // Drawn weapons layer the brace pose over an idle lower body.
+    return animation.currentState === 'brace' || animation.upperBodyState === 'brace';
+  });
   await page.keyboard.up('ShiftLeft');
 
-  const groundedBeforeJump = await page.evaluate(() => globalThis.__DREAMFALL_DEBUG__.snapshot().character.grounded);
-  if (!groundedBeforeJump) {
+  const jumpStart = await page.evaluate(() => {
+    const character = globalThis.__DREAMFALL_DEBUG__.snapshot().character;
+    return { grounded: character.grounded, y: character.position.y };
+  });
+  if (!jumpStart.grounded) {
     throw new Error(`${name}: Mara was not grounded before jump check`);
   }
 
   await page.keyboard.press('Space');
   await page.waitForFunction(() => {
-    const state = globalThis.__DREAMFALL_DEBUG__.snapshot().character.animation.currentState;
-    return state === 'jump' || state === 'jumpMoving';
+    const animation = globalThis.__DREAMFALL_DEBUG__.snapshot().character.animation;
+    return ['jump', 'jumpMoving'].includes(animation.currentState)
+      || ['jump', 'jumpMoving'].includes(animation.upperBodyState);
   });
-  await page.waitForFunction(() => globalThis.__DREAMFALL_DEBUG__.snapshot().character.position.y > 0.2);
-  await page.waitForFunction(() => globalThis.__DREAMFALL_DEBUG__.snapshot().character.animation.currentState === 'freeFall');
+  await page.waitForFunction(
+    (groundY) => globalThis.__DREAMFALL_DEBUG__.snapshot().character.position.y > groundY + 0.2,
+    jumpStart.y,
+  );
   await page.waitForFunction(() => {
-    const state = globalThis.__DREAMFALL_DEBUG__.snapshot().character.animation.currentState;
-    return state === 'land' || state === 'landMoving';
+    const animation = globalThis.__DREAMFALL_DEBUG__.snapshot().character.animation;
+    return animation.currentState === 'freeFall' || animation.upperBodyState === 'freeFall';
+  });
+  await page.waitForFunction(() => {
+    const animation = globalThis.__DREAMFALL_DEBUG__.snapshot().character.animation;
+    return ['land', 'landMoving'].includes(animation.currentState)
+      || ['land', 'landMoving'].includes(animation.upperBodyState);
   });
   await page.waitForFunction(() => globalThis.__DREAMFALL_DEBUG__.snapshot().character.grounded === true);
 

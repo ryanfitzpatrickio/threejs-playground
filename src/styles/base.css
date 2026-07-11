@@ -3018,6 +3018,26 @@ select {
   color: #ffe8b0;
 }
 
+.hud__range-breach {
+  margin-top: 6px;
+  padding: 5px 14px;
+  border-radius: 6px;
+  background: rgb(20 30 45 / 0.82);
+  border: 1px solid rgb(150 190 255 / 0.4);
+  color: #dce8ff;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+.hud__range-breach kbd {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgb(220 232 255 / 0.16);
+  border: 1px solid rgb(190 210 255 / 0.5);
+  font-weight: 700;
+}
+
 .main-menu__card {
   display: flex;
   flex-direction: column;

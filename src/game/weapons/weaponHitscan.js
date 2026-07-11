@@ -164,7 +164,7 @@ let _rapierRayOwner = null;
  * unless wall occlusion is required.
  * @returns {{toi:number, point:{x,y,z}, collider:any}|null}
  */
-export function castPhysicsRay(physics, origin, direction, range) {
+export function castPhysicsRay(physics, origin, direction, range, { excludeCollider = null } = {}) {
   if (!physics?.world || !physics?.RAPIER) return null;
   const d = normalize(direction);
   const maxR = Math.max(0.1, Math.min(Number(range) || 100, 80));
@@ -183,9 +183,29 @@ export function castPhysicsRay(physics, origin, direction, range) {
     _rapierRay.dir.z = d.z;
   }
   // solid=true: stop at first hit
-  const hit = physics.world.castRay(_rapierRay, maxR, true);
+  const hit = physics.world.castRay(
+    _rapierRay,
+    maxR,
+    true,
+    undefined,
+    undefined,
+    excludeCollider,
+  );
   if (!hit) return null;
   const toi = hit.timeOfImpact;
+  const normalHit = typeof physics.world.castRayAndGetNormal === 'function'
+    ? physics.world.castRayAndGetNormal(
+      _rapierRay,
+      maxR,
+      true,
+      undefined,
+      undefined,
+      excludeCollider,
+    )
+    : null;
+  const normal = normalHit?.normal
+    ? { x: normalHit.normal.x, y: normalHit.normal.y, z: normalHit.normal.z }
+    : { x: -d.x, y: -d.y, z: -d.z };
   return {
     toi,
     point: {
@@ -194,6 +214,7 @@ export function castPhysicsRay(physics, origin, direction, range) {
       z: origin.z + d.z * toi,
     },
     collider: hit.collider ?? null,
+    normal,
   };
 }
 
@@ -206,6 +227,7 @@ export function resolvePelletHit({
   range,
   enemies,
   physics = null,
+  excludeCollider = null,
   baseDamage = 20,
 }) {
   const enemyHit = raycastEnemies(origin, direction, range, enemies);
@@ -216,7 +238,7 @@ export function resolvePelletHit({
       return makeEnemyResult(enemyHit, baseDamage, origin, direction);
     }
     // Only cast world if we need occlusion (enemy behind walls).
-    const worldHit = castPhysicsRay(physics, origin, direction, enemyHit.distance + 0.05);
+    const worldHit = castPhysicsRay(physics, origin, direction, enemyHit.distance + 0.05, { excludeCollider });
     if (worldHit && worldHit.toi + 0.05 < enemyHit.distance) {
       return makeWorldResult(worldHit, origin, direction);
     }
@@ -224,7 +246,7 @@ export function resolvePelletHit({
   }
 
   if (physics) {
-    const worldHit = castPhysicsRay(physics, origin, direction, range);
+    const worldHit = castPhysicsRay(physics, origin, direction, range, { excludeCollider });
     if (worldHit) return makeWorldResult(worldHit, origin, direction);
   }
 
@@ -238,6 +260,8 @@ export function resolvePelletHit({
     damage: 0,
     enemy: null,
     region: null,
+    normal: { x: -d.x, y: -d.y, z: -d.z },
+    surfaceClass: 'generic',
   };
 }
 
@@ -253,6 +277,9 @@ function makeEnemyResult(enemyHit, baseDamage, origin, direction) {
     damage,
     enemy: enemyHit.enemy,
     region: enemyHit.region,
+    normal: enemyHitNormal(enemyHit, direction),
+    surfaceClass: enemyHit.enemy.surfaceClass ?? (enemyHit.enemy.rangeTarget ? 'metal' : 'flesh'),
+    targetId: enemyHit.enemy.id ?? null,
   };
 }
 
@@ -266,7 +293,21 @@ function makeWorldResult(worldHit, origin, direction) {
     enemy: null,
     region: null,
     collider: worldHit.collider,
+    normal: worldHit.normal,
+    surfaceClass: worldHit.collider?.userData?.surfaceClass ?? 'generic',
+    targetId: worldHit.collider?.handle ?? null,
   };
+}
+
+function enemyHitNormal(enemyHit, direction) {
+  const pos = enemyHit.enemy?.model?.position;
+  if (!pos) return { x: -direction.x, y: -direction.y, z: -direction.z };
+  const x = enemyHit.point.x - pos.x;
+  const z = enemyHit.point.z - pos.z;
+  const length = Math.hypot(x, z);
+  return length > 1e-5
+    ? { x: x / length, y: 0, z: z / length }
+    : { x: -direction.x, y: -direction.y, z: -direction.z };
 }
 
 function normalize(v) {

@@ -112,7 +112,13 @@ export class MovementSystem {
     character.crouching = isCrouching;
     const crouchSpeedScale = isCrouching ? GAME_CONFIG.character.crouchSpeedScale : 1;
     const isBracing = input.brace && isGrounded && !isTryingToMove;
-    const isSprinting = input.brace && isGrounded && isTryingToMove && !isCrouching;
+    // Fire (suppressSprint) overrides sprint while a gun is drawn: still jog/walk,
+    // just no sprint speed. Shift can stay held; releasing fire resumes sprint.
+    const isSprinting = input.brace
+      && isGrounded
+      && isTryingToMove
+      && !isCrouching
+      && !input.suppressSprint;
     const justJumped = input.jumpPressed && isGrounded && !isBracing && !inWater;
     const baseSpeed = (isBracing
       ? GAME_CONFIG.character.braceSpeed

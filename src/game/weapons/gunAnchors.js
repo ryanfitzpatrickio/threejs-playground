@@ -13,6 +13,10 @@ export const GUN_ANCHOR_NAMES = Object.freeze([
   'muzzle',
   'adsCamera',
   'mag_socket',
+  // Reload magazine cycle (AR4): the fresh magazine's insertion reference and
+  // the authored belt/pouch pickup location.
+  'mag_insert',
+  'mag_belt_source',
   'ejection_port',
   'stock_shoulder',
 ]);
@@ -34,6 +38,8 @@ export const ANCHOR_ALIASES = Object.freeze({
   muzzle: ['muzzle', 'barrel_tip'],
   adsCamera: ['adsCamera', 'sight_camera', 'scope_camera'],
   mag_socket: ['mag_socket', 'magazine_socket'],
+  mag_insert: ['mag_insert', 'magazine_insert'],
+  mag_belt_source: ['mag_belt_source', 'mag_pouch_source', 'magazine_belt_source'],
   ejection_port: ['ejection_port', 'eject'],
   stock_shoulder: ['stock_shoulder', 'stock_mount'],
   // Reference leftovers (not required for assembled guns, but resolvable)
@@ -51,6 +57,10 @@ export const DEFAULT_ANCHORS = Object.freeze({
   muzzle: makeAnchor('muzzle', [0, 0.04, -0.45]),
   adsCamera: makeAnchor('adsCamera', [0, 0.08, 0.02]),
   mag_socket: makeAnchor('mag_socket', [0, -0.06, 0.05]),
+  // `mag_insert` is in magazine-local space when AR4 seats a clone; identity is
+  // a conservative fallback for assets without an authored insertion socket.
+  mag_insert: makeAnchor('mag_insert', [0, 0, 0]),
+  mag_belt_source: makeAnchor('mag_belt_source', [0.18, -0.38, 0.10]),
   ejection_port: makeAnchor('ejection_port', [0.03, 0.05, 0.02]),
   stock_shoulder: makeAnchor('stock_shoulder', [0, 0.02, 0.28]),
 });

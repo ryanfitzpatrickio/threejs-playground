@@ -11,36 +11,37 @@ export const GAME_CONFIG = {
     sharedWarmupBudgetMs: 2000,
   },
   camera: {
-    followHeight: 2.75,
-    followDistance: 6,
-    minDistance: 3.2,
+    // Third-person orbit — live-fit via debug → Third Person (2026-07-11).
+    followHeight: 1.65,
+    followDistance: 1.5,
+    minDistance: 0.5,
     maxDistance: 10.5,
-    lookHeight: 1.05,
-    lookSensitivity: 0.0032,
-    zoomStep: 0.75,
+    lookHeight: 1.79,
+    lookSensitivity: 0.0031,
+    zoomStep: 0.7,
     minPitch: -0.46,
     maxPitch: 0.58,
     initialPitch: 0.12,
-    smoothing: 7.5,
+    smoothing: 9.25,
     rootMotionSmoothing: 3.8,
     targetSmoothing: 16,
     rootMotionTargetSmoothing: 3.2,
-    maxTargetLag: 8,
+    maxTargetLag: 8.3,
     // On-foot third person FOV (was reusing vehicle.defaultFov). Live-tunable via debug panel.
     thirdPersonFov: 48,
     // On-foot first person (interiors always use this regardless of the toggle).
-    // Defaults tuned live via the First Person debug folder (2026-07).
-    onFootEyeHeight: 1.705,
+    // Defaults tuned live via the First Person debug folder (2026-07-11).
+    onFootEyeHeight: 1.53,
     // Resting eye slightly behind the neck so the mount sits inside the head volume.
-    onFootEyeForward: -0.16,
-    onFootFirstPersonFov: 81,
-    onFootFirstPersonSmoothing: 31,
+    onFootEyeForward: -0.13,
+    onFootFirstPersonFov: 85.5,
+    onFootFirstPersonSmoothing: 29.5,
     // The FP camera is position-smoothed. At sprint speed that otherwise leaves
     // it ~0.22m behind the body, exposing the hidden-head neck seam. Lead only
     // the component of velocity travelling into the view direction; the scale
     // slightly overcompensates the discrete spring, while the cap prevents a
     // traversal impulse from throwing the eye through the weapon.
-    onFootFirstPersonMotionLeadScale: 1.2,
+    onFootFirstPersonMotionLeadScale: 1.25,
     onFootFirstPersonMotionLeadMax: 0.39,
     // Extra framing push while travelling forward. Unlike motion lead this is
     // deliberate composition: it eases the gun/body lower into frame, then goes
@@ -49,14 +50,14 @@ export const GAME_CONFIG = {
     onFootFirstPersonMotionFramingSpeed: 4.1,
     // Pitch shifts the eye vertically around the neck: looking down raises it so
     // the torso/gun stay in view; looking up lowers it by the same amount.
-    onFootFirstPersonPitchHingeHeight: 0.07,
-    onFootFirstPersonEyePush: 0,
-    onFootFirstPersonEyeLift: -0.01,
-    onFootFirstPersonEyePushLookDown: 0.72,
-    onFootFirstPersonEyeLiftLookDown: 0.15,
+    onFootFirstPersonPitchHingeHeight: 0.155,
+    onFootFirstPersonEyePush: -0.015,
+    onFootFirstPersonEyeLift: -0.005,
+    onFootFirstPersonEyePushLookDown: 0.91,
+    onFootFirstPersonEyeLiftLookDown: -0.075,
     // FP look range (radians). Wider than third-person orbit clamps.
-    onFootFirstPersonMinPitch: -1.23,
-    onFootFirstPersonMaxPitch: 1.13,
+    onFootFirstPersonMinPitch: -1.31,
+    onFootFirstPersonMaxPitch: 1.1,
     // Max camera–body yaw offset before the torso auto-rotates (radians).
     // Past this the body turns so FP never looks into chest/shoulder interiors.
     onFootFirstPersonMaxNeckYaw: 1.39,
@@ -242,8 +243,8 @@ export const GAME_CONFIG = {
     groundSnapHeight: 0.18,
     groundSnapDownHeight: 0.52,
     // Visual model offset relative to ground snap / physics feet.
-    // Tuned for the default Mixamo T-pose player body (debug → Third Person).
-    playerGroundOffset: 0.215,
+    // Tuned for the default Mixamo T-pose player body (debug → Third Person, 2026-07-11).
+    playerGroundOffset: 0.075,
     // Physics capsule vertical offset relative to mesh feet (group.position.y).
     // Positive raises the capsule (feet sink relative to ground contact); negative
     // lowers it (feet float). Tunable in debug → Third Person.

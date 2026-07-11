@@ -23,6 +23,8 @@ const freeEuler = new THREE.Euler(0, 0, 0, 'YXZ');
 const seatEyePosition = new THREE.Vector3();
 const seatEyeOffset = new THREE.Vector3();
 const chassisEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+const presentationRight = new THREE.Vector3();
+const presentationUp = new THREE.Vector3();
 
 function lerpAngle(from, to, alpha) {
   let delta = to - from;
@@ -125,6 +127,11 @@ export class CameraSystem {
     this.weaponAdsBlend = 0;
     /** Target FOV while fully ADS, or null to use hip FOV. */
     this.weaponAdsFov = null;
+    this.weaponShakeScale = 1;
+    this.weaponPresentation = {
+      pitch: 0, yaw: 0, pitchVelocity: 0, yawVelocity: 0,
+      shakeAmplitude: 0, shakeLife: 0, shakeDuration: 0, shakeFrequency: 38, time: 0,
+    };
     this.comfortEnabled = true;
     this.cameraFeel = 'comfort';
     this.modeBlend = null;
@@ -299,6 +306,7 @@ export class CameraSystem {
     character = null,
     vehicle = null,
   }) {
+    this._tickWeaponPresentation(delta);
     if (vehicle) {
       this.updateVehicleCamera({ delta, vehicle, viewport, character, input });
       return;
@@ -350,6 +358,7 @@ export class CameraSystem {
         character.fpBodyYawLocked = true;
       }
       this.updateOnFootFirstPerson({ delta, target, config, character });
+      this._composeWeaponPresentation();
       return;
     }
 
@@ -470,6 +479,68 @@ export class CameraSystem {
   setWeaponAds(blend = 0, adsFov = null) {
     this.weaponAdsBlend = THREE.MathUtils.clamp(Number(blend) || 0, 0, 1);
     this.weaponAdsFov = Number.isFinite(Number(adsFov)) ? Number(adsFov) : null;
+  }
+
+  /** Additive presentation kick. Call only after the authoritative shot ray. */
+  addWeaponPresentationImpulse({ pitch = 0, yaw = 0, shake = null } = {}) {
+    const state = this.weaponPresentation;
+    state.pitch = THREE.MathUtils.clamp(state.pitch + (Number(pitch) || 0), -0.18, 0.18);
+    state.yaw = THREE.MathUtils.clamp(state.yaw + (Number(yaw) || 0), -0.08, 0.08);
+    const duration = Math.max(0, Number(shake?.durationMs) || 0) / 1000;
+    if (duration > 0 && this.weaponShakeScale > 0) {
+      state.shakeDuration = Math.max(state.shakeDuration, duration);
+      state.shakeLife = Math.max(state.shakeLife, duration);
+      state.shakeFrequency = Number(shake?.frequency) || state.shakeFrequency;
+      state.shakeAmplitude = Math.min(1.25, state.shakeAmplitude + (Number(shake?.amplitude) || 0) * this.weaponShakeScale);
+    }
+    // WeaponSystem fires after CameraSystem.update; compose once now so the
+    // flash and kick land on the same rendered frame.
+    this._composeWeaponPresentation();
+  }
+
+  setWeaponShakeScale(value = 1) {
+    this.weaponShakeScale = THREE.MathUtils.clamp(Number(value) || 0, 0, 1);
+    if (this.weaponShakeScale === 0) {
+      this.weaponPresentation.shakeAmplitude = 0;
+      this.weaponPresentation.shakeLife = 0;
+    }
+  }
+
+  _tickWeaponPresentation(delta) {
+    const dt = Math.max(0, Number(delta) || 0);
+    const state = this.weaponPresentation;
+    for (const key of ['pitch', 'yaw']) {
+      const velocityKey = `${key}Velocity`;
+      state[velocityKey] += (-230 * state[key] - 29 * state[velocityKey]) * dt;
+      state[key] += state[velocityKey] * dt;
+      if (Math.abs(state[key]) < 1e-5 && Math.abs(state[velocityKey]) < 1e-4) {
+        state[key] = 0;
+        state[velocityKey] = 0;
+      }
+    }
+    state.time += dt;
+    if (state.shakeLife > 0) {
+      state.shakeLife = Math.max(0, state.shakeLife - dt);
+      if (state.shakeLife === 0) state.shakeAmplitude = 0;
+    }
+  }
+
+  _composeWeaponPresentation() {
+    if (!this.camera || !this.usesOnFootFirstPerson()) return;
+    const state = this.weaponPresentation;
+    const shakeT = state.shakeDuration > 0 ? state.shakeLife / state.shakeDuration : 0;
+    const shake = state.shakeAmplitude * shakeT;
+    const phase = state.time * state.shakeFrequency * Math.PI * 2;
+    const yawShake = Math.sin(phase * 0.73) * shake * 0.0025;
+    const pitchShake = Math.cos(phase * 1.11) * shake * 0.0018;
+    this.camera.rotation.set(this.pitch + state.pitch + pitchShake, this.yaw + state.yaw + yawShake, 0, 'YXZ');
+    if (shake > 0) {
+      presentationRight.set(1, 0, 0).applyQuaternion(this.camera.quaternion);
+      presentationUp.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
+      this.camera.position
+        .addScaledVector(presentationRight, Math.sin(phase) * shake * 0.0018)
+        .addScaledVector(presentationUp, Math.cos(phase * 1.37) * shake * 0.0011);
+    }
   }
 
   updateVehicleCamera({ delta, vehicle, viewport, character, input }) {
@@ -876,6 +947,7 @@ export class CameraSystem {
         photoMode: false,
         photoModeLive: false,
         onFootFirstPerson: false,
+        weaponShakeScale: this.weaponShakeScale ?? 1,
       };
     }
     const modeBlendT = this.modeBlend
@@ -901,6 +973,7 @@ export class CameraSystem {
       onFootFirstPerson: this.usesOnFootFirstPerson(),
       interiorFirstPerson: this.interiorFirstPerson,
       onFootFirstPersonPreference: this.onFootFirstPerson,
+      weaponShakeScale: this.weaponShakeScale,
       photoSettings: { ...this.photoSettings },
     };
   }

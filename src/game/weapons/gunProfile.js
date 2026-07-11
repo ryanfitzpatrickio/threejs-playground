@@ -42,6 +42,7 @@ export const WEAPON_KINDS = Object.freeze(['rifle', 'pistol', 'shotgun']);
  * @property {'rifle'|'pistol'|'shotgun'} weaponKind
  * @property {string} [statsId]  key into gunConfig defaults
  * @property {object} [statOverrides]
+ * @property {object} [presentation] weapon-feedback tuning
  * @property {Record<string, string>} sounds
  * @property {Array<object>} anchors
  * @property {GunPartAnnotation[]} parts
@@ -78,6 +79,7 @@ export function createEmptyProfile({
     weaponKind,
     statsId: statsId ?? weaponKind,
     statOverrides: {},
+    presentation: null,
     sounds: normalizeGunSoundAssignments(null, id),
     anchorSpace: 'weapon',
     anchors: createStubAnchors(weaponKind),
@@ -110,6 +112,7 @@ export function normalizeProfile(raw) {
     weaponKind,
     statsId: String(raw.statsId || weaponKind),
     statOverrides: raw.statOverrides && typeof raw.statOverrides === 'object' ? { ...raw.statOverrides } : {},
+    presentation: raw.presentation && typeof raw.presentation === 'object' ? { ...raw.presentation } : null,
     sounds,
     anchorSpace,
     anchors,

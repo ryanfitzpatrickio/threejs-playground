@@ -11,7 +11,11 @@
  */
 
 import * as THREE from 'three';
-import { getGunSound } from '../weapons/gunSoundLibrary.js';
+import {
+  getGunSound,
+  getWeaponPresentationSound,
+  getWeaponPresentationSoundVariants,
+} from '../weapons/gunSoundLibrary.js';
 import {
   buildPelletDirections,
   resolvePelletHit,
@@ -25,13 +29,15 @@ import {
   weaponIndex,
 } from '../weapons/weaponCatalog.js';
 import { GUN_CATALOG } from '../weapons/gunProfile.js';
+import { findMagazineMeshes } from '../weapons/magazineParts.js';
+import { createDroppedMagazineManager } from '../weapons/droppedMagazines.js';
+import { WeaponPresentationSystem } from './WeaponPresentationSystem.js';
 
 const TRACER_POOL = 12;
 const TRACER_LIFE = 0.055;
 const SHELL_POOL = 8;
 const SHELL_LIFE = 0.7;
 const RECOIL_RECOVER = 9;
-const GUN_KICK_RECOVER = 16;
 const INSPECT_BLEND_SPEED = 8;
 /** World physics ray is costly on streamed city colliders — off by default. */
 const USE_WORLD_RAY = false;
@@ -75,17 +81,24 @@ export class WeaponSystem {
     this._audioVoices = new Map();
     this._audioGeneration = 0;
     this._preloadedGun = null;
+    this._preloadedPresentationSounds = false;
     this._lastAudioMs = 0;
     this._lastDryClick = 0;
     this._reloadAnimTimer = 0;
     this._pendingRagdolls = [];
     this._fwdScratch = { x: 0, y: 0, z: -1 };
     this._originScratch = { x: 0, y: 0, z: 0 };
+    this.presentationSystem = new WeaponPresentationSystem();
+    this._gunRoot = null;
+    /** Spent-magazine physics props (AR2). */
+    this._droppedMags = null;
   }
 
   initialize(scene) {
     this.scene = scene ?? null;
     if (!scene) return;
+    this.presentationSystem.initialize(scene);
+    this._droppedMags = createDroppedMagazineManager(scene);
 
     this._tracerMat = new THREE.LineBasicMaterial({
       color: 0xffe0a0,
@@ -357,6 +370,10 @@ export class WeaponSystem {
   }) {
     const dt = Math.max(0, Number(delta) || 0);
     this._tickEffects(dt);
+    this.presentationSystem.update({ delta: dt, camera: cameraSystem?.camera, gunRoot: this._gunRoot });
+    // Dropped mags outlive the fire path (they keep falling while holstered), so
+    // sync/age them before the active-weapon early-out.
+    this._droppedMags?.update({ delta: dt, physicsSystem });
     this._flushOneRagdoll({ physicsSystem, enemySystem, enemyCutSystem, propSystem });
     this._recoverRecoil(dt);
 
@@ -381,6 +398,7 @@ export class WeaponSystem {
 
     const gun = fp.gunView.gun;
     const gunRoot = fp.gunView.root;
+    this._gunRoot = gunRoot ?? null;
     if (this._preloadedGun !== gun) {
       this._preloadedGun = gun;
       this._preloadGunSounds(gun);
@@ -433,6 +451,20 @@ export class WeaponSystem {
     if (events.includes('pump')) {
       if (!this._playGunSound(gun, 'pump')) this._playClick(360, 0.03);
     }
+    // AR2: the spent magazine falls as a physics prop the moment it clears the well.
+    if (events.includes('mag_drop')) {
+      this._dropSpentMagazine({ gun, gunRoot, physicsSystem });
+      firstPersonWeaponSystem?.handleReloadMagazinePhase?.('mag_drop');
+    }
+    if (events.includes('mag_spawn')) {
+      firstPersonWeaponSystem?.handleReloadMagazinePhase?.('mag_spawn');
+    }
+    if (events.includes('mag_seat')) {
+      firstPersonWeaponSystem?.handleReloadMagazinePhase?.('mag_seat');
+    }
+    if (events.includes('reloadCancel')) {
+      firstPersonWeaponSystem?.cancelReloadMagazineCycle?.();
+    }
     if (this._reloadAnimTimer > 0) {
       this._reloadAnimTimer = Math.max(0, this._reloadAnimTimer - dt);
     }
@@ -441,11 +473,8 @@ export class WeaponSystem {
 
     // Kick data only — postAnimation layout already runs once per frame.
     // Do NOT force another layout here (that was a major fire hitch).
-    this.gunKick *= Math.exp(-GUN_KICK_RECOVER * dt);
-    if (this.gunKick < 1e-4) this.gunKick = 0;
+    this.presentationSystem.update({ delta: 0, camera: cameraSystem?.camera, gunRoot });
     if (gunRoot) {
-      gunRoot.userData.weaponKickZ = this.gunKick * 0.035;
-      gunRoot.userData.weaponKickPitch = this.gunKick * 0.07;
       gunRoot.userData.inspectBlend = this.inspectBlend;
       if (gun.slideLocked) {
         gunRoot.userData.weaponKickZ = Math.max(gunRoot.userData.weaponKickZ || 0, 0.01);
@@ -517,9 +546,15 @@ export class WeaponSystem {
     const enemies = rangeHits.length
       ? [...(enemySystem?.enemies ?? []), ...rangeHits]
       : (enemySystem?.enemies ?? null);
-    const physics = USE_WORLD_RAY ? physicsSystem : null;
+    // City/world raycasts remain opt-in, but the compact shooting range exists
+    // specifically to exercise surface response and has a small fixed collider set.
+    const physics = (USE_WORLD_RAY || shootingRangeSystem?.enabled) ? physicsSystem : null;
 
     let hitSummary = null;
+    let impactAudioPlayed = false;
+    // Nearest world surface the shot pointed at — drives the fake muzzle-flash
+    // bounce glow (cheaper than a dynamic light). Reuses the pellet raycasts.
+    let nearestWorld = null;
     for (let i = 0; i < dirs.length; i += 1) {
       const d = dirs[i];
       const result = resolvePelletHit({
@@ -528,11 +563,35 @@ export class WeaponSystem {
         range,
         enemies,
         physics,
+        excludeCollider: physicsSystem?.characterCollider ?? null,
         baseDamage: shot.damage,
       });
 
       _hitPoint.set(result.point.x, result.point.y, result.point.z);
       this._spawnTracer(_muzzle, _hitPoint, muzzle);
+
+      if (result.kind === 'world' && result.point
+        && (!nearestWorld || result.distance < nearestWorld.distance)) {
+        nearestWorld = { point: result.point, normal: result.normal, distance: result.distance };
+      }
+
+      if (result.kind !== 'miss') {
+        this.presentationSystem.presentImpact({
+          point: result.point,
+          normal: result.normal,
+          incomingDirection: d,
+          surfaceClass: result.surfaceClass,
+          intensity: Math.min(1.8, Math.max(0.6, (Number(shot.damage) || 20) / 22)),
+        });
+        // Coalesce shotgun pellets to one primary impact voice per shot.
+        if (!impactAudioPlayed) {
+          this._playImpactSound(result.surfaceClass, result.kind === 'enemy', {
+            point: result.point,
+            camera,
+          });
+          impactAudioPlayed = true;
+        }
+      }
 
       if (result.kind === 'enemy' && result.enemy?.rangeTarget) {
         this.totalHits += 1;
@@ -567,34 +626,40 @@ export class WeaponSystem {
           region: result.region,
           distance: result.distance,
           enemyId: result.enemy?.id ?? null,
+          surfaceClass: result.surfaceClass ?? 'generic',
+          normal: result.normal ? {
+            x: Number(result.normal.x.toFixed(3)),
+            y: Number(result.normal.y.toFixed(3)),
+            z: Number(result.normal.z.toFixed(3)),
+          } : null,
+          targetId: result.targetId ?? result.enemy?.id ?? null,
         };
       }
     }
 
-    // Recoil
-    const reco = Number(shot.recoil) || 0.03;
-    const adsMul = gun.ads > 0.5 ? 0.55 : 1;
-    this.recoilPitch += reco * 1.15 * adsMul;
-    this.recoilYaw += (Math.random() - 0.5) * reco * 0.55 * adsMul;
-    if (cameraSystem) {
-      const maxPitch = 1.35;
-      cameraSystem.pitch = Math.min(
-        (cameraSystem.pitch ?? 0) + reco * 0.85 * adsMul,
-        maxPitch,
-      );
-      cameraSystem.yaw = (cameraSystem.yaw ?? 0)
-        + (Math.random() - 0.5) * reco * 0.35 * adsMul;
-      camera.rotation.set(cameraSystem.pitch, cameraSystem.yaw, 0, 'YXZ');
-    }
-
-    this.gunKick = Math.min(1, this.gunKick + 0.45 + reco * 3);
+    // Resolve presentation after the camera-origin ray. This keeps shot direction
+    // authoritative while recoil/shake begin in this same rendered frame.
+    this.presentationSystem.presentShot({
+      gun,
+      muzzlePosition: _muzzle,
+      aimDirection: _fwd,
+      cameraSystem,
+      gunRoot: fp?.gunView?.root,
+      ads: gun.ads,
+      bounce: nearestWorld,
+    });
+    const presentation = this.presentationSystem.snapshot();
+    this.gunKick = presentation.weaponBack;
     this._ejectShell(_muzzle, _fwd);
+    this._playShotTransient(gun);
     this._playGunshot(gun);
 
     // Single summary slot — avoid allocating mapped arrays every shot
     this.lastShots.length = 0;
     if (hitSummary) {
       hitSummary.distance = Number(hitSummary.distance?.toFixed?.(2) ?? hitSummary.distance);
+      hitSummary.muzzle = { x: Number(_muzzle.x.toFixed(3)), y: Number(_muzzle.y.toFixed(3)), z: Number(_muzzle.z.toFixed(3)) };
+      hitSummary.aimDirection = { x: Number(_fwd.x.toFixed(3)), y: Number(_fwd.y.toFixed(3)), z: Number(_fwd.z.toFixed(3)) };
       this.lastShots.push(hitSummary);
     }
   }
@@ -784,9 +849,16 @@ export class WeaponSystem {
 
   _preloadGunSounds(gun) {
     const assignments = gun?.profile?.sounds;
-    if (!assignments) return;
-    for (const soundId of Object.values(assignments)) {
+    for (const soundId of Object.values(assignments ?? {})) {
       if (soundId) void this._loadGunSound(soundId);
+    }
+    if (!this._preloadedPresentationSounds) {
+      this._preloadedPresentationSounds = true;
+      for (const surfaceClass of ['metal', 'concrete', 'marble', 'wood', 'glass', 'soil', 'flesh']) {
+        for (const sound of getWeaponPresentationSoundVariants(surfaceClass)) {
+          void this._loadGunSound(sound.id);
+        }
+      }
     }
   }
 
@@ -796,7 +868,7 @@ export class WeaponSystem {
     }
     if (this._audioLoads.has(soundId)) return this._audioLoads.get(soundId);
 
-    const sound = getGunSound(soundId);
+    const sound = this._getSoundDefinition(soundId);
     const ctx = this._ensureAudio();
     if (!sound || !ctx || typeof fetch !== 'function') return Promise.resolve(null);
 
@@ -825,15 +897,26 @@ export class WeaponSystem {
     return load;
   }
 
-  _playGunSound(gun, interaction, { pitchJitter = 0 } = {}) {
+  _playGunSound(gun, interaction, { pitchJitter = 0, gainJitter = 0 } = {}) {
     const soundId = gun?.profile?.sounds?.[interaction];
-    const sound = getGunSound(soundId);
+    return this._playSoundById(soundId, { pitchJitter, gainJitter });
+  }
+
+  _playPresentationSound(kind, { pitchJitter = 0, point = null, camera = null } = {}) {
+    const variants = getWeaponPresentationSoundVariants(kind);
+    if (!variants.length) return false;
+    const sound = variants[Math.floor(Math.random() * variants.length)];
+    return this._playSoundById(sound.id, { pitchJitter, point, camera });
+  }
+
+  _playSoundById(soundId, { pitchJitter = 0, gainJitter = 0, point = null, camera = null } = {}) {
+    const sound = this._getSoundDefinition(soundId);
     const ctx = this._ensureAudio();
     if (!sound || !ctx) return false;
 
     const start = (buffer) => {
       if (buffer && this._audioCtx === ctx) {
-        this._startGunSound(sound, buffer, pitchJitter);
+        this._startGunSound(sound, buffer, pitchJitter, gainJitter, { point, camera });
       }
     };
     const buffer = this._audioBuffers.get(soundId);
@@ -849,7 +932,11 @@ export class WeaponSystem {
     return true;
   }
 
-  _startGunSound(sound, buffer, pitchJitter = 0) {
+  _getSoundDefinition(soundId) {
+    return getGunSound(soundId) ?? getWeaponPresentationSound(soundId);
+  }
+
+  _startGunSound(sound, buffer, pitchJitter = 0, gainJitter = 0, { point = null, camera = null } = {}) {
     const ctx = this._audioCtx;
     const output = this._sampleGain;
     if (!ctx || !output || ctx.state !== 'running') return;
@@ -858,24 +945,39 @@ export class WeaponSystem {
       const gain = ctx.createGain();
       source.buffer = buffer;
       source.playbackRate.value = 1 + (Math.random() * 2 - 1) * pitchJitter;
-      gain.gain.value = sound.volume ?? 0.7;
+      gain.gain.value = (sound.volume ?? 0.7) * (1 + (Math.random() * 2 - 1) * gainJitter);
       source.connect(gain);
-      gain.connect(output);
+      const panner = point && camera && typeof ctx.createStereoPanner === 'function'
+        ? ctx.createStereoPanner()
+        : null;
+      if (panner) {
+        _right.set(1, 0, 0).applyQuaternion(camera.quaternion);
+        const dx = point.x - camera.position.x;
+        const dy = point.y - camera.position.y;
+        const dz = point.z - camera.position.z;
+        panner.pan.value = THREE.MathUtils.clamp((dx * _right.x + dy * _right.y + dz * _right.z) / 18, -0.85, 0.85);
+        gain.connect(panner);
+        panner.connect(output);
+      } else {
+        gain.connect(output);
+      }
 
-      const voices = this._audioVoices.get(sound.id) || [];
+      const voiceKey = sound.voiceGroup ?? sound.id;
+      const voices = this._audioVoices.get(voiceKey) || [];
       const maxVoices = Math.max(1, sound.maxVoices || 4);
       while (voices.length >= maxVoices) {
         const oldest = voices.shift();
         try { oldest?.source?.stop?.(); } catch {}
       }
-      const voice = { source, gain };
+      const voice = { source, gain, panner };
       voices.push(voice);
-      this._audioVoices.set(sound.id, voices);
+      this._audioVoices.set(voiceKey, voices);
       source.onended = () => {
         const index = voices.indexOf(voice);
         if (index >= 0) voices.splice(index, 1);
         source.disconnect();
         gain.disconnect();
+        panner?.disconnect();
       };
       source.start();
     } catch {
@@ -916,7 +1018,10 @@ export class WeaponSystem {
   }
 
   _playGunshot(gun) {
-    if (this._playGunSound(gun, 'fire', { pitchJitter: 0.018 })) return;
+    // A gun profile owns one stable Gunsmith-selected sample. Small pitch/gain
+    // variation makes repeated automatic fire less machine-perfect without
+    // swapping to a different recording each round.
+    if (this._playGunSound(gun, 'fire', { pitchJitter: 0.012, gainJitter: 0.06 })) return;
 
     const kind = gun?.weaponKind || gun;
     const now = performance.now();
@@ -946,6 +1051,86 @@ export class WeaponSystem {
     }
   }
 
+  /** Fast transient layer; samples/procedural body remain in _playGunshot. */
+  _playShotTransient(gun) {
+    const ctx = this._ensureAudio();
+    if (!ctx || ctx.state !== 'running') return;
+    try {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      const kind = gun?.weaponKind;
+      const base = kind === 'shotgun' ? 290 : kind === 'pistol' ? 520 : 380;
+      o.type = 'square';
+      o.frequency.setValueAtTime(base * 1.7, ctx.currentTime);
+      o.frequency.exponentialRampToValueAtTime(base, ctx.currentTime + 0.018);
+      g.gain.setValueAtTime(kind === 'shotgun' ? 0.014 : 0.01, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.025);
+      o.connect(g);
+      g.connect(this._shotGain || ctx.destination);
+      o.start();
+      o.stop(ctx.currentTime + 0.03);
+    } catch {
+      // Audio is optional presentation and must never interrupt firing.
+    }
+  }
+
+  _playImpactSound(surfaceClass = 'generic', confirmedHit = false, { point = null, camera = null } = {}) {
+    const usedSample = this._playPresentationSound(surfaceClass, {
+      pitchJitter: 0.035,
+      point,
+      camera,
+    });
+    if (confirmedHit) this._playClick(760, 0.018);
+    if (usedSample) return;
+    const ctx = this._ensureAudio();
+    if (!ctx || ctx.state !== 'running') return;
+    try {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      const panner = ctx.createStereoPanner?.() ?? null;
+      const frequencies = {
+        metal: 1040, concrete: 210, marble: 630, wood: 180,
+        glass: 1560, soil: 105, flesh: 140, generic: 300,
+      };
+      const base = frequencies[surfaceClass] ?? frequencies.generic;
+      o.type = surfaceClass === 'metal' || surfaceClass === 'glass' ? 'square' : 'triangle';
+      o.frequency.setValueAtTime(base * (0.94 + Math.random() * 0.12), ctx.currentTime);
+      o.frequency.exponentialRampToValueAtTime(Math.max(48, base * 0.56), ctx.currentTime + 0.065);
+      g.gain.setValueAtTime(surfaceClass === 'flesh' ? 0.018 : 0.013, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.075);
+      o.connect(g);
+      if (panner) {
+        if (point && camera) {
+          _right.set(1, 0, 0).applyQuaternion(camera.quaternion);
+          const dx = point.x - camera.position.x;
+          const dy = point.y - camera.position.y;
+          const dz = point.z - camera.position.z;
+          panner.pan.value = THREE.MathUtils.clamp((dx * _right.x + dy * _right.y + dz * _right.z) / 18, -0.85, 0.85);
+        }
+        g.connect(panner);
+        panner.connect(this._shotGain || ctx.destination);
+      } else {
+        g.connect(this._shotGain || ctx.destination);
+      }
+      o.start();
+      o.stop(ctx.currentTime + 0.08);
+      o.onended = () => panner?.disconnect();
+    } catch {
+      // Presentation audio remains best-effort.
+    }
+  }
+
+  /**
+   * Spawn a falling physics prop for the spent magazine at its live world pose.
+   * No-op for guns without an authored detachable magazine part.
+   */
+  _dropSpentMagazine({ gun, gunRoot, physicsSystem }) {
+    if (!this._droppedMags || !gunRoot || !physicsSystem?.world || !gun?.profile) return;
+    const mags = findMagazineMeshes(gunRoot, gun.profile);
+    if (!mags.length) return;
+    this._droppedMags.drop({ magMesh: mags[0].mesh, physicsSystem });
+  }
+
   snapshot() {
     const entry = this.getEquippedEntry();
     return {
@@ -964,7 +1149,9 @@ export class WeaponSystem {
       equippedShortLabel: entry?.shortLabel ?? this.equippedId,
       equippedKind: entry?.kind ?? null,
       pendingRagdolls: this._pendingRagdolls.length,
+      droppedMags: this._droppedMags?.snapshot() ?? { count: 0, oldestAge: 0 },
       useWorldRay: USE_WORLD_RAY,
+      presentation: this.presentationSystem.snapshot(),
     };
   }
 
@@ -991,6 +1178,10 @@ export class WeaponSystem {
     this._audioBuffers.clear();
     this._audioLoads.clear();
     this._preloadedGun = null;
+    this.presentationSystem.dispose();
+    this._droppedMags?.dispose();
+    this._droppedMags = null;
+    this._gunRoot = null;
     try {
       this._audioCtx?.close?.();
     } catch {

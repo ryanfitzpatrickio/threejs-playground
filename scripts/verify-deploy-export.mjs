@@ -51,4 +51,17 @@ for (const blueprintId of ['bp_racetrackcenter_mr2x9jj1_1', 'bp_mr2wum6d_1']) {
   assert.ok(blueprintIds.includes(blueprintId), `blueprint ${blueprintId} missing from export`);
 }
 
+const { GUN_CATALOG } = await import('../src/game/weapons/gunProfile.js');
+const gunsmithIds = (filtered.gunsmith ?? []).map((entry) => entry.id);
+assert.equal(
+  gunsmithIds.length,
+  GUN_CATALOG.length,
+  `expected all ${GUN_CATALOG.length} catalog guns, got ${gunsmithIds.length}: ${gunsmithIds.join(', ')}`,
+);
+for (const entry of GUN_CATALOG) {
+  assert.ok(gunsmithIds.includes(entry.id), `gunsmith ${entry.id} missing from export index`);
+  const filePath = path.join(tempDistData, 'gunsmith', `${entry.id}.json`);
+  assert.ok(fs.existsSync(filePath), `gunsmith/${entry.id}.json not written`);
+}
+
 console.log('verify:deploy-export ok');

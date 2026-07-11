@@ -68,6 +68,10 @@ const _holderPos = new THREE.Vector3();
 const _clampPoint = new THREE.Vector3();
 const _anchorLocal = new THREE.Matrix4();
 const _anchorScale = new THREE.Vector3();
+// Procedural left-hand override (reload director) scratch.
+const _overrideWorld = new THREE.Matrix4();
+const _overrideLocal = new THREE.Matrix4();
+const _overrideQuat = new THREE.Quaternion();
 const _parentWorldQuat = new THREE.Quaternion();
 const _correctedLocalQuat = new THREE.Quaternion();
 const _targetWorldQuat = new THREE.Quaternion();
@@ -172,6 +176,14 @@ export function createFirstPersonHandIk(modelRoot, bodyRoot = modelRoot) {
   let carryWeight = 0;
   let carryActive = false;
   let _lastRightIkStatus = '';
+  // Reload director (AR3): when set, the left IK target follows this world
+  // position instead of the gun's support anchor. Orientation defaults to the
+  // rest support anchor; an optional world quaternion overrides for reload
+  // debug palm tweaks.
+  /** @type {THREE.Vector3|null} */
+  let leftProceduralTarget = null;
+  /** @type {THREE.Quaternion|null} */
+  let leftProceduralQuat = null;
 
   function inheritedHolderScale() {
     weaponAnchor.updateWorldMatrix(true, false);
@@ -212,12 +224,16 @@ export function createFirstPersonHandIk(modelRoot, bodyRoot = modelRoot) {
     if (!gunRoot) return;
     const kickZ = Number(gunRoot.userData.weaponKickZ) || 0;
     const kickPitch = Number(gunRoot.userData.weaponKickPitch) || 0;
+    const kickYaw = Number(gunRoot.userData.weaponKickYaw) || 0;
+    const kickRoll = Number(gunRoot.userData.weaponKickRoll) || 0;
     const inspect = THREE.MathUtils.clamp(Number(gunRoot.userData.inspectBlend) || 0, 0, 1);
     const adsPoseAnchor = adsOverrideAnchor || adsCamera;
     const adsActive = Boolean(adsPoseAnchor && adsViewCamera && adsBlend > 1e-4);
     const adsChanged = Math.abs(adsBlend - lastAppliedAdsBlend) > 1e-5;
     const presentationActive = Math.abs(kickZ) > 1e-6
       || Math.abs(kickPitch) > 1e-6
+      || Math.abs(kickYaw) > 1e-6
+      || Math.abs(kickRoll) > 1e-6
       || inspect > 1e-4
       || adsActive
       || adsChanged;
@@ -253,10 +269,10 @@ export function createFirstPersonHandIk(modelRoot, bodyRoot = modelRoot) {
     // M5/M7: apply kick/inspect once on top of the rest pose (never stack).
     if (presentationActive) {
       if (kickZ !== 0) gunRoot.translateZ(kickZ);
-      if (kickPitch !== 0 || inspect > 1e-4) {
+      if (kickPitch !== 0 || kickYaw !== 0 || kickRoll !== 0 || inspect > 1e-4) {
         gunRoot.rotateX(kickPitch + inspect * 0.55);
-        gunRoot.rotateY(inspect * -0.85);
-        gunRoot.rotateZ(inspect * 0.35);
+        gunRoot.rotateY(kickYaw + inspect * -0.85);
+        gunRoot.rotateZ(kickRoll + inspect * 0.35);
       }
     }
 
@@ -372,12 +388,58 @@ export function createFirstPersonHandIk(modelRoot, bodyRoot = modelRoot) {
 
   /** Left support helper on left_hand_ik_target + debug offset. */
   function syncLeftIkTarget() {
+    // Reload override: place the target at a caller-supplied world pose.
+    if (leftProceduralTarget && gunRoot) {
+      if (leftIkTarget.parent !== gunRoot) gunRoot.add(leftIkTarget);
+      gunRoot.updateWorldMatrix(true, false);
+      if (leftProceduralQuat) {
+        _overrideQuat.copy(leftProceduralQuat);
+      } else if (leftSupport) {
+        leftSupport.updateWorldMatrix(true, false);
+        leftSupport.getWorldQuaternion(_overrideQuat);
+      } else {
+        _overrideQuat.identity();
+      }
+      _overrideWorld.compose(leftProceduralTarget, _overrideQuat, _unitScale);
+      _overrideLocal.copy(gunRoot.matrixWorld).invert().multiply(_overrideWorld);
+      _overrideLocal.decompose(leftIkTarget.position, leftIkTarget.quaternion, _anchorScale);
+      leftIkTarget.updateMatrixWorld(true);
+      return;
+    }
     syncIkTarget(
       leftIkTarget,
       leftSupport,
       gunDebugSocket.leftIkPosition,
       getGunDebugLeftIkQuaternion(_leftIkQuat),
     );
+  }
+
+  /**
+   * AR3 seam: steer the left IK target to a world position (reload director), or
+   * pass null to return the left hand to the gun's support anchor.
+   * @param {THREE.Vector3|{x:number,y:number,z:number}|null} worldPosition
+   * @param {THREE.Quaternion|{x:number,y:number,z:number,w:number}|null} [worldQuaternion]
+   *        Optional palm orientation. When null, uses left_hand_ik_target's world quat.
+   */
+  function setLeftHandProceduralTarget(worldPosition, worldQuaternion = null) {
+    if (!worldPosition) {
+      leftProceduralTarget = null;
+      leftProceduralQuat = null;
+      return;
+    }
+    if (!leftProceduralTarget) leftProceduralTarget = new THREE.Vector3();
+    leftProceduralTarget.set(worldPosition.x, worldPosition.y, worldPosition.z);
+    if (worldQuaternion && Number.isFinite(worldQuaternion.w)) {
+      if (!leftProceduralQuat) leftProceduralQuat = new THREE.Quaternion();
+      leftProceduralQuat.set(
+        worldQuaternion.x,
+        worldQuaternion.y,
+        worldQuaternion.z,
+        worldQuaternion.w,
+      ).normalize();
+    } else {
+      leftProceduralQuat = null;
+    }
   }
 
   /** Right grip helper on grip_mount + debug offset. */
@@ -694,6 +756,7 @@ export function createFirstPersonHandIk(modelRoot, bodyRoot = modelRoot) {
     updateWeaponAnchorFromRightHand,
     updateRightHandIk,
     updateLeftHandIk,
+    setLeftHandProceduralTarget,
     applyHandCarry,
     measure,
     dispose,

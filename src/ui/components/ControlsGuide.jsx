@@ -29,7 +29,7 @@ const CONTROL_SECTIONS = [
       ['C', 'Crouch'],
       ['Ctrl', 'Slide'],
       ['Double-tap direction', 'Dodge'],
-      ['E', 'Mount / dismount horse or enter vehicle'],
+      ['E', 'Use / interact (mount, vehicle, doors)'],
     ],
   },
   {
@@ -40,6 +40,7 @@ const CONTROL_SECTIONS = [
       ['1–0', 'Equip & draw catalog guns (10 slots)'],
       ['Z', 'Holster / draw equipped weapon'],
       ['X', 'Inspect gun (hold, while firearm is out)'],
+      ['Q + A / D', 'Lean left / right (gun out)'],
       ['Left click', 'Light attack (sword) / fire (gun in first person)'],
       ['Right click', 'Heavy attack (sword) / ADS (gun)'],
       ['R', 'Reload (gun) / flying shoulder throw (unarmed)'],

@@ -8,6 +8,7 @@
 const RIFLE_AUDIO_ROOT = '/assets/audio/weapons/rifles';
 const PISTOL_AUDIO_ROOT = '/assets/audio/weapons/pistols';
 const SHOTGUN_AUDIO_ROOT = '/assets/audio/weapons/shotguns';
+const PRESENTATION_AUDIO_ROOT = '/assets/audio/weapons/feedback';
 const ORIGINAL_PACK = "Snake's Authentic Gun Sounds";
 const SECOND_PACK = "Snake's SECOND Authentic Gun Sounds";
 
@@ -51,6 +52,20 @@ export const GUN_SOUND_INTERACTIONS = Object.freeze([
 ]);
 
 export const GUN_SOUND_LIBRARY = Object.freeze([
+  // Dreamfall fire samples are normal Gunsmith choices: a profile chooses one
+  // file and WeaponSystem keeps that choice stable for every shot.
+  sound('feedback-rifle-01', 'Feedback rifle 1', 'gunfire', 'rifleshot1.mp3', 0.7, 6, ['fire'], PRESENTATION_AUDIO_ROOT, 'Dreamfall shooting-feedback variants'),
+  sound('feedback-rifle-02', 'Feedback rifle 2', 'gunfire', 'rifleshot2.mp3', 0.7, 6, ['fire'], PRESENTATION_AUDIO_ROOT, 'Dreamfall shooting-feedback variants'),
+  sound('feedback-rifle-03', 'Feedback rifle 3', 'gunfire', 'rifleshot3.mp3', 0.7, 6, ['fire'], PRESENTATION_AUDIO_ROOT, 'Dreamfall shooting-feedback variants'),
+  sound('feedback-rifle-04', 'Feedback rifle 4', 'gunfire', 'rifleshot4.mp3', 0.7, 6, ['fire'], PRESENTATION_AUDIO_ROOT, 'Dreamfall shooting-feedback variants'),
+  sound('feedback-pistol-01', 'Feedback pistol 1', 'gunfire', 'pistolshot1.mp3', 0.66, 5, ['fire'], PRESENTATION_AUDIO_ROOT, 'Dreamfall shooting-feedback variants'),
+  sound('feedback-pistol-02', 'Feedback pistol 2', 'gunfire', 'pistolshot2.mp3', 0.66, 5, ['fire'], PRESENTATION_AUDIO_ROOT, 'Dreamfall shooting-feedback variants'),
+  sound('feedback-pistol-03', 'Feedback pistol 3', 'gunfire', 'pistolshot3.mp3', 0.66, 5, ['fire'], PRESENTATION_AUDIO_ROOT, 'Dreamfall shooting-feedback variants'),
+  sound('feedback-pistol-04', 'Feedback pistol 4', 'gunfire', 'pistolshot4.mp3', 0.66, 5, ['fire'], PRESENTATION_AUDIO_ROOT, 'Dreamfall shooting-feedback variants'),
+  sound('feedback-shotgun-01', 'Feedback shotgun 1', 'gunfire', 'shotgunshot1.mp3', 0.76, 3, ['fire'], PRESENTATION_AUDIO_ROOT, 'Dreamfall shooting-feedback variants'),
+  sound('feedback-shotgun-02', 'Feedback shotgun 2', 'gunfire', 'shotgunshot2.mp3', 0.76, 3, ['fire'], PRESENTATION_AUDIO_ROOT, 'Dreamfall shooting-feedback variants'),
+  sound('feedback-shotgun-03', 'Feedback shotgun 3', 'gunfire', 'shotgunshot3.mp3', 0.76, 3, ['fire'], PRESENTATION_AUDIO_ROOT, 'Dreamfall shooting-feedback variants'),
+  sound('feedback-shotgun-04', 'Feedback shotgun 4', 'gunfire', 'shotgunshot4.mp3', 0.76, 3, ['fire'], PRESENTATION_AUDIO_ROOT, 'Dreamfall shooting-feedback variants'),
   sound('snake-556-single-full', '5.56 single — full', 'gunfire', '556-single-full.mp3', 0.56, 12, ['fire']),
   sound('snake-556-single-isolated', '5.56 single — isolated', 'gunfire', '556-single-isolated.mp3', 0.62, 12, ['fire']),
   sound('snake-308-single-full', '.308 single — full', 'gunfire', '308-single-full.mp3', 0.54, 12, ['fire']),
@@ -84,6 +99,53 @@ export const GUN_SOUND_LIBRARY = Object.freeze([
 
 const SOUND_BY_ID = new Map(GUN_SOUND_LIBRARY.map((entry) => [entry.id, entry]));
 
+/** One-shot variants owned by WeaponSystem presentation rather than a gun profile. */
+export const WEAPON_PRESENTATION_SOUND_LIBRARY = Object.freeze([
+  presentationSound('feedback-metal-01', 'Metal impact 1', 'bulletmetal1.mp3', 0.34, 'impact:metal', 4),
+  presentationSound('feedback-metal-02', 'Metal impact 2', 'bulletmetal2.mp3', 0.34, 'impact:metal', 4),
+  presentationSound('feedback-metal-03', 'Metal impact 3', 'bulletmetal3.mp3', 0.34, 'impact:metal', 4),
+  presentationSound('feedback-metal-04', 'Metal impact 4', 'bulletmetal4.mp3', 0.34, 'impact:metal', 4),
+  presentationSound('feedback-concrete-01', 'Concrete impact 1', 'concrete1.mp3', 0.3, 'impact:concrete', 4),
+  presentationSound('feedback-concrete-02', 'Concrete impact 2', 'concrete2.mp3', 0.3, 'impact:concrete', 4),
+  presentationSound('feedback-concrete-03', 'Concrete impact 3', 'concrete3.mp3', 0.3, 'impact:concrete', 4),
+  presentationSound('feedback-concrete-04', 'Concrete impact 4', 'concrete4.mp3', 0.3, 'impact:concrete', 4),
+  presentationSound('feedback-marble-01', 'Marble impact 1', 'marble1.mp3', 0.3, 'impact:marble', 4),
+  presentationSound('feedback-marble-02', 'Marble impact 2', 'marble2.mp3', 0.3, 'impact:marble', 4),
+  presentationSound('feedback-marble-03', 'Marble impact 3', 'marble3.mp3', 0.3, 'impact:marble', 4),
+  presentationSound('feedback-marble-04', 'Marble impact 4', 'marble4.mp3', 0.3, 'impact:marble', 4),
+  presentationSound('feedback-wood-01', 'Wood impact 1', 'wood1.mp3', 0.3, 'impact:wood', 4),
+  presentationSound('feedback-wood-02', 'Wood impact 2', 'wood2.mp3', 0.3, 'impact:wood', 4),
+  presentationSound('feedback-wood-03', 'Wood impact 3', 'wood3.mp3', 0.3, 'impact:wood', 4),
+  presentationSound('feedback-glass-01', 'Glass impact 1', 'glass1.mp3', 0.3, 'impact:glass', 4),
+  presentationSound('feedback-glass-02', 'Glass impact 2', 'glass2.mp3', 0.3, 'impact:glass', 4),
+  presentationSound('feedback-glass-03', 'Glass impact 3', 'glass3.mp3', 0.3, 'impact:glass', 4),
+  presentationSound('feedback-glass-04', 'Glass impact 4', 'glass4.mp3', 0.3, 'impact:glass', 4),
+  presentationSound('feedback-soil-01', 'Dirt impact', 'dirt1.mp3', 0.28, 'impact:soil', 3),
+  ...Array.from({ length: 10 }, (_, index) => presentationSound(
+    `feedback-flesh-${String(index + 1).padStart(2, '0')}`,
+    `Flesh impact ${index + 1}`,
+    `flesh${index + 1}.mp3`,
+    0.32,
+    'impact:flesh',
+    3,
+  )),
+]);
+
+const PRESENTATION_SOUND_BY_ID = new Map(
+  WEAPON_PRESENTATION_SOUND_LIBRARY.map((entry) => [entry.id, entry]),
+);
+
+const PRESENTATION_VARIANTS = Object.freeze({
+  metal: ['feedback-metal-01', 'feedback-metal-02', 'feedback-metal-03', 'feedback-metal-04'],
+  concrete: ['feedback-concrete-01', 'feedback-concrete-02', 'feedback-concrete-03', 'feedback-concrete-04'],
+  marble: ['feedback-marble-01', 'feedback-marble-02', 'feedback-marble-03', 'feedback-marble-04'],
+  wood: ['feedback-wood-01', 'feedback-wood-02', 'feedback-wood-03'],
+  glass: ['feedback-glass-01', 'feedback-glass-02', 'feedback-glass-03', 'feedback-glass-04'],
+  soil: ['feedback-soil-01'],
+  flesh: Array.from({ length: 10 }, (_, index) => `feedback-flesh-${String(index + 1).padStart(2, '0')}`),
+  generic: ['feedback-concrete-01', 'feedback-concrete-02', 'feedback-metal-01', 'feedback-wood-01'],
+});
+
 const EMPTY_ASSIGNMENTS = Object.freeze(Object.fromEntries(
   GUN_SOUND_INTERACTIONS.map((interaction) => [interaction.id, '']),
 ));
@@ -91,63 +153,63 @@ const EMPTY_ASSIGNMENTS = Object.freeze(Object.fromEntries(
 const DEFAULT_ASSIGNMENTS_BY_GUN = Object.freeze({
   'modern-ar15': Object.freeze({
     ...EMPTY_ASSIGNMENTS,
-    fire: 'snake-556-single-isolated',
+    fire: 'feedback-rifle-01',
     reloadStart: 'snake-ar-reload-full',
     reloadComplete: 'snake-ar-bolt-release',
   }),
   'desert-ar15': Object.freeze({
     ...EMPTY_ASSIGNMENTS,
-    fire: 'snake-556-single-full',
+    fire: 'feedback-rifle-02',
     reloadStart: 'snake-ar-reload-full',
     reloadComplete: 'snake-ar-bolt-release',
   }),
   'desert-scar': Object.freeze({
     ...EMPTY_ASSIGNMENTS,
-    fire: 'snake-308-single-full',
+    fire: 'feedback-rifle-03',
     reloadStart: 'snake-308-magazine-full',
     reloadComplete: 'snake-308-bolt-cycle',
   }),
   ak47: Object.freeze({
     ...EMPTY_ASSIGNMENTS,
-    fire: 'snake-762x39-single-full',
+    fire: 'feedback-rifle-04',
     reloadStart: 'snake-ak-reload-full',
     reloadComplete: 'snake-ak-rack',
   }),
   'folding-stock-ar': Object.freeze({
     ...EMPTY_ASSIGNMENTS,
-    fire: 'snake-556-single-isolated',
+    fire: 'feedback-rifle-01',
     reloadStart: 'snake-ar-reload-full',
     reloadComplete: 'snake-ar-charging-handle',
   }),
   'obsidian-carbine': Object.freeze({
     ...EMPTY_ASSIGNMENTS,
-    fire: 'snake-556-single-isolated',
+    fire: 'feedback-rifle-02',
     reloadStart: 'snake-ar-reload-full',
     reloadComplete: 'snake-ar-bolt-release',
   }),
   'olive-bullpup': Object.freeze({
     ...EMPTY_ASSIGNMENTS,
-    fire: 'snake-556-single-full',
+    fire: 'feedback-rifle-03',
     reloadStart: 'snake-ar-reload-full',
     reloadComplete: 'snake-ar-charging-handle',
   }),
   'midnight-glock': Object.freeze({
     ...EMPTY_ASSIGNMENTS,
-    fire: 'snake-9mm-single-full',
+    fire: 'feedback-pistol-01',
     reloadStart: 'snake-9mm-pistol-reload',
     reloadComplete: 'snake-9mm-pistol-slide-release',
     dryFire: 'snake-9mm-pistol-dry-fire',
   }),
   'tactical-shotgun': Object.freeze({
     ...EMPTY_ASSIGNMENTS,
-    fire: 'snake-20g-single-full',
+    fire: 'feedback-shotgun-01',
     reloadStart: 'snake-pump-shell-load',
     reloadComplete: 'snake-pump-cycle',
     pump: 'snake-pump-cycle',
   }),
   'desert-sentinel': Object.freeze({
     ...EMPTY_ASSIGNMENTS,
-    fire: 'snake-762x54r-single-full',
+    fire: 'feedback-rifle-04',
     reloadStart: 'snake-308-magazine-full',
     reloadComplete: 'snake-mosin-bolt-cycle',
   }),
@@ -155,6 +217,16 @@ const DEFAULT_ASSIGNMENTS_BY_GUN = Object.freeze({
 
 export function getGunSound(soundId) {
   return SOUND_BY_ID.get(soundId) ?? null;
+}
+
+export function getWeaponPresentationSound(soundId) {
+  return PRESENTATION_SOUND_BY_ID.get(soundId) ?? null;
+}
+
+export function getWeaponPresentationSoundVariants(kind) {
+  return (PRESENTATION_VARIANTS[kind] ?? PRESENTATION_VARIANTS.generic)
+    .map((id) => PRESENTATION_SOUND_BY_ID.get(id))
+    .filter(Boolean);
 }
 
 export function getGunSoundsForInteraction(interactionId) {
@@ -208,5 +280,19 @@ function sound(
     maxVoices,
     interactions: Object.freeze([...interactions]),
     source,
+  });
+}
+
+function presentationSound(id, label, fileName, volume, voiceGroup, maxVoices) {
+  return Object.freeze({
+    id,
+    label,
+    category: 'presentation',
+    url: `${PRESENTATION_AUDIO_ROOT}/${fileName}`,
+    volume,
+    maxVoices,
+    voiceGroup,
+    interactions: Object.freeze([]),
+    source: 'Dreamfall shooting-feedback variants',
   });
 }

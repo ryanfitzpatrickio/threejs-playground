@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createCatalogStubProfile, GUN_CATALOG } from '../src/game/weapons/gunProfile.js';
 import { getDefaultRallyWorldMap } from '../src/world/worldMap/defaultRallyMap.js';
 import { normalizeWorldMap } from '../src/world/worldMap/worldMapSchema.js';
 import {
@@ -24,6 +25,7 @@ const DEFAULT_MANIFEST_PATH = path.resolve(__dirname, '..', 'data', 'export-mani
 const DEFAULT_DEPLOY_DATA_ROOT = path.resolve(__dirname, '..', 'deploy-data');
 const DEFAULT_DEPLOY_MANIFEST_PATH = path.resolve(DEFAULT_DEPLOY_DATA_ROOT, 'export-manifest.json');
 const DEFAULT_DIST_DATA = path.resolve(__dirname, '..', 'dist', 'data');
+const DEFAULT_GUN_CATALOG_PATH = path.resolve(__dirname, '..', 'public', 'assets', 'guns', 'catalog.json');
 const BUILTIN_RALLY_SCENE_ID = 'pine-ridge-rally';
 const DEFAULT_WORLD_SCENE_ID = 'scene_mr50xnlt_1';
 
@@ -32,6 +34,7 @@ const COLLECTION_EXPORT_DIRS = {
   worldmaps: 'worldmaps',
   mapbuilder: 'mapbuilder',
   garage: 'garage',
+  gunsmith: 'gunsmith',
 };
 
 async function readManifest(manifestPath) {
@@ -45,6 +48,7 @@ async function readManifest(manifestPath) {
         worldmaps: [],
         blueprints: [],
         garage: [],
+        gunsmith: [],
         includeState: true,
         includeExportStatic: true,
       };
@@ -62,8 +66,11 @@ async function readMergedManifest(options = {}) {
     worldmaps: [...new Set(manifests.flatMap((manifest) => manifest.worldmaps ?? []))],
     blueprints: [...new Set(manifests.flatMap((manifest) => manifest.blueprints ?? []))],
     garage: [...new Set(manifests.flatMap((manifest) => manifest.garage ?? []))],
+    gunsmith: [...new Set(manifests.flatMap((manifest) => manifest.gunsmith ?? []))],
     includeState: manifests.every((manifest) => manifest.includeState !== false),
     includeExportStatic: manifests.some((manifest) => manifest.includeExportStatic !== false),
+    // Default on: export every catalog/authored gunsmith profile for production.
+    includeAllGunsmith: manifests.every((manifest) => manifest.includeAllGunsmith !== false),
   };
 }
 
@@ -123,6 +130,39 @@ function seedBuiltInRallyScene(db) {
   }, { exportStatic: true });
 }
 
+function loadGunCatalogMeshNames(catalogPath = DEFAULT_GUN_CATALOG_PATH) {
+  const meshNamesById = new Map();
+  try {
+    const raw = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
+    for (const gun of raw?.guns ?? []) {
+      if (gun?.id && Array.isArray(gun.meshNames)) {
+        meshNamesById.set(gun.id, gun.meshNames);
+      }
+    }
+  } catch {
+    // optional asset metadata — stubs still work without mesh names
+  }
+  return meshNamesById;
+}
+
+/**
+ * Ensure every GUN_CATALOG weapon has a gunsmith profile for production export.
+ * Authored store profiles are left untouched; missing ones get catalog stubs.
+ */
+function seedCatalogGunsmithProfiles(db, options = {}) {
+  const meshNamesById = loadGunCatalogMeshNames(options.gunCatalogPath);
+  let seeded = 0;
+
+  for (const entry of GUN_CATALOG) {
+    if (readStoreEntry(db, 'gunsmith', entry.id) !== null) continue;
+    const profile = createCatalogStubProfile(entry, meshNamesById.get(entry.id) ?? []);
+    writeStoreEntry(db, 'gunsmith', entry.id, profile, { exportStatic: true });
+    seeded += 1;
+  }
+
+  return seeded;
+}
+
 function ensurePlayableDefaults(db) {
   const state = readAppState(db);
   const patch = { ...state };
@@ -148,6 +188,10 @@ function prepareDatabaseForExport(db, options = {}) {
   }
 
   seedBuiltInRallyScene(db);
+  const seededGuns = seedCatalogGunsmithProfiles(db, options);
+  if (seededGuns > 0) {
+    console.info(`[export-static-data] seeded ${seededGuns} catalog gunsmith profile(s)`);
+  }
   ensurePlayableDefaults(db);
 }
 
@@ -198,15 +242,31 @@ export async function exportStaticDataToDist(options = {}) {
     worldmaps: index.worldmaps.filter((entry) => exportIds.worldmaps.has(entry.id)),
     mapbuilder: [],
     garage: index.garage.filter((entry) => exportIds.garage.has(entry.id)),
+    gunsmith: (index.gunsmith ?? []).filter((entry) => exportIds.gunsmith.has(entry.id)),
     state,
   };
 
   await writeJson(path.join(distDataRoot, 'index.json'), filtered);
 
-  const total = filtered.blueprints.length + filtered.worldmaps.length + filtered.garage.length;
+  // Fail the build if a catalog gun did not land in dist/data/gunsmith/.
+  if (manifest.includeAllGunsmith !== false) {
+    const exportedGunIds = new Set(filtered.gunsmith.map((entry) => entry.id));
+    const missingGuns = GUN_CATALOG.map((entry) => entry.id).filter((id) => !exportedGunIds.has(id));
+    if (missingGuns.length > 0) {
+      throw new Error(
+        `[export-static-data] missing catalog gunsmith export(s): ${missingGuns.join(', ')}`,
+      );
+    }
+  }
+
+  const total = filtered.blueprints.length
+    + filtered.worldmaps.length
+    + filtered.garage.length
+    + filtered.gunsmith.length;
   console.info(
-    `[export-static-data] wrote ${total} level(s) to ${distDataRoot}`
-    + ` (${filtered.worldmaps.length} world map(s), ${filtered.blueprints.length} blueprint(s))`,
+    `[export-static-data] wrote ${total} item(s) to ${distDataRoot}`
+    + ` (${filtered.worldmaps.length} world map(s), ${filtered.blueprints.length} blueprint(s)`
+    + `, ${filtered.garage.length} garage, ${filtered.gunsmith.length} gunsmith)`,
   );
 
   return filtered;

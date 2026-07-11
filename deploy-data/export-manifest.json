@@ -11,6 +11,8 @@
   "garage": [
     "build-mr57kzrw-9jnl8"
   ],
+  "gunsmith": [],
+  "includeAllGunsmith": true,
   "includeState": true,
   "includeExportStatic": true
 }

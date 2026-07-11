@@ -11,6 +11,8 @@ import { disposeObject3D } from '../utils/disposeObject3D.js';
 import { createLevelGeometryIndex } from './createLevelGeometryIndex.js';
 import { createMaterialWarmupGroup } from './createMaterialWarmupGroup.js';
 import { getGroundHeightAt, getBlockingColliderAt } from './createBaseLevel.js';
+import { createRallySurfaceMaterial } from '../materials/rallySurfaceTextures.js';
+import { getQualityLevel, getQualityPreset } from '../config/qualityPresets.js';
 
 /** Course runs along +Z from the staging bay. */
 const FLOOR_Y = 0;
@@ -95,40 +97,52 @@ function makeRangeWallMaterial(pbr, {
   });
 }
 
-// Sliced PBR sets (from 2×2 atlas sheets brickwall/woodwall/woodwall2.png).
-// Texture.repeat stays 1×1 — world-space box UVs in prepareBoxGeometry set
-// tile density so long walls do not stretch the pattern horizontally.
+// Sliced PBR sets (from 2×2 atlas sheets brickwall/woodwall/woodwall2.png +
+// metalroof/pillarmiddle/pillarend). Texture.repeat stays 1×1 — world-space box
+// UVs in prepareBoxGeometry set tile density so long runs do not stretch.
 /** Meters covered by one full albedo tile (keep brick/wood roughly square). */
 const WALL_TEXTURE_TILE_M = 2.8;
+/** Corrugated metal + rust pillar maps tile a bit tighter than brick. */
+const METAL_TEXTURE_TILE_M = 1.85;
 const brickPbr = loadRangePbrSet('brickwall', { repeatX: 1, repeatY: 1 });
 const woodPbr = loadRangePbrSet('woodwall', { repeatX: 1, repeatY: 1 });
 const wood2Pbr = loadRangePbrSet('woodwall2', { repeatX: 1, repeatY: 1 });
+const concretePbr = loadRangePbrSet('concrete', { repeatX: 1, repeatY: 1 });
+const metalRoofPbr = loadRangePbrSet('metalroof', { repeatX: 1, repeatY: 1 });
+const pillarMiddlePbr = loadRangePbrSet('pillarmiddle', { repeatX: 1, repeatY: 1 });
+const pillarEndPbr = loadRangePbrSet('pillarend', { repeatX: 1, repeatY: 1 });
 
-// Warm weathered wood palette — MeshStandard picks up scene.environment (PMREM sky).
-const floorMat = new THREE.MeshStandardMaterial({
-  color: 0x6e5438,
-  roughness: 0.88,
-  metalness: 0.04,
-  envMapIntensity: 0.55,
+// Use the same world-space hex tile blend as terrain and rally shoulders. It
+// rotates and blends neighbouring concrete samples so the large indoor slab
+// does not reveal a single repeated texture while retaining concrete PBR maps.
+const floorMat = createRallySurfaceMaterial({
+  map: concretePbr.map,
+  normalMap: concretePbr.normalMap,
+  roughnessMap: concretePbr.roughnessMap,
+  heightMap: concretePbr.aoMap,
+}, {
+  tilesPerMetre: 1 / WALL_TEXTURE_TILE_M,
+  hextile: getQualityPreset(getQualityLevel()).terrainHextile ?? null,
 });
+const concreteFixtureMat = floorMat;
 const plankMat = new THREE.MeshStandardMaterial({
   color: 0x7a5c3c,
   roughness: 0.84,
   metalness: 0.05,
   envMapIntensity: 0.6,
 });
-const darkTimberMat = new THREE.MeshStandardMaterial({
-  color: 0x3f2c1a,
-  roughness: 0.78,
-  metalness: 0.06,
-  envMapIntensity: 0.7,
+/** Structural steel (posts, beams, rafters, trim, ballast) — pillarmiddle PBR. */
+const pillarMat = makeRangeWallMaterial(pillarMiddlePbr, {
+  roughness: 0.58,
+  metalness: 0.62,
+  envMapIntensity: 1.05,
+  normalScale: 1.15,
+  aoMapIntensity: 0.7,
 });
-const beamMat = new THREE.MeshStandardMaterial({
-  color: 0x4a3420,
-  roughness: 0.72,
-  metalness: 0.08,
-  envMapIntensity: 0.85,
-});
+/** @deprecated alias — structural timber call sites now share pillar steel. */
+const darkTimberMat = pillarMat;
+/** Beams / ridge / wall plate / door posts. */
+const beamMat = pillarMat;
 /** Warehouse shell (exterior + end walls + gables) — brick PBR. */
 const brickWallMat = makeRangeWallMaterial(brickPbr, {
   roughness: 0.92,
@@ -164,11 +178,30 @@ const palletMat = new THREE.MeshStandardMaterial({
   metalness: 0.03,
   envMapIntensity: 0.4,
 });
+/** Fixture / prop metal (sound samples, lockers) — flat grey, not structure. */
 const metalMat = new THREE.MeshStandardMaterial({
   color: 0x5a5c60,
   roughness: 0.42,
   metalness: 0.65,
   envMapIntensity: 1.25,
+});
+const marbleFixtureMat = new THREE.MeshStandardMaterial({
+  color: 0xd8d3c8,
+  roughness: 0.32,
+  metalness: 0.04,
+  envMapIntensity: 0.9,
+});
+const soilFixtureMat = new THREE.MeshStandardMaterial({
+  color: 0x5c3922,
+  roughness: 1,
+  metalness: 0,
+});
+const fleshFixtureMat = new THREE.MeshStandardMaterial({
+  color: 0x8f3434,
+  roughness: 0.72,
+  metalness: 0,
+  emissive: 0x1c0505,
+  emissiveIntensity: 0.16,
 });
 const dangerStripeMat = new THREE.MeshStandardMaterial({
   color: 0xc45a1a,
@@ -186,19 +219,23 @@ const friendlyStripeMat = new THREE.MeshStandardMaterial({
   emissiveIntensity: 0.18,
   envMapIntensity: 0.5,
 });
-const roofMat = new THREE.MeshStandardMaterial({
-  color: 0x4a4036,
-  roughness: 0.78,
-  metalness: 0.12,
-  envMapIntensity: 0.75,
+/** Outer corrugated roof deck — metalroof PBR. */
+const roofMat = makeRangeWallMaterial(metalRoofPbr, {
+  roughness: 0.48,
+  metalness: 0.78,
+  envMapIntensity: 1.15,
+  normalScale: 1.25,
+  aoMapIntensity: 0.55,
 });
-const roofUndersideMat = new THREE.MeshStandardMaterial({
-  color: 0x5c4832,
-  roughness: 0.9,
-  metalness: 0.04,
-  envMapIntensity: 0.45,
-  side: THREE.BackSide,
+/** Inside metal roof (underside of deck) — same maps, back faces. */
+const roofUndersideMat = makeRangeWallMaterial(metalRoofPbr, {
+  roughness: 0.55,
+  metalness: 0.72,
+  envMapIntensity: 0.95,
+  normalScale: 1.2,
+  aoMapIntensity: 0.6,
 });
+roofUndersideMat.side = THREE.BackSide;
 // Standard glass (reliable on WebGPU); bright emissive so sky IBL "pours" through.
 const glassMat = new THREE.MeshStandardMaterial({
   color: 0xc5dcec,
@@ -212,12 +249,79 @@ const glassMat = new THREE.MeshStandardMaterial({
   emissive: 0xa8d0ee,
   emissiveIntensity: 0.38,
 });
-const mullionMat = new THREE.MeshStandardMaterial({
-  color: 0x2e2a24,
-  roughness: 0.55,
-  metalness: 0.35,
-  envMapIntensity: 0.9,
+/** Clerestory mullions share structural rust steel. */
+const mullionMat = pillarMat;
+/**
+ * Pillar base plate card (non-tiling atlas tile with baked alpha).
+ * Alpha-tested so the grey atlas background disappears.
+ */
+const pillarEndMat = new THREE.MeshStandardMaterial({
+  map: pillarEndPbr.map,
+  normalMap: pillarEndPbr.normalMap,
+  normalScale: new THREE.Vector2(1.05, 1.05),
+  roughnessMap: pillarEndPbr.roughnessMap,
+  roughness: 0.62,
+  metalness: 0.55,
+  aoMap: pillarEndPbr.aoMap,
+  aoMapIntensity: 0.55,
+  color: 0xffffff,
+  transparent: true,
+  alphaTest: 0.32,
+  depthWrite: true,
+  side: THREE.DoubleSide,
+  envMapIntensity: 1.0,
 });
+// ── Breach-arrow floor decal (chevrons pointing toward doorways) ───────────
+// SVG loaded once; a flipped clone (repeat.x = −1) reverses direction so both
+// sides of a door converge inward.
+const breachArrowTex = (() => {
+  if (typeof document === 'undefined') return null;
+  const tex = new THREE.TextureLoader().load(`${RANGE_TEXTURE_ROOT}/breach-arrow.svg`);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.generateMipmaps = true;
+  tex.anisotropy = 8;
+  return tex;
+})();
+const breachArrowFlippedTex = (() => {
+  if (!breachArrowTex) return null;
+  const tex = breachArrowTex.clone();
+  tex.needsUpdate = true;
+  tex.repeat.x = -1;
+  return tex;
+})();
+const breachArrowMat = new THREE.MeshStandardMaterial({
+  map: breachArrowTex,
+  transparent: true,
+  alphaTest: 0.15,
+  depthWrite: false,
+  roughness: 0.85,
+  metalness: 0.08,
+  color: 0xffffff,
+  emissive: 0x401800,
+  emissiveIntensity: 0.18,
+  polygonOffset: true,
+  polygonOffsetFactor: -1,
+  polygonOffsetUnits: -1,
+});
+const breachArrowFlippedMat = new THREE.MeshStandardMaterial({
+  map: breachArrowFlippedTex,
+  transparent: true,
+  alphaTest: 0.15,
+  depthWrite: false,
+  roughness: 0.85,
+  metalness: 0.08,
+  color: 0xffffff,
+  emissive: 0x401800,
+  emissiveIntensity: 0.18,
+  polygonOffset: true,
+  polygonOffsetFactor: -1,
+  polygonOffsetUnits: -1,
+});
+
 const dustMoteMat = new THREE.MeshBasicMaterial({
   color: 0xfff0c8,
   transparent: true,
@@ -229,46 +333,96 @@ const dustMoteMat = new THREE.MeshBasicMaterial({
 
 /**
  * Target placements (world space). `friendly: true` = do not shoot.
- * Layout scaled for the enlarged timber warehouse.
+ *
+ * Laid out room-by-room to match `buildInteriorLayout`'s CQB shoot-house so the
+ * course reads as a real breach: every room stages a discrimination decision
+ * (friendly next to a hostile, a cornered civilian, a hostage with a shooter at
+ * a tight angle) rather than a flat gallery of pop-ups. `yaw = Math.PI` faces a
+ * silhouette south toward the breaching player; ±Math.PI/2 face east / west.
  */
 export const RANGE_TARGET_SPAWNS = [
-  // Bay A — entry loading
-  { id: 'a-h1', x: -8.5, z: 10, yaw: Math.PI, friendly: false },
-  { id: 'a-h2', x: 7.2, z: 14, yaw: Math.PI * 0.95, friendly: false },
-  { id: 'a-f1', x: 0.5, z: 18, yaw: Math.PI, friendly: true },
-  { id: 'a-h3', x: -4.0, z: 22, yaw: Math.PI * 1.05, friendly: false },
-  // West alcove A
-  { id: 'aw-h1', x: -11.5, z: 16, yaw: Math.PI * 0.5, friendly: false },
-  { id: 'aw-f1', x: -10.8, z: 24, yaw: Math.PI * 0.45, friendly: true },
-  // East alcove A
-  { id: 'ae-h1', x: 11.2, z: 20, yaw: -Math.PI * 0.5, friendly: false },
-  // Split corridor
-  { id: 's-h1', x: -6.0, z: 34, yaw: Math.PI, friendly: false },
-  { id: 's-h2', x: 5.5, z: 38, yaw: Math.PI * 0.9, friendly: false },
-  { id: 's-f1', x: 2.0, z: 42, yaw: Math.PI, friendly: true },
-  { id: 's-h3', x: -9.5, z: 44, yaw: Math.PI * 0.55, friendly: false },
-  { id: 's-h4', x: 10.0, z: 46, yaw: -Math.PI * 0.55, friendly: false },
-  // Storage maze
-  { id: 'm-h1', x: -8.0, z: 56, yaw: Math.PI * 0.85, friendly: false },
-  { id: 'm-h2', x: 3.5, z: 58, yaw: Math.PI, friendly: false },
-  { id: 'm-f1', x: -2.5, z: 62, yaw: Math.PI * 1.1, friendly: true },
-  { id: 'm-h3', x: 9.0, z: 60, yaw: -Math.PI * 0.7, friendly: false },
-  { id: 'm-h4', x: -11.0, z: 66, yaw: Math.PI * 0.5, friendly: false },
-  { id: 'm-h5', x: 6.5, z: 68, yaw: Math.PI * 1.15, friendly: false },
-  { id: 'm-f2', x: 11.5, z: 64, yaw: -Math.PI * 0.4, friendly: true },
-  // Cross hall / side bays
-  { id: 'c-h1', x: -4.0, z: 78, yaw: Math.PI, friendly: false },
-  { id: 'c-h2', x: 8.0, z: 80, yaw: Math.PI * 0.9, friendly: false },
-  { id: 'c-f1', x: 0.0, z: 84, yaw: Math.PI, friendly: true },
-  { id: 'c-h3', x: -10.5, z: 82, yaw: Math.PI * 0.5, friendly: false },
-  { id: 'c-h4', x: 11.0, z: 86, yaw: -Math.PI * 0.55, friendly: false },
-  // Final chamber
-  { id: 'f-h1', x: -7.0, z: 94, yaw: Math.PI, friendly: false },
-  { id: 'f-h2', x: 5.5, z: 96, yaw: Math.PI * 0.95, friendly: false },
-  { id: 'f-h3', x: 0.2, z: 100, yaw: Math.PI, friendly: false },
-  { id: 'f-f1', x: 9.5, z: 98, yaw: -Math.PI * 0.65, friendly: true },
-  { id: 'f-h4', x: -10.0, z: 102, yaw: Math.PI * 0.4, friendly: false },
-  { id: 'f-h5', x: 3.0, z: 104, yaw: Math.PI * 1.05, friendly: false },
+  // ── Reception (z 12–32): breach D1, immediate discrimination ──────────────
+  // Hostile behind the front desk, dead ahead; a civilian is hands-up to the
+  // left in the same eyeline — punish a reflex spray.
+  { id: 'rc-h1', x: -2.0, z: 29, yaw: Math.PI, friendly: false },
+  { id: 'rc-f1', x: -11.5, z: 17, yaw: Math.PI * 0.5, friendly: true },
+  { id: 'rc-h2', x: 9.5, z: 22, yaw: -Math.PI * 0.6, friendly: false },
+
+  // ── Corridor (z 32–54): breach D2 into a hallway gunfight ─────────────────
+  { id: 'co-h1', x: 0.0, z: 50, yaw: Math.PI, friendly: false },
+
+  // ── West break room (x<-2.8, z 32–54) via side door ──────────────────────
+  { id: 'wb-h1', x: -9.0, z: 39, yaw: Math.PI * 0.5, friendly: false },
+  { id: 'wb-f1', x: -12.5, z: 51, yaw: Math.PI * 0.3, friendly: true },
+
+  // ── East records room (x>2.8, z 32–54) via side door ─────────────────────
+  { id: 'er-h1', x: 9.0, z: 39, yaw: -Math.PI * 0.5, friendly: false },
+  { id: 'er-h2', x: 12.0, z: 51, yaw: -Math.PI * 0.4, friendly: false },
+
+  // ── Warehouse floor (z 54–78): ranged, shelving cover, worker mixed in ────
+  { id: 'wh-h1', x: -8.0, z: 64, yaw: Math.PI, friendly: false },
+  { id: 'wh-h2', x: 7.0, z: 70, yaw: Math.PI * 0.9, friendly: false },
+  { id: 'wh-h3', x: 11.5, z: 61, yaw: -Math.PI * 0.6, friendly: false },
+  { id: 'wh-f1', x: -11.5, z: 73, yaw: Math.PI * 0.4, friendly: true },
+  { id: 'wh-h4', x: -2.0, z: 75, yaw: Math.PI, friendly: false },
+
+  // ── Hostage room (z 78–92): the key decision ─────────────────────────────
+  // Hostage dead-center facing you; a shooter is tucked at his right shoulder
+  // (tight, risky angle) while a flanker gives a clean, safe shot to the left.
+  { id: 'ho-f1', x: 0.0, z: 88, yaw: Math.PI, friendly: true },
+  { id: 'ho-h1', x: 2.2, z: 88.5, yaw: Math.PI, friendly: false },
+  { id: 'ho-h2', x: -8.5, z: 83, yaw: Math.PI * 0.6, friendly: false },
+
+  // ── Final office (z 92–108): last stand + a surrendering civilian ────────
+  { id: 'fo-h1', x: -8.0, z: 100, yaw: Math.PI, friendly: false },
+  { id: 'fo-h2', x: 6.0, z: 98, yaw: Math.PI * 0.95, friendly: false },
+  { id: 'fo-h3', x: -2.0, z: 104, yaw: Math.PI, friendly: false },
+  { id: 'fo-h4', x: 11.0, z: 103, yaw: -Math.PI * 0.55, friendly: false },
+  { id: 'fo-f1', x: 9.5, z: 96.5, yaw: Math.PI * 0.4, friendly: true },
+];
+
+/**
+ * Material fixtures on the staging-bay side walls: safe visual/audio decal
+ * sample panels. `side: -1` = west wall (facing into the bay), `side: 1` = east.
+ * Kept off the centerline so they do not block the approach into the course.
+ */
+export const RANGE_MATERIAL_FIXTURES = Object.freeze([
+  // West wall
+  { id: 'concrete', label: 'CONCRETE', side: -1, z: -4.2, surfaceClass: 'concrete', material: concreteFixtureMat },
+  { id: 'marble', label: 'MARBLE', side: -1, z: -0.8, surfaceClass: 'marble', material: marbleFixtureMat },
+  { id: 'wood', label: 'WOOD', side: -1, z: 2.6, surfaceClass: 'wood', material: woodWallMat },
+  { id: 'metal', label: 'METAL', side: -1, z: 6.0, surfaceClass: 'metal', material: metalMat },
+  // East wall
+  { id: 'glass', label: 'GLASS', side: 1, z: -2.5, surfaceClass: 'glass', material: glassMat },
+  { id: 'soil', label: 'SOIL', side: 1, z: 1.2, surfaceClass: 'soil', material: soilFixtureMat },
+  { id: 'flesh', label: 'FLESH', side: 1, z: 4.9, surfaceClass: 'flesh', material: fleshFixtureMat },
+]);
+
+/**
+ * Knockable breach doors (world space), consumed by ShootingRangeSystem which
+ * builds the swinging meshes, gates the matching collider, and tips them over
+ * on the interact key. `axis:'x'` = door spans X in a cross wall (tips along Z);
+ * `axis:'z'` = door spans Z in a corridor side wall (tips along X). Kept in sync
+ * with the doorway gaps punched by `buildInteriorLayout`.
+ *
+ * Narrow single-leaf openings (≈1.1–1.25 m) under a tall clear height
+ * (`DOOR_CLEAR_H`); leaf height lives in ShootingRangeSystem (`DOOR_HEIGHT`).
+ */
+/** Clear height under interior door lintels (m). Must exceed DOOR_HEIGHT. */
+const DOOR_CLEAR_H = 2.72;
+/** Default interior doorway width (m) — tall single door, not double-width. */
+const DOOR_W = 1.15;
+const DOOR_W_SIDE = 1.1;
+const DOOR_W_WAREHOUSE = 1.25;
+
+export const RANGE_DOOR_SPECS = [
+  { id: 'd-reception', x: 0, z: 12, width: DOOR_W, axis: 'x' },
+  { id: 'd-corridor', x: 0, z: 32, width: DOOR_W, axis: 'x' },
+  { id: 'd-breakroom', x: -2.8, z: 44, width: DOOR_W_SIDE, axis: 'z' },
+  { id: 'd-records', x: 2.8, z: 44, width: DOOR_W_SIDE, axis: 'z' },
+  { id: 'd-warehouse', x: 0, z: 54, width: DOOR_W_WAREHOUSE, axis: 'x' },
+  { id: 'd-hostage', x: -4, z: 78, width: DOOR_W, axis: 'x' },
+  { id: 'd-office', x: 4, z: 92, width: DOOR_W, axis: 'x' },
 ];
 
 /**
@@ -282,7 +436,8 @@ export const RANGE_ENVIRONMENT = Object.freeze({
   /** Keep outdoor sky mesh as background (visible through clerestory) */
   asBackground: false,
   environmentRotationY: 0.35,
-  timeOfDay: 0.42,
+  /** 16:42 on the 0–1 clock (hours/24). Late-afternoon sun through clerestory. */
+  timeOfDay: (16 + 42 / 60) / 24,
   weather: 'clear',
   fogEnabled: false,
 });
@@ -295,10 +450,11 @@ export function createShootingRangeLevel() {
   group.userData.freezeStaticWorldMatrices = true;
   const colliders = [];
   const materials = [
-    floorMat, plankMat, darkTimberMat, beamMat,
+    floorMat, plankMat, pillarMat, beamMat,
     brickWallMat, woodWallMat, woodWall2Mat,
     crateMat, palletMat, metalMat, dangerStripeMat, friendlyStripeMat,
-    roofMat, roofUndersideMat, glassMat, mullionMat, dustMoteMat,
+    roofMat, roofUndersideMat, glassMat, mullionMat, pillarEndMat, dustMoteMat,
+    breachArrowMat, breachArrowFlippedMat,
   ];
 
   const halfW = HALL_WIDTH * 0.5;
@@ -318,8 +474,9 @@ export function createShootingRangeLevel() {
     sz: length + 2.5,
     material: floorMat,
     collider: true,
+    surfaceClass: 'concrete',
   });
-  addFloorPlanks({ group, halfW, minZ: COURSE_MIN_Z, maxZ: COURSE_MAX_Z });
+  addMaterialFixtureRow({ group, colliders });
 
   // ── Exterior timber walls (solid board + clerestory glass band) ───────────
   addExteriorWalls({ group, colliders, halfW, centerZ, length });
@@ -337,10 +494,11 @@ export function createShootingRangeLevel() {
   // Soft floating dust motes remain as cheap particulate atmosphere.
   addRangeDustMotes({ group, halfW });
 
-  // ── Intricate interior: bays, split corridor, maze, cross-hall ───────────
+  // ── CQB shoot-house: reception, corridor + flanking rooms, warehouse,
+  //    hostage room, final office. Doorway gaps match RANGE_DOOR_SPECS. ──────
   buildInteriorLayout({ group, colliders, halfW });
 
-  // ── Cover: crates, pallets, timber stacks ────────────────────────────────
+  // ── Cover: room furniture (counters, shelving, desks) + pallets ──────────
   placeCover({ group, colliders });
 
   // ── Floor markings ───────────────────────────────────────────────────────
@@ -371,6 +529,9 @@ export function createShootingRangeLevel() {
     collider: false,
   });
 
+  // ── Breach arrow decals (chevrons converging on each doorway) ─────────
+  addBreachArrowDecals({ group });
+
   // Everything authored above is static. The trace that motivated this pass
   // showed 939 tiny meshes (617 shadow casters and 320 transparent objects) for
   // only ~15k triangles. Bake transforms and merge by material/render state so
@@ -400,6 +561,8 @@ export function createShootingRangeLevel() {
     spawnPoint,
     spawnYaw,
     rangeTargets: RANGE_TARGET_SPAWNS,
+    materialFixtures: RANGE_MATERIAL_FIXTURES,
+    rangeDoors: RANGE_DOOR_SPECS,
     rangeEnvironment: RANGE_ENVIRONMENT,
     isNearFieldReady: () => true,
     createPipelineWarmupGroup: () => createMaterialWarmupGroup(materials, 'Range Pipeline Warmup'),
@@ -442,29 +605,69 @@ export function createShootingRangeLevel() {
 
 // ── Layout builders ────────────────────────────────────────────────────────
 
-function addFloorPlanks({ group, halfW, minZ, maxZ }) {
-  // Visual decking strips (no colliders — slab handles walk).
-  const plankW = 0.42;
-  let x = -halfW + 0.35;
-  let i = 0;
-  while (x < halfW - 0.3) {
-    const mat = i % 3 === 0 ? darkTimberMat : plankMat;
+function addMaterialFixtureRow({ group, colliders }) {
+  const halfW = HALL_WIDTH * 0.5;
+  // Thin axis points into the bay; wide axis runs along the exterior wall.
+  const panelDepth = 0.24;
+  const panelWidth = 2.7;
+  const panelHeight = 2.45;
+  // Flush against the interior face of the boarded exterior walls.
+  const wallInset = halfW - WALL_T * 0.5 - panelDepth * 0.5;
+
+  for (const fixture of RANGE_MATERIAL_FIXTURES) {
+    const side = fixture.side ?? -1;
+    const x = side * wallInset;
+    const z = fixture.z;
     addBox({
       group,
-      colliders: null,
-      name: `Deck Plank ${i}`,
+      colliders,
+      name: `Material Fixture ${fixture.label}`,
       cx: x,
-      cy: 0.015,
-      cz: (minZ + maxZ) * 0.5,
-      sx: plankW * 0.92,
-      sy: 0.03,
-      sz: maxZ - minZ - 0.4,
-      material: mat,
-      collider: false,
+      cy: 1.3,
+      cz: z,
+      sx: panelDepth,
+      sy: panelHeight,
+      sz: panelWidth,
+      material: fixture.material,
+      collider: true,
+      surfaceClass: fixture.surfaceClass,
     });
-    x += plankW;
-    i += 1;
+    // Label slightly inward from the panel face so it reads from the bay.
+    const labelX = x - side * (panelDepth * 0.5 + 0.08);
+    addMaterialFixtureLabel(group, fixture.label, labelX, z);
   }
+}
+
+function addMaterialFixtureLabel(group, text, x, z) {
+  if (typeof document === 'undefined') return;
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 64;
+  const context = canvas.getContext('2d');
+  if (!context) return;
+  context.fillStyle = 'rgba(13, 12, 10, 0.9)';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.strokeStyle = '#d7b363';
+  context.lineWidth = 4;
+  context.strokeRect(2, 2, canvas.width - 4, canvas.height - 4);
+  context.fillStyle = '#f3e6c6';
+  context.font = '700 28px system-ui, sans-serif';
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.fillText(text, canvas.width * 0.5, canvas.height * 0.52);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    depthWrite: false,
+    toneMapped: false,
+  }));
+  sprite.name = `Material Fixture Label ${text}`;
+  sprite.position.set(x, 2.82, z);
+  sprite.scale.set(2.15, 0.54, 1);
+  sprite.renderOrder = 8;
+  group.add(sprite);
 }
 
 function addExteriorWalls({ group, colliders, halfW, centerZ, length }) {
@@ -650,20 +853,30 @@ function addEndWall({ group, colliders, z, name, doorW, doorX }) {
 }
 
 function addTimberFrame({ group, colliders, halfW }) {
+  // Match roof-deck pitch so rafters / purlins / metal read as one structure.
   const rise = RIDGE_Y - WALL_PLATE_Y;
-  const run = halfW - 0.35;
+  const run = halfW;
   const rafterLen = Math.hypot(run, rise);
   // Pitch so outer (eave) is low and ridge is high.
   // side=+1 (east): rotation.z = -pitch; side=-1 (west): rotation.z = +pitch
   const pitch = Math.atan2(rise, run);
+  // Collar height as a fraction of rise (eave → ridge). Inner posts stop here
+  // so the horizontal collar beams rest on real columns, not mid-air.
+  const collarT = 0.38;
+  const collarY = WALL_PLATE_Y + rise * collarT;
+  const collarHalfX = run * (1 - collarT); // rafter X at collar height
+  const innerPostX = 4.5;
 
   for (let z = COURSE_MIN_Z + 4; z <= COURSE_MAX_Z - 4; z += POST_SPACING) {
+    // Eave posts — carry the wall plate / rafter feet.
     for (const x of [-halfW + 0.55, halfW - 0.55]) {
       addPost({ group, colliders, x, z, h: WALL_PLATE_Y + 0.15, name: `Post ${x}_${z}` });
     }
+    // Inner posts — every other bay, up to the collar so they hold the
+    // horizontal cross-beam that ties the rafters.
     if (Math.round(z / POST_SPACING) % 2 === 0) {
-      addPost({ group, colliders, x: -4.5, z, h: SOLID_WALL_H + 0.2, name: `Inner Post L ${z}` });
-      addPost({ group, colliders, x: 4.5, z, h: SOLID_WALL_H + 0.2, name: `Inner Post R ${z}` });
+      addPost({ group, colliders, x: -innerPostX, z, h: collarY + 0.12, name: `Inner Post L ${z}` });
+      addPost({ group, colliders, x: innerPostX, z, h: collarY + 0.12, name: `Inner Post R ${z}` });
     }
 
     // Ridge beam segment
@@ -681,18 +894,20 @@ function addTimberFrame({ group, colliders, halfW }) {
       collider: false,
     });
 
-    // Collar tie below ridge (horizontal)
+    // Collar beam — horizontal, parallel to ground, rafter-to-rafter. Sits on
+    // the inner posts (when present) and meets both rafters so it actually
+    // ties the roof instead of floating under the ridge.
     addBox({
       group,
       colliders: null,
       name: `Collar ${z}`,
       cx: 0,
-      cy: WALL_PLATE_Y + rise * 0.42,
+      cy: collarY,
       cz: z,
-      sx: HALL_WIDTH * 0.55,
-      sy: 0.2,
-      sz: 0.26,
-      material: darkTimberMat,
+      sx: collarHalfX * 2 + 0.35,
+      sy: 0.22,
+      sz: 0.28,
+      material: beamMat,
       collider: false,
     });
 
@@ -701,7 +916,7 @@ function addTimberFrame({ group, colliders, halfW }) {
       const midX = side * (run * 0.5);
       const midY = WALL_PLATE_Y + rise * 0.5;
       const rafter = new THREE.Mesh(
-        new THREE.BoxGeometry(rafterLen, 0.2, 0.26),
+        prepareBoxGeometry(rafterLen, 0.22, 0.28, beamMat),
         beamMat,
       );
       rafter.name = `Rafter ${side}_${z}`;
@@ -713,40 +928,38 @@ function addTimberFrame({ group, colliders, halfW }) {
       rafter.receiveShadow = true;
       group.add(rafter);
 
-      // Angle strut (web) from wall plate up toward ridge — not inverted
-      const strutLen = rafterLen * 0.42;
+      // Web strut: wall-plate area up into the collar / rafter intersection.
+      const strutLen = rafterLen * 0.4;
       const strut = new THREE.Mesh(
-        new THREE.BoxGeometry(strutLen, 0.14, 0.16),
-        darkTimberMat,
+        prepareBoxGeometry(strutLen, 0.14, 0.16, beamMat),
+        beamMat,
       );
       strut.name = `Strut ${side}_${z}`;
-      // Sits under the rafter, from ~1/4 span up to collar line
-      const strutMidX = side * (run * 0.32);
-      const strutMidY = WALL_PLATE_Y + rise * 0.28;
+      const strutMidX = side * (run * (1 - collarT * 0.55) * 0.55);
+      const strutMidY = WALL_PLATE_Y + rise * collarT * 0.55;
       strut.position.set(strutMidX, strutMidY, z);
-      // Steeper than rafter, still eave-low → ridge-high
-      strut.rotation.z = -side * (pitch + 0.22);
+      strut.rotation.z = -side * (pitch + 0.18);
       strut.castShadow = true;
       strut.receiveShadow = true;
       group.add(strut);
     }
 
-    // King post under ridge
+    // King post: ridge down onto the collar (supported load path).
     addBox({
       group,
       colliders: null,
       name: `King ${z}`,
       cx: 0,
-      cy: (WALL_PLATE_Y + rise * 0.42 + RIDGE_Y) * 0.5,
+      cy: (collarY + RIDGE_Y) * 0.5,
       cz: z,
-      sx: 0.18,
-      sy: (RIDGE_Y - (WALL_PLATE_Y + rise * 0.42)) * 0.9,
-      sz: 0.18,
-      material: darkTimberMat,
+      sx: 0.2,
+      sy: Math.max(0.4, RIDGE_Y - collarY - 0.1),
+      sz: 0.2,
+      material: beamMat,
       collider: false,
     });
 
-    // Metal connector plate
+    // Metal connector plate at ridge joint
     addBox({
       group,
       colliders: null,
@@ -757,7 +970,7 @@ function addTimberFrame({ group, colliders, halfW }) {
       sx: 0.55,
       sy: 0.08,
       sz: 0.4,
-      material: metalMat,
+      material: pillarMat,
       collider: false,
     });
   }
@@ -776,24 +989,108 @@ function addTimberFrame({ group, colliders, halfW }) {
     material: beamMat,
     collider: false,
   });
+
+  // Continuous longitudinal beams on the inner-post lines at collar height —
+  // the posts hold these up; collars and purlins land on them.
+  const centerZ = (COURSE_MIN_Z + COURSE_MAX_Z) * 0.5;
+  const spanZ = COURSE_MAX_Z - COURSE_MIN_Z - 1.2;
+  for (const side of [-1, 1]) {
+    addBox({
+      group,
+      colliders: null,
+      name: `Collar Rail ${side > 0 ? 'E' : 'W'}`,
+      cx: side * innerPostX,
+      cy: collarY,
+      cz: centerZ,
+      sx: 0.24,
+      sy: 0.2,
+      sz: spanZ,
+      material: beamMat,
+      collider: false,
+    });
+  }
+
+  // Level purlins under the metal roof — rest on rafters, carry the deck.
+  addRoofPurlins({ group, halfW, rise, run });
+}
+
+/**
+ * Level steel purlins under the gable roof (constant Y, run along +Z).
+ * Positioned on the same pitch line as the metal deck so they actually seat
+ * the roof instead of floating in open air.
+ *
+ * Fractions are eave → ridge (0 = wall plate, 1 = ridge).
+ */
+function addRoofPurlins({ group, halfW, rise, run }) {
+  const centerZ = (COURSE_MIN_Z + COURSE_MAX_Z) * 0.5;
+  const spanZ = COURSE_MAX_Z - COURSE_MIN_Z - 1.2;
+  // Two purlin lines per pitch between eave and ridge (collar rail handles mid).
+  const fractions = [0.2, 0.62];
+  const purlinW = 0.22;
+  const purlinH = 0.18;
+  // Deck centreline sits ~+0.12 above the ideal pitch; underside is a bit lower.
+  // Seat purlin tops against that underside.
+  const roofLift = 0.05;
+
+  for (const side of [-1, 1]) {
+    for (let i = 0; i < fractions.length; i += 1) {
+      const t = fractions[i];
+      // Same pitch line as rafters / metal deck (eave at |x|=run, ridge at 0).
+      const x = side * run * (1 - t);
+      const yRoof = WALL_PLATE_Y + rise * t + roofLift;
+      const y = yRoof - purlinH * 0.5 - 0.04;
+      addBox({
+        group,
+        colliders: null,
+        name: `Roof Purlin ${side > 0 ? 'E' : 'W'}_${i}`,
+        cx: x,
+        cy: y,
+        cz: centerZ,
+        sx: purlinW,
+        sy: purlinH,
+        sz: spanZ,
+        material: pillarMat,
+        collider: false,
+      });
+    }
+  }
+
+  // Eave purlin on the wall plate — rafter feet land on this continuous rail.
+  for (const side of [-1, 1]) {
+    addBox({
+      group,
+      colliders: null,
+      name: `Eave Purlin ${side > 0 ? 'E' : 'W'}`,
+      cx: side * (halfW - 0.55),
+      cy: WALL_PLATE_Y + 0.08,
+      cz: centerZ,
+      sx: 0.26,
+      sy: 0.2,
+      sz: spanZ,
+      material: pillarMat,
+      collider: false,
+    });
+  }
 }
 
 /**
  * Solid gable roof deck over both pitches (covered).
  */
 function addCoveredRoof({ group, colliders, halfW, centerZ, length }) {
+  // Same pitch line as rafters / purlins so the deck sits on the frame.
   const rise = RIDGE_Y - WALL_PLATE_Y;
-  const run = halfW + 0.45;
+  const run = halfW + 0.35; // slight eave overhang past the wall plate
   const pitch = Math.atan2(rise, halfW);
-  const panelLen = Math.hypot(run, rise) + 0.3;
+  const panelLen = Math.hypot(run, rise) + 0.25;
   const panelDepth = length + 1.2;
 
   for (const side of [-1, 1]) {
     const midX = side * (halfW * 0.5);
-    const midY = WALL_PLATE_Y + rise * 0.5 + 0.12;
-    // Outer deck
+    // Slightly above the ideal pitch so purlin tops tuck under the deck.
+    const midY = WALL_PLATE_Y + rise * 0.5 + 0.1;
+    // Outer corrugated metal deck
     const deck = new THREE.Mesh(
-      new THREE.BoxGeometry(panelLen, 0.14, panelDepth),
+      prepareBoxGeometry(panelLen, 0.14, panelDepth, roofMat, METAL_TEXTURE_TILE_M),
       roofMat,
     );
     deck.name = `Roof Deck ${side}`;
@@ -803,9 +1100,9 @@ function addCoveredRoof({ group, colliders, halfW, centerZ, length }) {
     deck.receiveShadow = true;
     group.add(deck);
 
-    // Underside planking (slightly inset)
+    // Inside metal roof (slightly inset underside)
     const under = new THREE.Mesh(
-      new THREE.BoxGeometry(panelLen * 0.98, 0.06, panelDepth * 0.98),
+      prepareBoxGeometry(panelLen * 0.98, 0.06, panelDepth * 0.98, roofUndersideMat, METAL_TEXTURE_TILE_M),
       roofUndersideMat,
     );
     under.name = `Roof Under ${side}`;
@@ -824,6 +1121,7 @@ function addCoveredRoof({ group, colliders, halfW, centerZ, length }) {
       maxZ: COURSE_MAX_Z + 0.5,
       bottomY: WALL_PLATE_Y + 0.4,
       topY: RIDGE_Y + 0.35,
+      surfaceClass: 'metal',
       noGroundSnap: true,
     });
   }
@@ -839,7 +1137,7 @@ function addCoveredRoof({ group, colliders, halfW, centerZ, length }) {
     sx: 0.55,
     sy: 0.2,
     sz: panelDepth,
-    material: metalMat,
+    material: pillarMat,
     collider: false,
   });
 
@@ -1011,220 +1309,211 @@ function addPost({ group, colliders, x, z, h, name }) {
     sx: 0.38,
     sy: h,
     sz: 0.38,
-    material: darkTimberMat,
+    material: pillarMat,
     collider: true,
+    surfaceClass: 'metal',
   });
-  // Base block
+  // Collision ballast under the decorative base plate (thin, mostly covered).
   addBox({
     group,
     colliders,
     name: `${name} Base`,
     cx: x,
-    cy: 0.12,
+    cy: 0.08,
     cz: z,
-    sx: 0.7,
-    sy: 0.24,
-    sz: 0.7,
-    material: beamMat,
+    sx: 0.72,
+    sy: 0.16,
+    sz: 0.72,
+    material: pillarMat,
     collider: true,
+    surfaceClass: 'metal',
   });
+  // Transparent pillar-end plate cards (alpha-cut atlas) at the foot of the post.
+  addPillarEndMeshes(group, x, z, name);
 }
 
+/**
+ * Two crossed double-sided cards of the pillar-end atlas at the post foot.
+ * Alpha-tested so only the rust base plate + stump silhouette remains.
+ */
+function addPillarEndMeshes(group, x, z, name) {
+  const w = 0.95;
+  const h = 0.78;
+  const geo = new THREE.PlaneGeometry(w, h);
+  for (const [i, yaw] of [0, Math.PI * 0.5].entries()) {
+    const mesh = new THREE.Mesh(geo, pillarEndMat);
+    mesh.name = `${name} End ${i}`;
+    mesh.position.set(x, h * 0.48, z);
+    mesh.rotation.y = yaw;
+    mesh.castShadow = false;
+    mesh.receiveShadow = true;
+    mesh.renderOrder = 3;
+    // Alpha cards must not join the opaque static merge batch.
+    mesh.userData.skipLevelRaycast = true;
+    group.add(mesh);
+  }
+}
+
+/**
+ * Place chevron-arrow floor decals on both sides of every breach door so the
+ * arrows converge inward toward the doorway.
+ *
+ * For X-axis doors (cross walls spanning X, player walks through along Z):
+ *   • South side (z < door.z): arrows should point toward +Z → use normal tex
+ *   • North side (z > door.z): arrows should point toward −Z → use flipped tex
+ * For Z-axis doors (side walls spanning Z, player walks through along X):
+ *   • West side (x < door.x): arrows should point toward +X → use normal tex
+ *   • East side (x > door.x): arrows should point toward −X → use flipped tex
+ *
+ * The SVG chevrons point to the right (+U). A PlaneGeometry lies flat (rotated
+ * −90° about X) with local +X → world +X and local +Y → world +Z.
+ * For X-axis doors the plane is additionally rotated 90° about Y so local +X
+ * runs along world +Z and the chevrons follow the approach direction.
+ */
+const BREACH_DECAL_W = 1.8;
+const BREACH_DECAL_D = 0.9;
+const BREACH_DECAL_Y = 0.015;
+const BREACH_DECAL_OFFSET = 1.2;
+
+function addBreachArrowDecals({ group }) {
+  const geo = new THREE.PlaneGeometry(BREACH_DECAL_W, BREACH_DECAL_D);
+  for (const spec of RANGE_DOOR_SPECS) {
+    if (spec.axis === 'x') {
+      // Cross-wall door — decals straddle along Z.
+      // South decal: arrows point +Z (toward door) → normal texture.
+      const south = new THREE.Mesh(geo, breachArrowMat);
+      south.name = `BreachArrow ${spec.id} S`;
+      south.rotation.x = -Math.PI * 0.5;
+      south.rotation.z = Math.PI * 0.5;
+      south.position.set(spec.x, BREACH_DECAL_Y, spec.z - BREACH_DECAL_OFFSET);
+      south.receiveShadow = true;
+      south.castShadow = false;
+      south.renderOrder = 2;
+      south.userData.skipLevelRaycast = true;
+      group.add(south);
+      // North decal: arrows point −Z (toward door) → flipped texture.
+      const north = new THREE.Mesh(geo, breachArrowFlippedMat);
+      north.name = `BreachArrow ${spec.id} N`;
+      north.rotation.x = -Math.PI * 0.5;
+      north.rotation.z = Math.PI * 0.5;
+      north.position.set(spec.x, BREACH_DECAL_Y, spec.z + BREACH_DECAL_OFFSET);
+      north.receiveShadow = true;
+      north.castShadow = false;
+      north.renderOrder = 2;
+      north.userData.skipLevelRaycast = true;
+      group.add(north);
+    } else {
+      // Side-wall door — decals straddle along X.
+      // West decal: arrows point +X (toward door) → normal texture.
+      const west = new THREE.Mesh(geo, breachArrowMat);
+      west.name = `BreachArrow ${spec.id} W`;
+      west.rotation.x = -Math.PI * 0.5;
+      west.position.set(spec.x - BREACH_DECAL_OFFSET, BREACH_DECAL_Y, spec.z);
+      west.receiveShadow = true;
+      west.castShadow = false;
+      west.renderOrder = 2;
+      west.userData.skipLevelRaycast = true;
+      group.add(west);
+      // East decal: arrows point −X (toward door) → flipped texture.
+      const east = new THREE.Mesh(geo, breachArrowFlippedMat);
+      east.name = `BreachArrow ${spec.id} E`;
+      east.rotation.x = -Math.PI * 0.5;
+      east.position.set(spec.x + BREACH_DECAL_OFFSET, BREACH_DECAL_Y, spec.z);
+      east.receiveShadow = true;
+      east.castShadow = false;
+      east.renderOrder = 2;
+      east.userData.skipLevelRaycast = true;
+      group.add(east);
+    }
+  }
+}
+
+/**
+ * CQB shoot-house layout. Rooms progress south → north as a real breach:
+ *   Staging (z −8..12) → Reception (12..32) → Corridor + flanking Break/Records
+ *   rooms (32..54) → Warehouse floor (54..78) → Hostage room (78..92) →
+ *   Final office (92..108).
+ * Each solid divider is punched with one doorway whose gap matches a
+ * RANGE_DOOR_SPECS entry so the door system can drop a knockable leaf into it.
+ */
 function buildInteriorLayout({ group, colliders, halfW }) {
-  // Bay A partial dividers (z ~ 12–28) — interior wood walls
-  addPartitionWall({
-    group, colliders,
-    x0: -halfW + 0.4, x1: -3.2, z: 28, h: 3.4, door: null,
-    material: woodWallMat,
-  });
-  addPartitionWall({
-    group, colliders,
-    x0: 3.5, x1: halfW - 0.4, z: 28, h: 3.4, door: null,
-    material: woodWall2Mat,
-  });
-  // Center doorway gap at z=28 remains open (−3.2..3.5)
+  const INNER = halfW - 0.4;
+  const H = 3.6;
 
-  // West storage alcove walls
+  // D1 — reception front wall (full width, centred door).
   addPartitionWall({
-    group, colliders,
-    x0: -halfW + 0.4, x1: -halfW + 5.5, z: 18, h: 3.0,
-    material: woodWallMat,
-  });
-  addBox({
-    group,
-    colliders,
-    name: 'West Alcove Side',
-    cx: -halfW + 5.5,
-    cy: 1.5,
-    cz: 21,
-    sx: 0.28,
-    sy: 3.0,
-    sz: 6.5,
-    material: woodWall2Mat,
-    collider: true,
+    group, colliders, x0: -INNER, x1: INNER, z: 12, h: H,
+    doorX: 0, doorW: DOOR_W, material: woodWallMat,
   });
 
-  // East storage alcove
-  addBox({
-    group,
-    colliders,
-    name: 'East Alcove Side',
-    cx: halfW - 5.2,
-    cy: 1.55,
-    cz: 22,
-    sx: 0.28,
-    sy: 3.1,
-    sz: 8.0,
-    material: woodWallMat,
-    collider: true,
+  // D2 — corridor mouth, then the corridor's two spine walls (z 32..54) each
+  // with a side door into the flanking rooms.
+  addPartitionWall({
+    group, colliders, x0: -INNER, x1: INNER, z: 32, h: H,
+    doorX: 0, doorW: DOOR_W, material: woodWall2Mat,
+  });
+  addZWallWithDoor({
+    group, colliders, x: -2.8, z0: 32, z1: 54, doorZ: 44, doorW: DOOR_W_SIDE,
+    h: H, material: woodWallMat,
+  });
+  addZWallWithDoor({
+    group, colliders, x: 2.8, z0: 32, z1: 54, doorZ: 44, doorW: DOOR_W_SIDE,
+    h: H, material: woodWall2Mat,
   });
 
-  // Split corridor spine (z 32–50) with staggered openings
-  addBox({
-    group,
-    colliders,
-    name: 'Spine Wall North',
-    cx: -1.2,
-    cy: 1.7,
-    cz: 36,
-    sx: 0.3,
-    sy: 3.4,
-    sz: 10,
-    material: woodWallMat,
-    collider: true,
-  });
-  addBox({
-    group,
-    colliders,
-    name: 'Spine Wall South',
-    cx: 1.8,
-    cy: 1.7,
-    cz: 46,
-    sx: 0.3,
-    sy: 3.4,
-    sz: 10,
-    material: woodWall2Mat,
-    collider: true,
-  });
-  // Cross walls with doors
+  // D3 — warehouse floor threshold (slightly wider single leaf).
   addPartitionWall({
-    group, colliders,
-    x0: -halfW + 0.5, x1: -1.4, z: 41, h: 3.2, doorX: -7, doorW: 2.4,
-    material: woodWallMat,
-  });
-  addPartitionWall({
-    group, colliders,
-    x0: 2.0, x1: halfW - 0.5, z: 41, h: 3.2, doorX: 7.5, doorW: 2.4,
-    material: woodWall2Mat,
+    group, colliders, x0: -INNER, x1: INNER, z: 54, h: H + 0.3,
+    doorX: 0, doorW: DOOR_W_WAREHOUSE, material: woodWallMat,
   });
 
-  // Storage maze (z 52–72)
-  const mazeWalls = [
-    { cx: -6, cz: 54, sx: 10, sz: 0.3, h: 3.0 },
-    { cx: 5, cz: 54, sx: 8, sz: 0.3, h: 3.0 },
-    { cx: -3, cz: 58, sx: 0.3, sz: 7, h: 3.1 },
-    { cx: 4, cz: 60, sx: 0.3, sz: 8, h: 3.1 },
-    { cx: -9, cz: 62, sx: 0.3, sz: 6, h: 2.9 },
-    { cx: 9, cz: 63, sx: 0.3, sz: 7, h: 2.9 },
-    { cx: -5, cz: 66, sx: 9, sz: 0.3, h: 3.0 },
-    { cx: 6, cz: 68, sx: 10, sz: 0.3, h: 3.0 },
-    { cx: 0, cz: 70, sx: 0.3, sz: 5.5, h: 3.2 },
-  ];
-  for (let i = 0; i < mazeWalls.length; i += 1) {
-    const w = mazeWalls[i];
-    addBox({
-      group,
-      colliders,
-      name: `Maze Wall ${i}`,
-      cx: w.cx,
-      cy: w.h * 0.5,
-      cz: w.cz,
-      sx: w.sx,
-      sy: w.h,
-      sz: w.sz,
-      material: i % 2 === 0 ? woodWallMat : woodWall2Mat,
-      collider: true,
-    });
-  }
-
-  // Cross-hall partial walls (z 74–90)
+  // D4 — hostage room (door pushed off-centre so entry is an angled cut).
   addPartitionWall({
-    group, colliders,
-    x0: -halfW + 0.5, x1: -2.5, z: 76, h: 3.3, doorX: -8, doorW: 2.6,
-    material: woodWall2Mat,
-  });
-  addPartitionWall({
-    group, colliders,
-    x0: 2.5, x1: halfW - 0.5, z: 76, h: 3.3, doorX: 8, doorW: 2.6,
-    material: woodWallMat,
-  });
-  addBox({
-    group,
-    colliders,
-    name: 'Cross Bay West',
-    cx: -halfW + 4.5,
-    cy: 1.45,
-    cz: 84,
-    sx: 0.28,
-    sy: 2.9,
-    sz: 9,
-    material: woodWallMat,
-    collider: true,
-  });
-  addBox({
-    group,
-    colliders,
-    name: 'Cross Bay East',
-    cx: halfW - 4.5,
-    cy: 1.45,
-    cz: 85,
-    sx: 0.28,
-    sy: 2.9,
-    sz: 10,
-    material: woodWall2Mat,
-    collider: true,
+    group, colliders, x0: -INNER, x1: INNER, z: 78, h: H,
+    doorX: -4, doorW: DOOR_W, material: woodWall2Mat,
   });
 
-  // Final chamber threshold
+  // D5 — final office.
   addPartitionWall({
-    group, colliders,
-    x0: -halfW + 0.5, x1: -2.8, z: 92, h: 3.5, door: null,
-    material: woodWallMat,
+    group, colliders, x0: -INNER, x1: INNER, z: 92, h: H,
+    doorX: 4, doorW: DOOR_W, material: woodWallMat,
   });
-  addPartitionWall({
-    group, colliders,
-    x0: 2.8, x1: halfW - 0.5, z: 92, h: 3.5, door: null,
-    material: woodWall2Mat,
-  });
-
-  // Low timber barricades / workbenches (partial cover)
-  const benches = [
-    { x: -8, z: 12, w: 3.2, d: 0.7, h: 1.05 },
-    { x: 9, z: 32, w: 2.8, d: 0.65, h: 1.0 },
-    { x: -5, z: 50, w: 3.5, d: 0.7, h: 1.1 },
-    { x: 7, z: 74, w: 3.0, d: 0.7, h: 1.05 },
-    { x: -6, z: 96, w: 2.6, d: 0.65, h: 1.0 },
-  ];
-  for (let i = 0; i < benches.length; i += 1) {
-    const b = benches[i];
-    addBox({
-      group,
-      colliders,
-      name: `Work Bench ${i}`,
-      cx: b.x,
-      cy: b.h * 0.5,
-      cz: b.z,
-      sx: b.w,
-      sy: b.h,
-      sz: b.d,
-      material: plankMat,
-      collider: true,
-    });
-  }
 }
+
+/**
+ * Wall running along +Z at constant x, with a doorway gap centred on doorZ.
+ * Mirror of addPartitionWall for the corridor's side walls.
+ */
+function addZWallWithDoor({ group, colliders, x, z0, z1, doorZ, doorW, h, material }) {
+  const leftMax = doorZ - doorW * 0.5;
+  const rightMin = doorZ + doorW * 0.5;
+  if (leftMax > z0 + 0.2) {
+    const d = leftMax - z0;
+    addBox({
+      group, colliders, name: `ZWall ${x}_${z0}`,
+      cx: x, cy: h * 0.5, cz: z0 + d * 0.5,
+      sx: WALL_T * 0.9, sy: h, sz: d, material, collider: true,
+    });
+  }
+  if (rightMin < z1 - 0.2) {
+    const d = z1 - rightMin;
+    addBox({
+      group, colliders, name: `ZWall ${x}_${z1}`,
+      cx: x, cy: h * 0.5, cz: rightMin + d * 0.5,
+      sx: WALL_T * 0.9, sy: h, sz: d, material, collider: true,
+    });
+  }
+  addBox({
+    group, colliders, name: `ZWall Lintel ${x}_${doorZ}`,
+    cx: x, cy: DOOR_CLEAR_H + (h - DOOR_CLEAR_H) * 0.5, cz: doorZ,
+    sx: WALL_T * 0.85, sy: Math.max(0.3, h - DOOR_CLEAR_H), sz: doorW + 0.2,
+    material: darkTimberMat, collider: true, noGroundSnap: true,
+  });
+}
+
 
 function addPartitionWall({
-  group, colliders, x0, x1, z, h, doorX = null, doorW = 2.3, material = woodWallMat,
+  group, colliders, x0, x1, z, h, doorX = null, doorW = DOOR_W, material = woodWallMat,
 }) {
   const mid = (x0 + x1) * 0.5;
   const fullW = x1 - x0;
@@ -1282,16 +1571,16 @@ function addPartitionWall({
       collider: true,
     });
   }
-  // Lintel
+  // Lintel sits just above the tall door leaf clear height.
   addBox({
     group,
     colliders,
     name: `Partition Lintel ${z}`,
     cx: doorX,
-    cy: 2.35 + (h - 2.35) * 0.5,
+    cy: DOOR_CLEAR_H + (h - DOOR_CLEAR_H) * 0.5,
     cz: z,
     sx: doorW + 0.2,
-    sy: Math.max(0.3, h - 2.35),
+    sy: Math.max(0.3, h - DOOR_CLEAR_H),
     sz: WALL_T * 0.85,
     material: darkTimberMat,
     collider: true,
@@ -1300,56 +1589,73 @@ function addPartitionWall({
 }
 
 function placeCover({ group, colliders }) {
-  const crates = [
-    { x: -9.5, z: 8, s: [1.6, 1.2, 1.4] },
-    { x: 8.5, z: 11, s: [1.8, 1.0, 1.3] },
-    { x: 4.0, z: 16, s: [1.3, 1.5, 1.2] },
-    { x: -11, z: 20, s: [1.4, 1.3, 2.2] },
-    { x: 10.5, z: 24, s: [1.5, 1.6, 1.4] },
-    { x: -7, z: 30, s: [1.7, 1.1, 1.5] },
-    { x: 6, z: 35, s: [1.4, 1.4, 1.8] },
-    { x: -3, z: 39, s: [2.2, 0.95, 1.3] },
-    { x: 10, z: 48, s: [1.5, 1.3, 1.5] },
-    { x: -10, z: 52, s: [1.6, 1.2, 1.4] },
-    { x: 2, z: 56, s: [1.3, 1.5, 1.3] },
-    { x: -6, z: 60, s: [1.8, 1.1, 1.6] },
-    { x: 8, z: 65, s: [1.4, 1.4, 1.4] },
-    { x: -11, z: 70, s: [1.5, 1.0, 1.5] },
-    { x: 5, z: 78, s: [1.7, 1.3, 1.5] },
-    { x: -8, z: 82, s: [1.4, 1.5, 1.3] },
-    { x: 11, z: 88, s: [1.5, 1.2, 1.6] },
-    { x: -5, z: 94, s: [1.6, 1.1, 1.4] },
-    { x: 4, z: 98, s: [1.3, 1.6, 1.3] },
-    { x: -9, z: 101, s: [1.4, 1.0, 1.2] },
+  const furniture = [
+    // Staging bay — a couple of shipping crates to break up the empty approach.
+    { name: 'Staging Crate L', x: -9.5, z: 4, w: 1.6, d: 1.4, h: 1.3, mat: crateMat },
+    { name: 'Staging Crate R', x: 9.0, z: 6, w: 1.8, d: 1.3, h: 1.1, mat: crateMat },
+
+    // Reception — front counter (cover in front of the desk shooter), a filing
+    // cabinet east, a low bench by the west-corner civilian.
+    { name: 'Reception Counter', x: -2, z: 25, w: 9, d: 0.7, h: 1.05, mat: plankMat },
+    { name: 'Reception Cabinet', x: 11.6, z: 24, w: 1.6, d: 0.7, h: 1.5, mat: metalMat },
+    { name: 'Reception Bench', x: -12, z: 21, w: 1.0, d: 2.6, h: 0.5, mat: crateMat },
+
+    // West break room — table + wall lockers.
+    { name: 'Break Table', x: -9, z: 45, w: 2.6, d: 1.2, h: 0.9, mat: plankMat },
+    { name: 'Break Lockers', x: -13, z: 39, w: 0.6, d: 3.4, h: 2.0, mat: metalMat },
+
+    // East records room — tall shelving row + work table.
+    { name: 'Records Shelf', x: 12, z: 40, w: 0.6, d: 4.4, h: 2.2, mat: darkTimberMat },
+    { name: 'Records Table', x: 6, z: 50, w: 3.0, d: 0.7, h: 0.95, mat: plankMat },
+
+    // Warehouse floor — shelving lanes; the west shelf half-masks the worker so
+    // the player has to positively ID before firing.
+    { name: 'Ware Shelf A', x: -6, z: 60, w: 3.2, d: 0.7, h: 2.2, mat: darkTimberMat },
+    { name: 'Ware Shelf B', x: 6, z: 64, w: 3.2, d: 0.7, h: 2.2, mat: darkTimberMat },
+    { name: 'Ware Shelf C', x: -9, z: 73, w: 0.7, d: 3.2, h: 2.0, mat: darkTimberMat },
+    { name: 'Ware Shelf D', x: 10, z: 68, w: 0.7, d: 3.2, h: 2.0, mat: darkTimberMat },
+    { name: 'Ware Crate 1', x: -1, z: 62, w: 1.5, d: 1.4, h: 1.0, mat: crateMat },
+    { name: 'Ware Crate 2', x: 3, z: 72, w: 1.6, d: 1.4, h: 1.3, mat: crateMat },
+
+    // Hostage room — a single crate by the flanker; the sightline to the hostage
+    // stays open from the offset doorway.
+    { name: 'Hostage Crate', x: -10.5, z: 82, w: 1.6, d: 1.4, h: 1.2, mat: crateMat },
+
+    // Final office — desks (the east desk shields the surrendering civilian) and
+    // a back-wall cabinet.
+    { name: 'Office Desk W', x: -6, z: 101, w: 2.6, d: 1.1, h: 0.95, mat: plankMat },
+    { name: 'Office Desk E', x: 9.3, z: 97.5, w: 2.4, d: 1.0, h: 0.95, mat: plankMat },
+    { name: 'Office Desk C', x: 0, z: 105, w: 2.6, d: 1.1, h: 0.95, mat: plankMat },
+    { name: 'Office Cabinet', x: -12.4, z: 104, w: 0.7, d: 2.6, h: 1.6, mat: metalMat },
   ];
-  for (let i = 0; i < crates.length; i += 1) {
-    const c = crates[i];
+
+  for (const f of furniture) {
     addBox({
       group,
       colliders,
-      name: `Crate ${i + 1}`,
-      cx: c.x,
-      cy: c.s[1] * 0.5,
-      cz: c.z,
-      sx: c.s[0],
-      sy: c.s[1],
-      sz: c.s[2],
-      material: crateMat,
+      name: f.name,
+      cx: f.x,
+      cy: f.h * 0.5,
+      cz: f.z,
+      sx: f.w,
+      sy: f.h,
+      sz: f.d,
+      material: f.mat,
       collider: true,
     });
   }
 
-  // Pallet stacks (low cover)
+  // A few low pallet stacks scattered for silhouette variety (visual planks over
+  // one combined low collider).
   const pallets = [
-    { x: -4, z: 14 }, { x: 11, z: 36 }, { x: -2, z: 48 },
-    { x: 7, z: 70 }, { x: -10, z: 90 }, { x: 2, z: 102 },
+    { x: -12, z: 6 }, { x: 12, z: 58 }, { x: -12, z: 96 },
   ];
   for (let i = 0; i < pallets.length; i += 1) {
     const p = pallets[i];
     for (let layer = 0; layer < 3; layer += 1) {
       addBox({
         group,
-        colliders,
+        colliders: null,
         name: `Pallet ${i}_${layer}`,
         cx: p.x,
         cy: 0.1 + layer * 0.22,
@@ -1361,7 +1667,6 @@ function placeCover({ group, colliders }) {
         collider: false,
       });
     }
-    // Combined collider for stack
     colliders.push({
       name: `Pallet Stack ${i}`,
       minX: p.x - 0.7,
@@ -1370,29 +1675,6 @@ function placeCover({ group, colliders }) {
       maxZ: p.z + 0.6,
       bottomY: 0,
       topY: 0.7,
-    });
-  }
-
-  // Tall timber stacks (visual + collider)
-  const stacks = [
-    { x: 11.5, z: 55, h: 2.4 },
-    { x: -11.2, z: 40, h: 2.1 },
-    { x: 10.8, z: 95, h: 2.6 },
-  ];
-  for (let i = 0; i < stacks.length; i += 1) {
-    const s = stacks[i];
-    addBox({
-      group,
-      colliders,
-      name: `Timber Stack ${i}`,
-      cx: s.x,
-      cy: s.h * 0.5,
-      cz: s.z,
-      sx: 1.8,
-      sy: s.h,
-      sz: 1.2,
-      material: darkTimberMat,
-      collider: true,
     });
   }
 }
@@ -1440,10 +1722,14 @@ function applyWorldSpaceBoxUVs(geometry, sx, sy, sz, tileMeters = WALL_TEXTURE_T
  * Build a box for range meshes. PBR wall materials get world-space UVs + uv2 for aoMap.
  * Non-PBR materials stay on default UVs so they still merge with raw BoxGeometry siblings.
  */
-function prepareBoxGeometry(sx, sy, sz, material) {
+function prepareBoxGeometry(sx, sy, sz, material, tileMeters = null) {
   const geometry = new THREE.BoxGeometry(sx, sy, sz);
   if (material?.map || material?.aoMap || material?.normalMap) {
-    applyWorldSpaceBoxUVs(geometry, sx, sy, sz, WALL_TEXTURE_TILE_M);
+    const tile = tileMeters
+      ?? (material === pillarMat || material === roofMat || material === roofUndersideMat
+        ? METAL_TEXTURE_TILE_M
+        : WALL_TEXTURE_TILE_M);
+    applyWorldSpaceBoxUVs(geometry, sx, sy, sz, tile);
   }
   if (material?.aoMap) ensureAoUv2(geometry);
   return geometry;
@@ -1462,6 +1748,7 @@ function addBox({
   material,
   collider,
   noGroundSnap = false,
+  surfaceClass = null,
 }) {
   const mesh = new THREE.Mesh(prepareBoxGeometry(sx, sy, sz, material), material);
   mesh.name = name;
@@ -1479,10 +1766,26 @@ function addBox({
       maxZ: cz + sz * 0.5,
       bottomY: cy - sy * 0.5,
       topY: cy + sy * 0.5,
+      surfaceClass: surfaceClass ?? rangeSurfaceForMaterial(material),
       ...(noGroundSnap ? { noGroundSnap: true } : {}),
     });
   }
   return mesh;
+}
+
+function rangeSurfaceForMaterial(material) {
+  if ([plankMat, woodWallMat, woodWall2Mat, crateMat, palletMat].includes(material)) {
+    return 'wood';
+  }
+  if ([
+    metalMat, mullionMat, pillarMat, beamMat, darkTimberMat,
+    roofMat, roofUndersideMat, pillarEndMat,
+    dangerStripeMat, friendlyStripeMat,
+  ].includes(material)) {
+    return 'metal';
+  }
+  if (material === glassMat) return 'glass';
+  return 'concrete';
 }
 
 /**

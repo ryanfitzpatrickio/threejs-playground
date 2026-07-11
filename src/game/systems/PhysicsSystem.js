@@ -531,11 +531,12 @@ export class PhysicsSystem {
     const hasTerrain = !!(level && level.terrainChunks && level.terrainChunks.length > 0);
     const fallbackFloorY = hasTerrain ? -24 : -0.05;
     const floorBody = this.world.createRigidBody(this.RAPIER.RigidBodyDesc.fixed());
-    this.world.createCollider(
+    const floorCollider = this.world.createCollider(
       this.RAPIER.ColliderDesc.cuboid(GAME_CONFIG.world.planeSize * 0.5, 0.05, GAME_CONFIG.world.planeSize * 0.5)
         .setTranslation(0, fallbackFloorY, 0),
       floorBody,
     );
+    tagColliderSurface(floorCollider, 'soil');
     this.registerStaticBody(floorBody, null);
 
     for (const collider of level.colliders ?? []) {
@@ -643,7 +644,8 @@ export class PhysicsSystem {
       const desc = this.RAPIER.ColliderDesc.cuboid(he.x, he.y, he.z)
         .setTranslation(c.x, c.y, c.z)
         .setRotation(collider.orientation);
-      this.world.createCollider(desc, body);
+      const rapierCollider = this.world.createCollider(desc, body);
+      tagColliderSurface(rapierCollider, collider.surfaceClass ?? inferColliderSurface(collider));
       this.registerStaticBody(body, ownerKey);
       return true;
     }
@@ -658,6 +660,7 @@ export class PhysicsSystem {
       .setTranslation(centerX, centerY, centerZ);
 
     const rapierCollider = this.world.createCollider(desc, body);
+    tagColliderSurface(rapierCollider, collider.surfaceClass ?? inferColliderSurface(collider));
     if (collider.interactive) collider.rapierCollider = rapierCollider;
     this.registerStaticBody(body, ownerKey);
     return true;
@@ -731,7 +734,8 @@ export class PhysicsSystem {
       desc.setContactSkin(0.012);
 
       const body = this.world.createRigidBody(this.RAPIER.RigidBodyDesc.fixed());
-      this.world.createCollider(desc, body);
+      const rapierCollider = this.world.createCollider(desc, body);
+      tagColliderSurface(rapierCollider, collider.surfaceClass ?? inferColliderSurface(collider));
       this.registerStaticBody(body, ownerKey);
       return true;
     } catch (err) {
@@ -824,7 +828,8 @@ export class PhysicsSystem {
       desc.setRestitution(0.0);
       desc.setContactSkin(0.012);
 
-      this.world.createCollider(desc, body);
+      const rapierCollider = this.world.createCollider(desc, body);
+      tagColliderSurface(rapierCollider, 'soil');
       this.registerStaticBody(body, ownerKey);
     } catch (err) {
       // If heightfield creation fails for any reason (e.g. bad data from old save,
@@ -852,7 +857,8 @@ export class PhysicsSystem {
       const fbDesc = this.RAPIER.ColliderDesc.cuboid(halfX, Math.max(0.05, halfY), halfZ);
       fbDesc.setFriction(0.85);
       fbDesc.setContactSkin(0.012);
-      this.world.createCollider(fbDesc, fbBody);
+      const rapierCollider = this.world.createCollider(fbDesc, fbBody);
+      tagColliderSurface(rapierCollider, 'soil');
       this.registerStaticBody(fbBody, ownerKey);
     }
   }
@@ -1068,4 +1074,18 @@ function estimateColliderCost(collider) {
     if (v && v.length) return v.length / 3;
   }
   return 1;
+}
+
+function tagColliderSurface(collider, surfaceClass) {
+  if (!collider) return;
+  collider.userData = { ...(collider.userData ?? {}), surfaceClass: surfaceClass || 'generic' };
+}
+
+function inferColliderSurface(collider) {
+  const name = String(collider?.name ?? '').toLowerCase();
+  if (name.includes('glass')) return 'glass';
+  if (name.includes('wood')) return 'wood';
+  if (name.includes('soil') || name.includes('dirt') || name.includes('terrain')) return 'soil';
+  if (name.includes('metal') || name.includes('rail') || name.includes('vehicle')) return 'metal';
+  return 'concrete';
 }

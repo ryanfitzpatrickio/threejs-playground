@@ -24,6 +24,12 @@ import {
   resetGunDebugSocket,
   snapGunDebugSocketToAnchors,
 } from '../weapons/gunDebugSocket.js';
+import {
+  bumpReloadDebugSocket,
+  logReloadDebugSocket,
+  reloadDebugSocket,
+  resetReloadDebugSocket,
+} from '../weapons/reloadDebugSocket.js';
 
 /** Local overlay state (not always in snapshot). */
 const overlayState = {
@@ -90,6 +96,7 @@ export function registerRuntimeDebug(runtime = null) {
   registerShaderDebugFolder('Third Person', { expanded: true });
   registerShaderDebugFolder('Sunglasses Socket', { expanded: true });
   registerShaderDebugFolder('Guns', { expanded: true });
+  registerShaderDebugFolder('Reload', { expanded: true });
   registerShaderDebugFolder('Look', { expanded: false });
   registerShaderDebugFolder('Weather Control', { expanded: true });
   registerShaderDebugFolder('Cloud Mode', { expanded: false });
@@ -1269,6 +1276,278 @@ export function registerRuntimeDebug(runtime = null) {
       resetGunDebugSocket();
       fpWeapons()?.handIk?.layoutGunInHand?.({ force: true });
       console.info('[gun-debug] socket reset');
+    },
+  });
+
+  // --- Reload (left-hand IK path along the magazine-change track) ---
+  registerShaderDebugParam({
+    id: 'runtime.reloadEnabled',
+    label: 'Apply path offsets',
+    folder: 'Reload',
+    type: 'bool',
+    pinPolicy: 'allow',
+    help: 'Master switch for hand position/rotation fudge and per-waypoint offsets on the reload IK path.',
+    get: () => reloadDebugSocket.enabled,
+    set: (v) => {
+      reloadDebugSocket.enabled = Boolean(v);
+      bumpReloadDebugSocket();
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'runtime.reloadScrubEnabled',
+    label: 'Scrub path',
+    folder: 'Reload',
+    type: 'bool',
+    pinPolicy: 'allow',
+    help: 'Drive the left hand along the reload path at Scrub t. Previews without reloading; while reloading, freezes the path at Scrub t (with Pin progress).',
+    get: () => reloadDebugSocket.scrubEnabled,
+    set: (v) => {
+      reloadDebugSocket.scrubEnabled = Boolean(v);
+      bumpReloadDebugSocket();
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'runtime.reloadScrubT',
+    label: 'Scrub t',
+    folder: 'Reload',
+    type: 'float',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    pinPolicy: 'allow',
+    help: 'Normalized reload progress [0,1]. 0=rest, ~0.14=grab, ~0.26=belt/drop, ~0.82=seat, 1=rest. Rifle defaults; pistol is slightly earlier.',
+    get: () => reloadDebugSocket.scrubT,
+    set: (v) => {
+      const n = Number(v);
+      reloadDebugSocket.scrubT = Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0;
+      bumpReloadDebugSocket();
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'runtime.reloadPinProgress',
+    label: 'Pin progress while scrubbing',
+    folder: 'Reload',
+    type: 'bool',
+    pinPolicy: 'allow',
+    help: 'When scrubbing during a live reload, freeze the gun timeline at Scrub t so mag drop/spawn/seat stay locked with the hand pose.',
+    get: () => reloadDebugSocket.pinProgress,
+    set: (v) => {
+      reloadDebugSocket.pinProgress = Boolean(v);
+      bumpReloadDebugSocket();
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'runtime.reloadHandPosition',
+    label: 'Hand position offset (m)',
+    folder: 'Reload',
+    type: 'vec3',
+    min: -0.35,
+    max: 0.35,
+    step: 0.005,
+    pinPolicy: 'allow',
+    help: 'Body-local meters (+X left, +Y up, +Z forward) added to the left-hand IK target after the path sample. Rotates with body yaw — not raw world axes.',
+    get: () => [...reloadDebugSocket.handPosition],
+    set: ([x, y, z]) => {
+      reloadDebugSocket.handPosition = [Number(x) || 0, Number(y) || 0, Number(z) || 0];
+      bumpReloadDebugSocket();
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'runtime.reloadHandRotation',
+    label: 'Hand rotation °',
+    folder: 'Reload',
+    type: 'vec3',
+    min: -180,
+    max: 180,
+    step: 0.5,
+    pinPolicy: 'allow',
+    help: 'Extra Euler XYZ ° on the left palm while on the reload path (applied after the support-anchor orientation). Primary control for palm twist/roll along the track.',
+    get: () => [...reloadDebugSocket.handRotationDeg],
+    set: ([x, y, z]) => {
+      reloadDebugSocket.handRotationDeg = [Number(x) || 0, Number(y) || 0, Number(z) || 0];
+      bumpReloadDebugSocket();
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'runtime.reloadMagCarryPosition',
+    label: 'Mag carry position (m)',
+    folder: 'Reload',
+    type: 'vec3',
+    min: -0.25,
+    max: 0.25,
+    step: 0.005,
+    pinPolicy: 'allow',
+    help: 'Fresh magazine pose while in the left hand (belt → seat). Hand/carrier-local meters on top of the palm insert align. Live while the mag is carried.',
+    get: () => [...reloadDebugSocket.magCarryPosition],
+    set: ([x, y, z]) => {
+      reloadDebugSocket.magCarryPosition = [Number(x) || 0, Number(y) || 0, Number(z) || 0];
+      bumpReloadDebugSocket();
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'runtime.reloadMagCarryRotation',
+    label: 'Mag carry rotation °',
+    folder: 'Reload',
+    type: 'vec3',
+    min: -180,
+    max: 180,
+    step: 0.5,
+    pinPolicy: 'allow',
+    help: 'Fresh magazine Euler XYZ ° while in the left hand (belt → seat), applied after the palm insert base. Live while the mag is carried.',
+    get: () => [...reloadDebugSocket.magCarryRotationDeg],
+    set: ([x, y, z]) => {
+      reloadDebugSocket.magCarryRotationDeg = [Number(x) || 0, Number(y) || 0, Number(z) || 0];
+      bumpReloadDebugSocket();
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'runtime.reloadRestOffset',
+    label: 'Rest waypoint offset (m)',
+    folder: 'Reload',
+    type: 'vec3',
+    min: -0.35,
+    max: 0.35,
+    step: 0.005,
+    pinPolicy: 'allow',
+    help: 'Body-local offset on the foregrip rest waypoint (t=0 and t=1).',
+    get: () => [...reloadDebugSocket.restOffset],
+    set: ([x, y, z]) => {
+      reloadDebugSocket.restOffset = [Number(x) || 0, Number(y) || 0, Number(z) || 0];
+      bumpReloadDebugSocket();
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'runtime.reloadSocketOffset',
+    label: 'Mag socket waypoint offset (m)',
+    folder: 'Reload',
+    type: 'vec3',
+    min: -0.35,
+    max: 0.35,
+    step: 0.005,
+    pinPolicy: 'allow',
+    help: 'Body-local offset on mag_socket for grab (mag_release) and seat (mag_seat).',
+    get: () => [...reloadDebugSocket.socketOffset],
+    set: ([x, y, z]) => {
+      reloadDebugSocket.socketOffset = [Number(x) || 0, Number(y) || 0, Number(z) || 0];
+      bumpReloadDebugSocket();
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'runtime.reloadExtractOffset',
+    label: 'Extract waypoint offset (m)',
+    folder: 'Reload',
+    type: 'vec3',
+    min: -0.35,
+    max: 0.35,
+    step: 0.005,
+    pinPolicy: 'allow',
+    help: 'Body-local offset on the extract point (between grab and belt).',
+    get: () => [...reloadDebugSocket.extractOffset],
+    set: ([x, y, z]) => {
+      reloadDebugSocket.extractOffset = [Number(x) || 0, Number(y) || 0, Number(z) || 0];
+      bumpReloadDebugSocket();
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'runtime.reloadBeltOffset',
+    label: 'Belt waypoint offset (m)',
+    folder: 'Reload',
+    type: 'vec3',
+    min: -0.35,
+    max: 0.35,
+    step: 0.005,
+    pinPolicy: 'allow',
+    help: 'Body-local offset on mag_belt_source (drop old / grab new mag).',
+    get: () => [...reloadDebugSocket.beltOffset],
+    set: ([x, y, z]) => {
+      reloadDebugSocket.beltOffset = [Number(x) || 0, Number(y) || 0, Number(z) || 0];
+      bumpReloadDebugSocket();
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'runtime.reloadExtractDrop',
+    label: 'Extract drop (m)',
+    folder: 'Reload',
+    type: 'float',
+    min: 0,
+    max: 0.2,
+    step: 0.005,
+    pinPolicy: 'allow',
+    help: 'Extra downward pull on the extract waypoint (default 0.035). Makes the mag pull clear of the well.',
+    get: () => reloadDebugSocket.extractDrop,
+    set: (v) => {
+      const n = Number(v);
+      reloadDebugSocket.extractDrop = Number.isFinite(n) ? Math.max(0, n) : 0.035;
+      bumpReloadDebugSocket();
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'runtime.reloadJumpBelt',
+    label: 'Jump scrub → belt',
+    folder: 'Reload',
+    type: 'action',
+    pinPolicy: 'allow',
+    help: 'Set Scrub t to ~mag_drop (0.26 rifle) and enable scrub for fitting the belt/hand-off pose.',
+    action: () => {
+      reloadDebugSocket.scrubEnabled = true;
+      reloadDebugSocket.scrubT = 0.26;
+      reloadDebugSocket.pinProgress = true;
+      bumpReloadDebugSocket();
+      console.info('[reload-debug] scrub @ belt (t=0.26)');
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'runtime.reloadJumpSeat',
+    label: 'Jump scrub → seat',
+    folder: 'Reload',
+    type: 'action',
+    pinPolicy: 'allow',
+    help: 'Set Scrub t to ~mag_seat (0.82 rifle) and enable scrub for fitting the insert pose.',
+    action: () => {
+      reloadDebugSocket.scrubEnabled = true;
+      reloadDebugSocket.scrubT = 0.82;
+      reloadDebugSocket.pinProgress = true;
+      bumpReloadDebugSocket();
+      console.info('[reload-debug] scrub @ seat (t=0.82)');
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'runtime.reloadReset',
+    label: 'Reset reload debug',
+    folder: 'Reload',
+    type: 'action',
+    pinPolicy: 'allow',
+    help: 'Clear all path offsets, hand pose fudge, and scrub back to defaults.',
+    action: () => {
+      resetReloadDebugSocket();
+      console.info('[reload-debug] reset');
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'runtime.reloadLog',
+    label: 'Log reload debug',
+    folder: 'Reload',
+    type: 'action',
+    pinPolicy: 'allow',
+    help: 'Print current hand / mag-carry / waypoint offsets as JSON for pasting into defaults.',
+    action: () => {
+      logReloadDebugSocket();
     },
   });
 

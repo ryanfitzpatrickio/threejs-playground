@@ -10,10 +10,12 @@ import * as THREE from 'three';
 import { createGun } from '../src/game/weapons/createGun.js';
 import { GUN_CATALOG, createCatalogStubProfile } from '../src/game/weapons/gunProfile.js';
 import { WeaponSystem } from '../src/game/systems/WeaponSystem.js';
+import { WeaponPresentationSystem } from '../src/game/systems/WeaponPresentationSystem.js';
 import {
   applySpread,
   bodyRegionMultiplier,
   buildPelletDirections,
+  castPhysicsRay,
   computeBulletDamage,
   HEADSHOT_MULTIPLIER,
   raycastEnemies,
@@ -31,6 +33,77 @@ import {
     const len = Math.hypot(dir.x, dir.y, dir.z);
     assert.ok(Math.abs(len - 1) < 1e-5, 'pellet dirs unit length');
   }
+}
+
+// --- World ray ignores the firing character's own capsule ---
+{
+  let excluded = null;
+  class Ray {
+    constructor(origin, dir) {
+      this.origin = origin;
+      this.dir = dir;
+    }
+  }
+  const playerCollider = { handle: 7 };
+  const physics = {
+    RAPIER: { Ray },
+    world: {
+      castRay(...args) {
+        excluded = args[5];
+        return { timeOfImpact: 3, collider: { handle: 12, userData: { surfaceClass: 'wood' } } };
+      },
+      castRayAndGetNormal() {
+        return { normal: { x: 0, y: 0, z: 1 } };
+      },
+    },
+  };
+  const hit = castPhysicsRay(physics, { x: 0, y: 1, z: 0 }, { x: 0, y: 0, z: -1 }, 30, {
+    excludeCollider: playerCollider,
+  });
+  assert.equal(excluded, playerCollider);
+  assert.equal(hit.toi, 3);
+}
+
+// --- Presentation is pooled, immediate, and leaves gameplay aim external ---
+{
+  const scene = new THREE.Scene();
+  const presentation = new WeaponPresentationSystem();
+  presentation.initialize(scene);
+  // A gun with an emissive-capable material so the self-illumination pulse has
+  // something to act on (stands in for the FP weapon meshes).
+  const gunRoot = new THREE.Group();
+  const gunMat = new THREE.MeshStandardMaterial({ emissive: 0x000000, emissiveIntensity: 0 });
+  gunRoot.add(new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.5), gunMat));
+  let impulse = null;
+  presentation.presentShot({
+    gun: createGun('rifle'),
+    muzzlePosition: new THREE.Vector3(1, 2, 3),
+    aimDirection: new THREE.Vector3(0, 0, -1),
+    cameraSystem: { addWeaponPresentationImpulse(value) { impulse = value; } },
+    gunRoot,
+    // A close world surface the shot pointed at → fake bounce glow.
+    bounce: { point: { x: 1, y: 2, z: 1 }, normal: { x: 0, y: 0, z: 1 }, distance: 2 },
+  });
+  assert.ok(impulse && impulse.pitch > 0, 'camera presentation gets an immediate recoil impulse');
+  assert.ok(gunRoot.userData.weaponKickZ > 0, 'weapon gets an immediate backward kick');
+  assert.ok(presentation.muzzleFlash.slots.some((slot) => slot.core.visible), 'muzzle flash is visible on the shot frame');
+  // Cheaper-than-a-light muzzle presentation: no dynamic PointLight; instead an
+  // emissive pulse on the gun and a projected bounce glow on the nearby surface.
+  assert.ok(!presentation.muzzleFlash.light, 'muzzle flash carries no dynamic light (bloom + emissive pulse instead)');
+  assert.ok(gunMat.emissiveIntensity > 0, 'weapon material gets an emissive self-illumination pulse');
+  assert.ok(presentation.bounceRenderer.slots.some((slot) => slot.mesh.visible), 'nearby surface catches a fake bounce glow');
+  // The pulse decays back to the material's base emissive within its window.
+  for (let i = 0; i < 8; i += 1) presentation.update({ delta: 1 / 60, gunRoot });
+  assert.equal(gunMat.emissiveIntensity, 0, 'emissive pulse restores to base after the flash');
+  presentation.presentImpact({
+    point: { x: 2, y: 1, z: -4 },
+    normal: { x: 0, y: 0, z: 1 },
+    incomingDirection: { x: 0, y: 0, z: -1 },
+    surfaceClass: 'metal',
+  });
+  assert.ok(presentation.impactRenderer.slots.some((slot) => slot.flash.visible), 'impact response is pooled and immediate');
+  assert.ok(presentation.decalRenderer.slots.some((slot) => slot.mesh.visible), 'world hit leaves a bounded decal');
+  presentation.dispose();
 }
 
 // --- Body region multipliers ---
@@ -98,6 +171,8 @@ import {
   assert.equal(result.kind, 'enemy');
   assert.ok(result.damage >= 1);
   assert.equal(result.enemy.id, 'e2');
+  assert.equal(result.surfaceClass, 'flesh');
+  assert.ok(result.normal && Number.isFinite(result.normal.x), 'hit includes a surface normal');
 }
 
 // --- BaseGun auto fire empties mag, reload refills ---

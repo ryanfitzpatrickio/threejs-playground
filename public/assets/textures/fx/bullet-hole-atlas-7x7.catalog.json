@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "image": "/assets/textures/fx/bullet-hole-atlas-7x7.png",
+  "sourceImage": "assets-source/textures/fx/bullet-hole-atlas-7x7-chroma.png",
+  "grid": {
+    "columns": 7,
+    "rows": 7,
+    "origin": "top-left",
+    "cellUvSize": [0.1428571429, 0.1428571429],
+    "insetUv": 0.012
+  },
+  "alpha": {
+    "source": "chroma-keyed",
+    "keyColor": "#37d940",
+    "similarity": 0.22,
+    "blend": 0.08
+  },
+  "frames": [
+    { "id": "concrete_01", "cell": [0, 0], "surfaceClass": "concrete", "variant": "rough-rubble" },
+    { "id": "concrete_02", "cell": [1, 0], "surfaceClass": "concrete", "variant": "gray-spall" },
+    { "id": "concrete_03", "cell": [2, 0], "surfaceClass": "concrete", "variant": "warm-aggregate" },
+    { "id": "concrete_04", "cell": [3, 0], "surfaceClass": "concrete", "variant": "dark-spall" },
+    { "id": "metal_01", "cell": [4, 0], "surfaceClass": "metal", "variant": "dark-pierced" },
+    { "id": "concrete_05", "cell": [5, 0], "surfaceClass": "concrete", "variant": "fragmented" },
+    { "id": "concrete_06", "cell": [6, 0], "surfaceClass": "concrete", "variant": "dark-crater" },
+
+    { "id": "marble_01", "cell": [0, 1], "surfaceClass": "marble", "variant": "pale-chip" },
+    { "id": "concrete_07", "cell": [1, 1], "surfaceClass": "concrete", "variant": "fine-spall" },
+    { "id": "concrete_08", "cell": [2, 1], "surfaceClass": "concrete", "variant": "warm-chip" },
+    { "id": "wood_01", "cell": [3, 1], "surfaceClass": "wood", "variant": "long-splinter" },
+    { "id": "marble_02", "cell": [4, 1], "surfaceClass": "marble", "variant": "clean-pale" },
+    { "id": "glass_01", "cell": [5, 1], "surfaceClass": "glass", "variant": "green-star" },
+    { "id": "glass_02", "cell": [6, 1], "surfaceClass": "glass", "variant": "dark-star" },
+
+    { "id": "concrete_09", "cell": [0, 2], "surfaceClass": "concrete", "variant": "wide-rubble" },
+    { "id": "metal_02", "cell": [1, 2], "surfaceClass": "metal", "variant": "rust-ring" },
+    { "id": "metal_03", "cell": [2, 2], "surfaceClass": "metal", "variant": "dark-split" },
+    { "id": "metal_04", "cell": [3, 2], "surfaceClass": "metal", "variant": "clean-ring" },
+    { "id": "wood_02", "cell": [4, 2], "surfaceClass": "wood", "variant": "heavy-splinter" },
+    { "id": "concrete_10", "cell": [5, 2], "surfaceClass": "concrete", "variant": "pale-rubble" },
+    { "id": "metal_05", "cell": [6, 2], "surfaceClass": "metal", "variant": "rusted-rim" },
+
+    { "id": "wood_03", "cell": [0, 3], "surfaceClass": "wood", "variant": "radial-splinter" },
+    { "id": "concrete_11", "cell": [1, 3], "surfaceClass": "concrete", "variant": "dark-crater" },
+    { "id": "concrete_12", "cell": [2, 3], "surfaceClass": "concrete", "variant": "loose-aggregate" },
+    { "id": "metal_06", "cell": [3, 3], "surfaceClass": "metal", "variant": "corroded" },
+    { "id": "wood_04", "cell": [4, 3], "surfaceClass": "wood", "variant": "dense-splinter" },
+    { "id": "concrete_13", "cell": [5, 3], "surfaceClass": "concrete", "variant": "fine-gray" },
+    { "id": "concrete_14", "cell": [6, 3], "surfaceClass": "concrete", "variant": "pale-fragments" },
+
+    { "id": "metal_07", "cell": [0, 4], "surfaceClass": "metal", "variant": "blue-steel" },
+    { "id": "metal_08", "cell": [1, 4], "surfaceClass": "metal", "variant": "bright-ring" },
+    { "id": "concrete_15", "cell": [2, 4], "surfaceClass": "concrete", "variant": "pebbled" },
+    { "id": "wood_05", "cell": [3, 4], "surfaceClass": "wood", "variant": "short-splinter" },
+    { "id": "concrete_16", "cell": [4, 4], "surfaceClass": "concrete", "variant": "dark-stone" },
+    { "id": "marble_03", "cell": [5, 4], "surfaceClass": "marble", "variant": "white-crack" },
+    { "id": "glass_03", "cell": [6, 4], "surfaceClass": "glass", "variant": "blue-star" },
+
+    { "id": "metal_09", "cell": [0, 5], "surfaceClass": "metal", "variant": "corroded-wide" },
+    { "id": "concrete_17", "cell": [1, 5], "surfaceClass": "concrete", "variant": "rough-gray" },
+    { "id": "wood_06", "cell": [2, 5], "surfaceClass": "wood", "variant": "star-splinter" },
+    { "id": "concrete_18", "cell": [3, 5], "surfaceClass": "concrete", "variant": "gray-rubble" },
+    { "id": "glass_04", "cell": [4, 5], "surfaceClass": "glass", "variant": "wide-star" },
+    { "id": "metal_10", "cell": [5, 5], "surfaceClass": "metal", "variant": "rust-ring-heavy" },
+    { "id": "concrete_19", "cell": [6, 5], "surfaceClass": "concrete", "variant": "tan-aggregate" },
+
+    { "id": "concrete_20", "cell": [0, 6], "surfaceClass": "concrete", "variant": "charcoal-rubble" },
+    { "id": "marble_04", "cell": [1, 6], "surfaceClass": "marble", "variant": "white-spall" },
+    { "id": "wood_07", "cell": [2, 6], "surfaceClass": "wood", "variant": "deep-splinter" },
+    { "id": "concrete_21", "cell": [3, 6], "surfaceClass": "concrete", "variant": "gray-spall-wide" },
+    { "id": "concrete_22", "cell": [4, 6], "surfaceClass": "concrete", "variant": "dark-fragments" },
+    { "id": "metal_11", "cell": [5, 6], "surfaceClass": "metal", "variant": "rusted-ring" },
+    { "id": "marble_05", "cell": [6, 6], "surfaceClass": "marble", "variant": "warm-pale-chip" }
+  ],
+  "surfaceFrames": {
+    "metal": ["metal_01", "metal_02", "metal_03", "metal_04", "metal_05", "metal_06", "metal_07", "metal_08", "metal_09", "metal_10", "metal_11"],
+    "concrete": ["concrete_01", "concrete_02", "concrete_03", "concrete_04", "concrete_05", "concrete_06", "concrete_07", "concrete_08", "concrete_09", "concrete_10", "concrete_11", "concrete_12", "concrete_13", "concrete_14", "concrete_15", "concrete_16", "concrete_17", "concrete_18", "concrete_19", "concrete_20", "concrete_21", "concrete_22"],
+    "marble": ["marble_01", "marble_02", "marble_03", "marble_04", "marble_05"],
+    "wood": ["wood_01", "wood_02", "wood_03", "wood_04", "wood_05", "wood_06", "wood_07"],
+    "glass": ["glass_01", "glass_02", "glass_03", "glass_04"],
+    "generic": ["concrete_01", "concrete_07", "metal_04", "wood_05"]
+  }
+}
