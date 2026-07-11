@@ -22,9 +22,11 @@ import {
 import { resolveGunProfile } from './gunsmithStore.js';
 import { createGun } from './createGun.js';
 import { applyGunProfileMaterials } from './gunMaterials.js';
+import { createRuntimeScopeViewport } from './gunScopeViewport.js';
 import {
   buildAnchorsFromOrientedBounds,
   orientGunMeshToWeaponSpace,
+  transformGunAnchorsToWeaponSpace,
 } from './gunHandSocket.js';
 
 const loader = createGltfLoader();
@@ -65,7 +67,17 @@ export async function loadGunView(gunId, options = {}) {
   root.add(meshClone);
 
   // Map X-long Meshy imports into weapon space (−Z muzzle, +Y top).
-  orientGunMeshToWeaponSpace(root);
+  const weaponSpace = orientGunMeshToWeaponSpace(root);
+  // Profiles saved by the first Gunsmith were authored before the visual was
+  // rotated from Meshy X-forward into runtime −Z-forward. Convert them once at
+  // load, so a hand-placed muzzle remains the actual tracer/shell origin.
+  if (profile.anchorSpace === 'source') {
+    profile = normalizeProfile({
+      ...profile,
+      anchorSpace: 'weapon',
+      anchors: transformGunAnchorsToWeaponSpace(profile.anchors, weaponSpace.anchorTransform),
+    });
+  }
 
   root.traverse((child) => {
     if (!child.isMesh) return;
@@ -80,8 +92,7 @@ export async function loadGunView(gunId, options = {}) {
   // so grip/muzzle match the oriented mesh (defaults assumed −Z forward already).
   const boundsAnchors = buildAnchorsFromOrientedBounds(root);
   const anchorsList = normalizeAnchorList(profile.anchors);
-  const legacyXForward = anchorsNeedCanonicalRebuild(anchorsList);
-  const hasAuthored = !legacyXForward && anchorsList.some((a) => {
+  const hasAuthored = anchorsList.some((a) => {
     const def = createDefaultAnchor(a.name);
     if (!def) return true;
     const dp = def.position;
@@ -117,6 +128,7 @@ export async function loadGunView(gunId, options = {}) {
   // Placement under aim anchor is identity; FirstPersonHandIk drives aim pose.
 
   const gun = createGun(profile, { root });
+  const scopeViewport = createRuntimeScopeViewport(profile.scopeViewport, anchors.adsCamera, root);
 
   return {
     id: profile.id,
@@ -124,7 +136,9 @@ export async function loadGunView(gunId, options = {}) {
     gun,
     root,
     anchors,
+    scopeViewport,
     dispose() {
+      scopeViewport?.dispose?.();
       gun.dispose?.();
       if (root.parent) root.parent.remove(root);
       disposeObject3D(root);

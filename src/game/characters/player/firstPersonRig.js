@@ -171,6 +171,16 @@ export function resolveSpineAimBones(root) {
 
 /**
  * Apply look-pitch across weighted spine bones (local X). Call after mixer update.
+ *
+ * This is an ADDITIVE offset on top of the mixer-written pose, which is only safe
+ * if the mixer re-keys the spine every frame. A layered clip that omits the spine
+ * (e.g. an upper-body reload that only keys the arms) leaves the bone untouched,
+ * so a naive `quaternion.multiply` would compound each frame — `base × aim^n` —
+ * and wind the whole torso up. We defend against that by caching, per bone, the
+ * base we started from and the result we produced: if the bone still holds exactly
+ * our last output, the mixer did NOT re-key it, so we restore the base before
+ * re-applying (idempotent — no accumulation).
+ *
  * @param {Array<{bone:THREE.Bone, weight:number}>} spineAimBones
  * @param {number} aimPitch  camera pitch (rad), positive look-down convention may vary
  */
@@ -179,9 +189,25 @@ export function applySpineAimPitch(spineAimBones, aimPitch = 0) {
   const pitch = THREE.MathUtils.clamp(aimPitch, -AIM_PITCH_LIMIT, AIM_PITCH_LIMIT);
   for (const { bone, weight } of spineAimBones) {
     if (!bone) continue;
+    const ud = bone.userData;
+    // Mixer didn't re-key this bone this frame → still our last output → undo it.
+    if (ud._spineAimBase && ud._spineAimOut
+      && quatsClose(bone.quaternion, ud._spineAimOut)) {
+      bone.quaternion.copy(ud._spineAimBase);
+    }
+    // Snapshot the fresh base, apply the aim offset, and remember the result.
+    if (!ud._spineAimBase) ud._spineAimBase = new THREE.Quaternion();
+    if (!ud._spineAimOut) ud._spineAimOut = new THREE.Quaternion();
+    ud._spineAimBase.copy(bone.quaternion);
     _aimQuat.setFromAxisAngle(AIM_AXIS, pitch * weight);
     bone.quaternion.multiply(_aimQuat);
+    ud._spineAimOut.copy(bone.quaternion);
   }
+}
+
+/** True when two quaternions represent the same orientation (sign-agnostic). */
+function quatsClose(a, b, eps = 1e-6) {
+  return Math.abs(Math.abs(a.dot(b)) - 1) <= eps;
 }
 
 /**

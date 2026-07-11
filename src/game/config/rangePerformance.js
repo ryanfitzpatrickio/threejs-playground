@@ -31,11 +31,13 @@ export function applyRangeLevelOverrides(qualityPreset = {}, levelMode = 'city')
     // Protect Retina/high-DPR displays: full-screen post targets scale with DPR².
     maxPixelRatio: Math.min(qualityPreset.maxPixelRatio ?? 2, 1.25),
     ssao,
-    // A 1k, 32 m-wide follow shadow resolves ~3 cm texels around the player.
-    // The range's merged static geometry makes the shadow pass only a few draws.
-    shadowMapSize: Math.min(qualityPreset.shadowMapSize ?? 1024, 1024),
-    shadowFrustumHalf: Math.min(qualityPreset.shadowFrustumHalf ?? 16, 16),
-    shadowFar: Math.min(qualityPreset.shadowFar ?? 56, 56),
+    // Cover the whole warehouse (~28×116 m) in one ortho shadow volume.
+    // The old 32 m player-follow frustum left the far end unshadowed while the
+    // near half cast — a visible mix of lit/unlit bricks. 2k over ~144 m still
+    // gives ~7 cm texels; the range is a few static batches so the pass is cheap.
+    shadowMapSize: Math.max(qualityPreset.shadowMapSize ?? 1024, 2048),
+    shadowFrustumHalf: 72,
+    shadowFar: 220,
     shadowClipmap: {
       ...(qualityPreset.shadowClipmap ?? {}),
       enabled: false,
@@ -43,11 +45,18 @@ export function applyRangeLevelOverrides(qualityPreset = {}, levelMode = 'city')
     terrainCloudShadow: false,
     environment: {
       ...environment,
-      // The covered warehouse already has authored light shafts. The Ultra
-      // volumetric cloud/atmosphere composite is almost entirely hidden by its
-      // roof yet still raymarches the full screen.
+      // Ultra volumetric clouds are almost entirely hidden by the warehouse roof
+      // yet still raymarch the full screen — force the cheap dome path.
       clouds: 'dome',
       aerialPerspective: false,
+      // Official three.js WebGPU godrays (TSL GodraysNode) on the sun light.
+      // Responds to time-of-day via sun direction + intensity + shadow map.
+      rangeGodRays: true,
+      rangeGodRayResolutionScale: 0.45,
+      rangeGodRayDensity: 0.58,
+      rangeGodRayMaxDensity: 0.42,
+      rangeGodRayDistanceAttenuation: 1.55,
+      rangeGodRaySteps: 36,
     },
   };
 }

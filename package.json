@@ -92,6 +92,7 @@
     "verify:third-person-weapon-locomotion": "node scripts/verify-third-person-weapon-locomotion.mjs",
     "verify:gun-import": "node scripts/verify-gun-import.mjs",
     "verify:gun-materials": "node scripts/verify-gun-materials.mjs",
+    "verify:gun-anchor-space": "node scripts/verify-gun-anchor-space.mjs",
     "verify:gun-classes": "node scripts/verify-gun-classes.mjs",
     "verify:gunsmith-store": "node scripts/verify-gunsmith-store.mjs",
     "verify:gunsmith-material-preview": "node scripts/verify-gunsmith-material-preview.mjs",

@@ -10,14 +10,27 @@ const CONTROLS = [
 export function PhotoModeControls(props) {
   const camera = () => props.snapshot?.camera;
   const settings = () => camera()?.photoSettings ?? {};
+  const live = () => Boolean(camera()?.photoModeLive);
 
   return (
     <aside class="photo-mode" aria-label="Camera mode controls">
       <div class="photo-mode__header">
-        <div><strong>CAMERA MODE</strong><span>Game paused · K to exit</span></div>
+        <div>
+          <strong>CAMERA MODE</strong>
+          <span>{live() ? 'Physics live · player locked' : 'Game paused'} · K to exit</span>
+        </div>
         <button onClick={() => props.onToggle(false)}>Exit</button>
       </div>
       <p>Click the view for mouse look · WASD move · Space up · Shift down · Esc releases mouse</p>
+      <label class="photo-mode__check">
+        <input
+          type="checkbox"
+          checked={live()}
+          onChange={(event) => props.onLiveChange?.(event.currentTarget.checked)}
+        />
+        <span>Run live</span>
+        <small>Physics + IK keep running; player move/turn locked</small>
+      </label>
       <For each={CONTROLS}>{(control) => (
         <label>
           <span>{control.label}</span>

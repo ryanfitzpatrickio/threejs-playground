@@ -34,9 +34,10 @@ const CONTROL_SECTIONS = [
   },
   {
     title: 'Combat & Weapons',
-    intro: 'Scroll cycles the weapon loadout (great sword first, then guns). Z holsters or draws whatever is equipped. Sword starts out. Unarmed specials need a nearby target when holstered.',
+    intro: 'Scroll cycles the weapon loadout (great sword first, then guns). Number keys 1–0 jump straight to each catalog gun and draw it. Z holsters or draws whatever is equipped. Sword starts out. Unarmed specials need a nearby target when holstered.',
     items: [
       ['Scroll wheel', 'Cycle weapons (sword → guns)'],
+      ['1–0', 'Equip & draw catalog guns (10 slots)'],
       ['Z', 'Holster / draw equipped weapon'],
       ['X', 'Inspect gun (hold, while firearm is out)'],
       ['Left click', 'Light attack (sword) / fire (gun in first person)'],
@@ -71,7 +72,7 @@ const CONTROL_SECTIONS = [
     title: 'Modes & UI',
     items: [
       ['Settings (top right)', 'Scenes, graphics, camera comfort, photo mode, tools'],
-      ['K', 'Photo mode (pause + free-fly camera)'],
+      ['K', 'Photo mode (free-fly camera; optional run-live)'],
       ['?', 'Open this guide'],
       ['Esc', 'Close menus / cancel aim'],
     ],

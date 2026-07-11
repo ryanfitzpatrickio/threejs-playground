@@ -24,7 +24,6 @@ import {
   anchorsNeedCanonicalRebuild,
   defaultGunIdFromQuery,
 } from '../src/game/weapons/loadGunView.js';
-import { MIXAMO_RIGHT_HAND_GUN_VISUAL_OFFSET_METERS } from '../src/game/weapons/gunHandSocket.js';
 import { gunDebugSocket } from '../src/game/weapons/gunDebugSocket.js';
 
 assert.ok(HAND_IK_MAX_DISTANCE >= 2);
@@ -134,8 +133,12 @@ for (const entry of GUN_CATALOG) {
   support.name = 'gun_anchor_left_hand_ik_target';
   support.position.set(0.05, 0, 0.15);
   gunRoot.add(support);
+  const adsCamera = new THREE.Object3D();
+  adsCamera.name = 'gun_anchor_adsCamera';
+  adsCamera.position.set(0.08, 0.12, -0.04);
+  gunRoot.add(adsCamera);
 
-  ik.setWeapon(gunRoot, { grip_mount: grip, left_hand_ik_target: support });
+  ik.setWeapon(gunRoot, { grip_mount: grip, left_hand_ik_target: support, adsCamera });
   ik.updateWeaponAnchorFromRightHand();
   ik.updateRightHandIk({ snapAnchorToGrip: true });
   ik.updateLeftHandIk();
@@ -144,15 +147,62 @@ for (const entry of GUN_CATALOG) {
   assert.equal(skeleton.boneMatrices.byteLength, matricesBytesBefore);
 
   const measure = ik.measure();
-  assert.equal(measure.solver, 'handParented+leftIk');
+  assert.equal(measure.solver, 'bodyAnchored+dualIk');
   assert.equal(measure.hasGun, true);
+
+  // ADS moves the gun, not the gameplay camera: the authored sight socket must
+  // land on the camera eye at full blend and restore at zero blend.
+  {
+    const camera = new THREE.PerspectiveCamera();
+    camera.position.set(-0.17, 0.61, -0.22);
+    bodyRoot.add(camera);
+    bodyRoot.updateMatrixWorld(true);
+    const restPosition = gunRoot.position.clone();
+    const sightWorld = new THREE.Vector3();
+    const cameraWorld = new THREE.Vector3();
+    const sightRotation = new THREE.Quaternion();
+    const cameraRotation = new THREE.Quaternion();
+    camera.rotation.set(-0.12, 0.27, 0, 'YXZ');
+
+    ik.setAdsPose(camera, 1);
+    ik.layoutGunInHand({ force: true });
+    adsCamera.getWorldPosition(sightWorld);
+    camera.getWorldPosition(cameraWorld);
+    adsCamera.getWorldQuaternion(sightRotation);
+    camera.getWorldQuaternion(cameraRotation);
+    assert.ok(
+      sightWorld.distanceTo(cameraWorld) < 1e-6,
+      'full ADS should align adsCamera socket to the gameplay camera eye',
+    );
+    assert.ok(
+      sightRotation.angleTo(cameraRotation) < 1e-6,
+      'full ADS should align the authored sight axis to the gameplay camera',
+    );
+
+    ik.setAdsPose(camera, 0);
+    ik.layoutGunInHand({ force: true });
+    assert.ok(
+      gunRoot.position.distanceTo(restPosition) < 1e-6,
+      'releasing ADS should restore the authored hip-fire pose',
+    );
+  }
+
+  // Right-hand IK must pull the dominant hand toward grip_mount: reset the arm to
+  // a raw pose, measure the gap, solve, and confirm the gap shrinks.
+  gunDebugSocket.rightIkEnabled = true;
+  rArm.quaternion.identity();
+  rFore.quaternion.identity();
+  rHand.quaternion.identity();
+  modelRoot.updateMatrixWorld(true);
   ik.updateWeaponFromRightHand?.();
-  const after = ik.measure();
-  assert.ok(after.rightHandToGripCm != null);
-  const expectedVisualOffsetCm = Math.hypot(...MIXAMO_RIGHT_HAND_GUN_VISUAL_OFFSET_METERS) * 100;
+  const beforeRightCm = ik.measure().rightHandToGripCm;
+  // dt:1 snaps the IK blend weight to full so the solve is deterministic here.
+  ik.updateRightHandIk({ dt: 1 });
+  const afterRightCm = ik.measure().rightHandToGripCm;
+  assert.ok(beforeRightCm != null && afterRightCm != null, 'right grip distance measured');
   assert.ok(
-    Math.abs(after.rightHandToGripCm - expectedVisualOffsetCm) < 0.5,
-    `grip distance ${after.rightHandToGripCm?.toFixed(2)} cm should match temporary visual offset`,
+    afterRightCm < beforeRightCm - 1e-3,
+    `right hand IK should close the grip gap (${beforeRightCm?.toFixed(2)} → ${afterRightCm?.toFixed(2)} cm)`,
   );
 
   assert.equal(findRightHandBone(modelRoot)?.name, 'mixamorigRightHand');
@@ -170,7 +220,7 @@ for (const entry of GUN_CATALOG) {
       lFore.rotation.y = Math.cos(frame * 0.5) * 0.45;
       lHand.rotation.set(frame * 0.2, frame * -0.15, frame * 0.1);
       modelRoot.updateMatrixWorld(true);
-      ik.updateLeftHandIk();
+      ik.updateLeftHandIk({ dt: 1 }); // dt:1 → full IK weight, so palm hard-locks
       // Support target lives under gunRoot as runtime_left_ik_target.
       const target = gunRoot.getObjectByName('runtime_left_ik_target');
       assert.ok(target, 'left ik target present');

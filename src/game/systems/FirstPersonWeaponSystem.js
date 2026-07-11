@@ -8,6 +8,7 @@
 import { GAME_CONFIG } from '../config/gameConfig.js';
 import {
   applyFirstPersonBodyYaw,
+  applySpineAimPitch,
   chooseLocomotion,
   isFirstPersonForwardIntent,
   mapLocomotionToPlaybackState,
@@ -15,10 +16,13 @@ import {
   resolveSpineAimBones,
   setHeadHidden,
 } from '../characters/player/firstPersonRig.js';
-import { resolveWeaponLocomotionState } from '../characters/player/weaponLocomotion.js';
+import {
+  resolveWeaponHandIk,
+  resolveWeaponLocomotionState,
+} from '../characters/player/weaponLocomotion.js';
 import { createFirstPersonHandIk } from '../characters/player/firstPersonHandIk.js';
 import { defaultGunIdFromQuery, loadGunView } from '../weapons/loadGunView.js';
-import { applyGunSocketPreset } from '../weapons/gunDebugSocket.js';
+import { applyGunSocketPreset, gunDebugSocket } from '../weapons/gunDebugSocket.js';
 
 export class FirstPersonWeaponSystem {
   constructor() {
@@ -27,6 +31,9 @@ export class FirstPersonWeaponSystem {
     this.armed = false;
     this.locomotionKey = 'idle';
     this.playbackState = 'armedIdle';
+    // Which hands keep IK for the current playback state, and whether the gun
+    // rides the right hand (carry) instead of being body-anchored (sprint).
+    this.handIkGate = { left: true, right: true, carry: false };
     this.spineAimBones = [];
     this._characterRef = null;
     this._headHidden = false;
@@ -348,22 +355,21 @@ export class FirstPersonWeaponSystem {
       }
     }
 
+    // Per-animation hand-IK gating (e.g. sprint frees the left arm, keeps the
+    // right on the grip). Keyed off the clip actually playing.
+    this.handIkGate = resolveWeaponHandIk(this.playbackState);
+
     if (this.fp) this._ensureHeadHidden(character);
     else this._restoreHead(character);
     this._setWeaponVisible(true);
   }
 
   /**
-   * After AnimationStateSystem mixer write:
-   * gun on right hand, optional left-hand IK onto support (debug-tunable).
-   * No spine-aim curl (camera-only look pitch).
+   * After AnimationStateSystem mixer write: spine bend toward the look pitch, then
+   * body-anchored gun with both-hand IK onto grip/support (all debug-tunable).
    */
-  postAnimation({ character, cameraSystem }) {
+  postAnimation({ character, cameraSystem, delta = 1 / 60 }) {
     if (!this.active || !character) return;
-
-    // Intentionally skip applySpineAimPitch while a gun is out — look pitch is
-    // camera-only so the torso doesn't fold into the view frustum.
-    void cameraSystem;
 
     const root = character.animationController?.modelRoot || character.group;
     root?.updateMatrixWorld?.(true);
@@ -376,13 +382,39 @@ export class FirstPersonWeaponSystem {
       ik.setWeapon(this.gunView.root, this.gunView.anchors);
     }
 
+    // Vertical aim: bend the spine partway toward the look and tilt the gun
+    // holder the full amount so the muzzle tracks the camera pitch. Signs/scale
+    // are live-tunable via gunDebugSocket.aimPitch* (negative flips direction).
+    const lookPitch = Number(cameraSystem?.pitch) || 0;
+    applySpineAimPitch(this.spineAimBones, lookPitch * (Number(gunDebugSocket.aimPitchSpine) || 0));
+    root?.updateMatrixWorld?.(true);
+    ik.setAimPitch?.(lookPitch * (Number(gunDebugSocket.aimPitchGun) || 0));
+    // Keep the gameplay camera fixed. In first person, move the gun so its
+    // Gunsmith-authored adsCamera socket meets the camera eye instead.
+    const scopeViewport = this.gunView.scopeViewport;
+    ik.setAdsPose?.(
+      cameraSystem?.camera ?? null,
+      this.fp ? (this.gunView.gun?.ads ?? 0) : 0,
+      scopeViewport?.mesh ?? null,
+      scopeViewport?.config?.eyeRelief ?? 0,
+    );
+    this.gunView.scopeViewport?.setAds?.(
+      this.fp ? (this.gunView.gun?.ads ?? 0) : 0,
+    );
+
     ik.updateWeaponFromRightHand?.();
-    // Left support after gun is laid out so left_hand_ik_target is current. During
-    // a reload the support hand grabs the magazine (from the reload clip), so don't
-    // pin it back onto the gun's foregrip.
-    if (!character.combat?.reloading) {
-      ik.updateLeftHandIk?.();
-    }
+    // Gun is body-anchored: both hands IK onto it after layout, gated per
+    // animation (this.handIkGate). We always call the updaters so the IK
+    // influence ramps toward its target (0/1) — a gated state (e.g. sprint frees
+    // both arms) blends off/on with no snap. Reload frees the left (it grabs the
+    // magazine from the reload clip) rather than pinning it to the foregrip.
+    const dt = Number(delta) || 1 / 60;
+    ik.updateRightHandIk?.({ target: this.handIkGate.right ? 1 : 0, dt });
+    const leftTarget = (this.handIkGate.left && !character.combat?.reloading) ? 1 : 0;
+    ik.updateLeftHandIk?.({ target: leftTarget, dt });
+    // Carry (sprint): after the IK laid out the body pose, ride the gun on the
+    // right hand from the frozen held transform so it stays in-hand, not floating.
+    ik.applyHandCarry?.({ target: this.handIkGate.carry ? 1 : 0, dt });
     root?.updateMatrixWorld?.(true);
   }
 
@@ -454,6 +486,14 @@ export class FirstPersonWeaponSystem {
       equippedGunId: this.equippedGunId,
       weaponVisible: this.visibleWeapon,
       handIk: ikMeasure,
+      handIkGate: this.handIkGate,
+      scopeViewport: this.gunView?.scopeViewport
+        ? {
+          active: this.gunView.scopeViewport.active,
+          magnification: this.gunView.scopeViewport.config?.magnification ?? null,
+          resolution: this.gunView.scopeViewport.config?.resolution ?? null,
+        }
+        : null,
       gun: this.gunView?.gun?.snapshot?.() ?? null,
     };
   }

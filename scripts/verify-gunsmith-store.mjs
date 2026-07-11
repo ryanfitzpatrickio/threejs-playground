@@ -45,18 +45,38 @@ stub.anchors = stub.anchors.map((a) => (
   a.name === 'muzzle' ? { ...a, position: [0, 0.05, -0.42] } : a
 ));
 stub.sounds.fire = 'snake-556-single-isolated';
+stub.scopeViewport = {
+  enabled: true,
+  position: [0.012, 0.18, -0.09],
+  quaternion: [0, 0, 0, 1],
+  scale: [1.1, 0.95, 1],
+  radius: 0.031,
+  depth: 0.005,
+  magnification: 4.5,
+  resolution: 512,
+  eyeRelief: 0.19,
+  viewRotationDeg: -90,
+};
 
 const saved = saveGunsmithProfile(stub, { debounce: false });
 assert.equal(saved.id, rifleEntry.id);
 
 const loaded = getGunsmithProfile(rifleEntry.id);
 assert.ok(loaded);
+assert.equal(loaded.anchorSpace, 'weapon');
 assert.equal(loaded.parts.length, meshNames.length);
 assert.equal(loaded.parts[0].identity, 'receiver');
 assert.equal(loaded.parts[0].appearance.mode, 'texture_metal_tsl');
 assert.equal(loaded.parts[0].appearance.textureSet, 'weathered-black');
 assert.deepEqual(loaded.parts[3].behaviors, ['detaches_on_reload']);
 assert.equal(loaded.sounds.fire, 'snake-556-single-isolated');
+assert.deepEqual(loaded.scopeViewport.position, [0.012, 0.18, -0.09]);
+assert.deepEqual(loaded.scopeViewport.scale, [1.1, 0.95, 1]);
+assert.equal(loaded.scopeViewport.radius, 0.031);
+assert.equal(loaded.scopeViewport.magnification, 4.5);
+assert.equal(loaded.scopeViewport.resolution, 512);
+assert.equal(loaded.scopeViewport.eyeRelief, 0.19);
+assert.equal(loaded.scopeViewport.viewRotationDeg, -90);
 
 const muzzle = loaded.anchors.find((a) => a.name === 'muzzle');
 assert.ok(muzzle);
@@ -64,6 +84,13 @@ assert.ok(Math.abs(muzzle.position[2] + 0.42) < 1e-6);
 
 const validation = validateProfile(loaded);
 assert.equal(validation.ok, true, validation.errors?.join('; '));
+
+const migratedV4Scope = normalizeProfile({
+  ...stub,
+  version: 4,
+  scopeViewport: { ...stub.scopeViewport, magnification: 4 },
+});
+assert.equal(migratedV4Scope.scopeViewport.magnification, 8, 'V4 default scope zoom migrates to V5 tactical zoom');
 
 // Required anchors for every kind
 for (const entry of [rifleEntry, pistolEntry, shotgunEntry]) {

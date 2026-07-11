@@ -124,6 +124,12 @@ export class SceneSystem {
     this.shadowTexelSize = this.shadowFrustumWidth / sun.shadow.mapSize.x;
     this._shadowFollow = new THREE.Vector3();
     this._shadowTargetY = 0;
+    /** @type {THREE.Vector3|null} When set, shadow volume stays on this point (range warehouse). */
+    this._shadowFollowFixed = null;
+    /** When true, sun sits along skySystem.sunDirection instead of fixed SUN_OFFSET. */
+    this._alignShadowSunToSky = false;
+    this._shadowSunDistance = 90;
+    this._shadowSunOffsetScratch = new THREE.Vector3();
     this.streetLightsActive = 0;
     this.streetLightsNearby = 0;
     this.streetLightsWarm = 0;
@@ -158,22 +164,94 @@ export class SceneSystem {
   // standard directional-light frustum with the active locomotion root instead.
   // Moving the light and target together preserves the sun direction, while the
   // texel-snapped horizontal target keeps the shadow projection stable.
+  //
+  // Range mode pins the follow point to the warehouse centre and aligns the sun
+  // offset with SkySystem.sunDirection so the whole course is in one shadow
+  // volume and god rays / sky / contact shadows agree on sun direction.
   updateShadowFollow(position) {
-    if (this.clipmapShadow || !position || !this.sun) return;
+    if (this.clipmapShadow || !this.sun) return;
+    const source = this._shadowFollowFixed ?? position;
+    if (!source) return;
 
     const texelSize = this.shadowTexelSize > 0 ? this.shadowTexelSize : 1;
-    const targetY = Number.isFinite(position.y) ? position.y : this._shadowTargetY;
-    this._shadowTargetY = THREE.MathUtils.lerp(this._shadowTargetY, targetY, 0.12);
-    this._shadowFollow.set(
-      Math.round(position.x / texelSize) * texelSize,
-      this._shadowTargetY,
-      Math.round(position.z / texelSize) * texelSize,
-    );
+    const targetY = Number.isFinite(source.y) ? source.y : this._shadowTargetY;
+    // Fixed warehouse centre: no lerp/snap lag so the volume never creeps.
+    if (this._shadowFollowFixed) {
+      this._shadowTargetY = targetY;
+      this._shadowFollow.copy(this._shadowFollowFixed);
+      this._shadowFollow.y = targetY;
+    } else {
+      this._shadowTargetY = THREE.MathUtils.lerp(this._shadowTargetY, targetY, 0.12);
+      this._shadowFollow.set(
+        Math.round(source.x / texelSize) * texelSize,
+        this._shadowTargetY,
+        Math.round(source.z / texelSize) * texelSize,
+      );
+    }
 
     this.sun.target.position.copy(this._shadowFollow);
-    this.sun.position.copy(this._shadowFollow).add(SUN_OFFSET);
+
+    if (this._alignShadowSunToSky && this.skySystem?.sunDirection) {
+      // Sky sunDirection is the vector toward the sun (same as sky disc).
+      // DirectionalLight shines from position → target, so park the light along
+      // that direction from the follow point.
+      const dist = this._shadowSunDistance;
+      this.sun.position
+        .copy(this._shadowFollow)
+        .addScaledVector(this.skySystem.sunDirection, dist);
+    } else {
+      this.sun.position.copy(this._shadowFollow).add(SUN_OFFSET);
+    }
     this.sun.target.updateMatrixWorld(true);
     this.sun.updateMatrixWorld(true);
+    this.sun.shadow?.camera?.updateMatrixWorld?.(true);
+  }
+
+  /**
+   * Pin a single large shadow volume over the shooting-range warehouse and
+   * drive sun offset from sky time-of-day (so far walls stay in the same map).
+   * @param {{ center?: THREE.Vector3, halfExtent?: number, far?: number, sunDistance?: number, mapSize?: number }} [opts]
+   */
+  configureRangeShadows(opts = {}) {
+    if (!this.sun?.shadow?.camera) return;
+    const center = opts.center ?? new THREE.Vector3(0, 1.5, 50);
+    const half = Number.isFinite(opts.halfExtent) ? opts.halfExtent : 72;
+    const far = Number.isFinite(opts.far) ? opts.far : 220;
+    const sunDistance = Number.isFinite(opts.sunDistance) ? opts.sunDistance : 100;
+    const mapSize = Number.isFinite(opts.mapSize) ? opts.mapSize : this.sun.shadow.mapSize.x;
+
+    this._shadowFollowFixed = center.clone();
+    this._alignShadowSunToSky = true;
+    this._shadowSunDistance = sunDistance;
+
+    if (mapSize > 0 && this.sun.shadow.mapSize.x !== mapSize) {
+      this.sun.shadow.mapSize.set(mapSize, mapSize);
+      // Force rebuild on next use.
+      if (this.sun.shadow.map) {
+        this.sun.shadow.map.dispose();
+        this.sun.shadow.map = null;
+      }
+    }
+
+    const cam = this.sun.shadow.camera;
+    cam.left = -half;
+    cam.right = half;
+    cam.top = half;
+    cam.bottom = -half;
+    cam.near = 1;
+    cam.far = far;
+    cam.updateProjectionMatrix();
+
+    this.shadowFrustumWidth = half * 2;
+    this.shadowTexelSize = this.shadowFrustumWidth / this.sun.shadow.mapSize.x;
+    this.updateShadowFollow(center);
+  }
+
+  /** Restore open-world player-follow shadows (fixed SUN_OFFSET). */
+  clearRangeShadows() {
+    this._shadowFollowFixed = null;
+    this._alignShadowSunToSky = false;
+    this._shadowSunDistance = 90;
   }
 
   // Set the camera the clipmap shadow centers on (after CameraSystem init).

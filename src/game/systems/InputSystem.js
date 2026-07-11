@@ -24,15 +24,17 @@ const KEY_BINDINGS = {
   KeyZ: 'drawSheathe',
   // E: enter/exit vehicle or horse (was F). Cover lean right while held (armed).
   KeyE: 'mount',
-  Digit1: 'elevatorFloor1',
-  Digit2: 'elevatorFloor2',
-  Digit3: 'elevatorFloor3',
-  Digit4: 'elevatorFloor4',
-  Digit5: 'elevatorFloor5',
-  Digit6: 'elevatorFloor6',
-  Digit7: 'elevatorFloor7',
-  Digit8: 'elevatorFloor8',
-  Digit9: 'elevatorFloor9',
+  // 1–0: equip catalog guns (index 0–9). Elevators re-read 1–9 when at a cab.
+  Digit1: 'gunSlot1',
+  Digit2: 'gunSlot2',
+  Digit3: 'gunSlot3',
+  Digit4: 'gunSlot4',
+  Digit5: 'gunSlot5',
+  Digit6: 'gunSlot6',
+  Digit7: 'gunSlot7',
+  Digit8: 'gunSlot8',
+  Digit9: 'gunSlot9',
+  Digit0: 'gunSlot0',
   AltLeft: 'hookAim',
   AltRight: 'hookAim',
   // Ctrl: slide (was crouch; crouch is C now).
@@ -135,9 +137,15 @@ export class InputSystem {
     const telekinesisReleased = this.releasedActions.has('telekinesis');
     // Hook fire is no longer a dedicated key — AbilitySystem maps F / middle-click
     // onto hookFire* when the swing ability is equipped.
+    // Gun hotkeys 1–9 → slots 0–8, 0 → slot 9. Elevators still use 1–9 as floor picks.
+    let gunSlotPressed = null;
+    for (let i = 1; i <= 9; i += 1) {
+      if (this.pressedActions.has(`gunSlot${i}`)) gunSlotPressed = i - 1;
+    }
+    if (this.pressedActions.has('gunSlot0')) gunSlotPressed = 9;
     const elevatorFloors = {};
     for (let i = 1; i <= 9; i += 1) {
-      elevatorFloors[`elevatorFloor${i}`] = this.pressedActions.has(`elevatorFloor${i}`);
+      elevatorFloors[`elevatorFloor${i}`] = this.pressedActions.has(`gunSlot${i}`);
     }
     this.abilityDoubleTapPending = false;
     const dodgeDirection = this.dodgeDirectionPending;
@@ -161,7 +169,8 @@ export class InputSystem {
     this.pressedActions.delete('cutCommit');
     this.pressedActions.delete('cutCancel');
     this.pressedActions.delete('telekinesis');
-    for (let i = 1; i <= 9; i += 1) this.pressedActions.delete(`elevatorFloor${i}`);
+    for (let i = 1; i <= 9; i += 1) this.pressedActions.delete(`gunSlot${i}`);
+    this.pressedActions.delete('gunSlot0');
     this.dodgeDirectionPending = null;
     this.jumpDoubleTapPending = false;
     this.releasedActions.delete('jump');
@@ -237,6 +246,8 @@ export class InputSystem {
       // Q held: vehicle rear-view (GameRuntime) + cover lean left.
       wingsuitHeld: this.actions.has('leanLeft'),
       rearViewHeld: this.actions.has('leanLeft'),
+      // Catalog gun hotkey (0–9 index into GUN_CATALOG), or null.
+      gunSlotPressed,
       ...elevatorFloors,
     };
   }
@@ -281,7 +292,10 @@ export class InputSystem {
     }
 
     if (
-      (action === 'jump' || action === 'left' || action === 'right' || action === 'brace' || action === 'slide' || action === 'collisionDebug' || action === 'mount' || action === 'ability' || action === 'drawSheathe' || action === 'grabSlam' || action === 'shoulderThrow' || action === 'cutMode' || action === 'photoMode' || action === 'cutCommit' || action === 'cutCancel' || action === 'telekinesis') &&
+      (action === 'jump' || action === 'left' || action === 'right' || action === 'brace' || action === 'slide' || action === 'collisionDebug' || action === 'mount' || action === 'ability' || action === 'drawSheathe' || action === 'grabSlam' || action === 'shoulderThrow' || action === 'cutMode' || action === 'photoMode' || action === 'cutCommit' || action === 'cutCancel' || action === 'telekinesis'
+        || action === 'gunSlot0' || action === 'gunSlot1' || action === 'gunSlot2' || action === 'gunSlot3'
+        || action === 'gunSlot4' || action === 'gunSlot5' || action === 'gunSlot6' || action === 'gunSlot7'
+        || action === 'gunSlot8' || action === 'gunSlot9') &&
       !event.repeat &&
       !wasActive
     ) {

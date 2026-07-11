@@ -47,6 +47,14 @@ import {
   installBodyshopEnvironment,
   prepareBodyshopGltfMaterials,
 } from './bodyshopViewport.js';
+import {
+  orientGunMeshToWeaponSpace,
+  transformGunAnchorsToWeaponSpace,
+} from '../game/weapons/gunHandSocket.js';
+import {
+  createDefaultScopeViewport,
+  createScopeViewportPreview,
+} from '../game/weapons/gunScopeViewport.js';
 
 export function GunsmithScene(props) {
   let canvasRef;
@@ -59,6 +67,7 @@ export function GunsmithScene(props) {
   let anchorHelpers = new THREE.Group();
   let selectedMesh = null;
   let selectedAnchorName = null;
+  let scopeViewportMesh = null;
   let frameId = 0;
   let disposed = false;
   let previewAudio = null;
@@ -68,9 +77,10 @@ export function GunsmithScene(props) {
   const [meshNames, setMeshNames] = createSignal([]);
   const [selectedPart, setSelectedPart] = createSignal(null);
   const [selectedAnchor, setSelectedAnchor] = createSignal(null);
+  const [selectedScopeViewport, setSelectedScopeViewport] = createSignal(false);
   const [status, setStatus] = createSignal('Ready');
   const [busy, setBusy] = createSignal(false);
-  const [tab, setTab] = createSignal('parts'); // parts | anchors | stats | sounds
+  const [tab, setTab] = createSignal('parts'); // parts | anchors | optic | stats | sounds
 
   const statsPreview = () => {
     const p = profile();
@@ -117,8 +127,12 @@ export function GunsmithScene(props) {
       controls.enabled = !event.value;
     });
     transformControls.addEventListener('objectChange', () => {
-      if (!selectedAnchorName || !transformControls.object) return;
-      syncAnchorFromHelper(selectedAnchorName, transformControls.object);
+      if (!transformControls.object) return;
+      if (selectedAnchorName) {
+        syncAnchorFromHelper(selectedAnchorName, transformControls.object);
+      } else if (transformControls.object === scopeViewportMesh) {
+        syncScopeViewportFromMesh(scopeViewportMesh);
+      }
     });
     scene.add(typeof transformControls.getHelper === 'function'
       ? transformControls.getHelper()
@@ -193,6 +207,10 @@ export function GunsmithScene(props) {
       const loader = createGltfLoader();
       const gltf = await loader.loadAsync(entry.glbUrl);
       gunRoot = gltf.scene;
+      // Author anchor helpers in the exact canonical space runtime uses. This
+      // makes a saved muzzle marker the live tracer and shell origin, not a
+      // source-GLB X-axis approximation.
+      const weaponSpace = orientGunMeshToWeaponSpace(gunRoot);
       prepareBodyshopGltfMaterials(gunRoot);
       scene.add(gunRoot);
 
@@ -207,9 +225,18 @@ export function GunsmithScene(props) {
       setMeshNames(names);
 
       let next = getGunsmithProfile(id);
+      let migratedSourceAnchors = false;
       if (!next) {
         next = createCatalogStubProfile(entry, names);
       } else {
+        if (next.anchorSpace === 'source') {
+          next = normalizeProfile({
+            ...next,
+            anchorSpace: 'weapon',
+            anchors: transformGunAnchorsToWeaponSpace(next.anchors, weaponSpace.anchorTransform),
+          });
+          migratedSourceAnchors = true;
+        }
         // Merge any new meshes into parts list.
         const have = new Set(next.parts.map((p) => p.meshName));
         for (const meshName of names) {
@@ -230,9 +257,11 @@ export function GunsmithScene(props) {
       setProfile(next);
       await applyMaterialsFromProfile(next);
       rebuildAnchorHelpers(next);
-      setStatus(`Loaded ${next.label} (${names.length} parts)`);
+      rebuildScopeViewport(next);
+      setStatus(`Loaded ${next.label} (${names.length} parts)${migratedSourceAnchors ? ' — legacy anchors migrated; save profile.' : ''}`);
       setSelectedPart(null);
       setSelectedAnchor(null);
+      setSelectedScopeViewport(false);
       transformControls?.detach();
     } catch (err) {
       console.error(err);
@@ -252,6 +281,7 @@ export function GunsmithScene(props) {
         c.userData?._gunsmithBakedMaterials?.forEach((material) => material?.dispose?.());
       });
       gunRoot = null;
+      scopeViewportMesh = null;
     }
     while (anchorHelpers.children.length) {
       const c = anchorHelpers.children[0];
@@ -296,6 +326,8 @@ export function GunsmithScene(props) {
     selectedMesh = mesh;
     setSelectedPart(mesh.name);
     setSelectedAnchor(null);
+    setSelectedScopeViewport(false);
+    selectedAnchorName = null;
     transformControls?.detach();
     highlightSelection(mesh.name);
   }
@@ -351,6 +383,7 @@ export function GunsmithScene(props) {
     setSelectedAnchor(name);
     selectedAnchorName = name;
     setSelectedPart(null);
+    setSelectedScopeViewport(false);
     const helper = anchorHelpers.children.find((c) => c.userData.anchorName === name);
     if (helper && transformControls) {
       transformControls.attach(helper);
@@ -372,6 +405,84 @@ export function GunsmithScene(props) {
     if (idx >= 0) anchors[idx] = nextAnchor;
     else anchors.push(nextAnchor);
     setProfile(normalizeProfile({ ...p, anchors }));
+  }
+
+  function rebuildScopeViewport(p, { select = false } = {}) {
+    if (scopeViewportMesh) {
+      if (scopeViewportMesh.parent) scopeViewportMesh.parent.remove(scopeViewportMesh);
+      scopeViewportMesh.geometry?.dispose?.();
+      const materials = Array.isArray(scopeViewportMesh.material)
+        ? scopeViewportMesh.material
+        : [scopeViewportMesh.material];
+      materials.forEach((material) => material?.dispose?.());
+      scopeViewportMesh = null;
+    }
+    if (!gunRoot || !p?.scopeViewport) {
+      if (selectedScopeViewport()) transformControls?.detach();
+      setSelectedScopeViewport(false);
+      return;
+    }
+    scopeViewportMesh = createScopeViewportPreview(p.scopeViewport);
+    if (!scopeViewportMesh) return;
+    gunRoot.add(scopeViewportMesh);
+    if (select) selectScopeViewport('translate');
+  }
+
+  function spawnScopeViewport() {
+    const p = profile();
+    if (!p) return;
+    const adsAnchor = findAnchor(p.anchors, 'adsCamera') || createDefaultAnchor('adsCamera');
+    const next = normalizeProfile({
+      ...p,
+      scopeViewport: createDefaultScopeViewport(adsAnchor),
+    });
+    setProfile(next);
+    rebuildScopeViewport(next, { select: true });
+    setStatus('Scope viewport spawned — position it over the optic lens, then save.');
+  }
+
+  function removeScopeViewport() {
+    const p = profile();
+    if (!p) return;
+    const next = normalizeProfile({ ...p, scopeViewport: null });
+    setProfile(next);
+    rebuildScopeViewport(next);
+    setStatus('Scope viewport removed.');
+  }
+
+  function selectScopeViewport(mode = 'translate') {
+    if (!scopeViewportMesh || !transformControls) return;
+    selectedAnchorName = null;
+    setSelectedAnchor(null);
+    setSelectedPart(null);
+    setSelectedScopeViewport(true);
+    transformControls.attach(scopeViewportMesh);
+    transformControls.setMode(mode);
+  }
+
+  function syncScopeViewportFromMesh(mesh) {
+    const p = profile();
+    if (!p?.scopeViewport || !mesh) return;
+    setProfile(normalizeProfile({
+      ...p,
+      scopeViewport: {
+        ...p.scopeViewport,
+        position: mesh.position.toArray(),
+        quaternion: mesh.quaternion.toArray(),
+        scale: mesh.scale.toArray(),
+      },
+    }));
+  }
+
+  function updateScopeViewportField(key, value) {
+    const p = profile();
+    if (!p?.scopeViewport) return;
+    const next = normalizeProfile({
+      ...p,
+      scopeViewport: { ...p.scopeViewport, [key]: value },
+    });
+    setProfile(next);
+    rebuildScopeViewport(next, { select: true });
   }
 
   function updateStatsField(key, value) {
@@ -470,6 +581,7 @@ export function GunsmithScene(props) {
         <div style="display:flex; flex-wrap:wrap; gap:4px;">
           <button type="button" class={tab() === 'parts' ? 'solid-button' : 'ghost-button'} onClick={() => setTab('parts')}>Parts</button>
           <button type="button" class={tab() === 'anchors' ? 'solid-button' : 'ghost-button'} onClick={() => setTab('anchors')}>Anchors</button>
+          <button type="button" class={tab() === 'optic' ? 'solid-button' : 'ghost-button'} onClick={() => setTab('optic')}>Optic</button>
           <button type="button" class={tab() === 'stats' ? 'solid-button' : 'ghost-button'} onClick={() => setTab('stats')}>Stats</button>
           <button type="button" class={tab() === 'sounds' ? 'solid-button' : 'ghost-button'} onClick={() => setTab('sounds')}>Sounds</button>
         </div>
@@ -609,6 +721,49 @@ export function GunsmithScene(props) {
             </For>
             <p style="opacity:0.65; margin:8px 0 0;">Select an anchor, then drag the gizmo on the gun.</p>
           </div>
+        </Show>
+
+        <Show when={tab() === 'optic'}>
+          <Show
+            when={profile()?.scopeViewport}
+            fallback={(
+              <div style="display:flex; flex-direction:column; gap:8px;">
+                <p style="opacity:0.68; margin:0;">
+                  Spawn a cylindrical screen, then place and scale it over the scope lens.
+                </p>
+                <button type="button" class="solid-button" onClick={spawnScopeViewport}>
+                  Spawn scope viewport
+                </button>
+              </div>
+            )}
+          >
+            {(scope) => (
+              <div style="display:flex; flex-direction:column; gap:8px;">
+                <button
+                  type="button"
+                  class={selectedScopeViewport() ? 'solid-button' : 'ghost-button'}
+                  onClick={() => selectScopeViewport('translate')}
+                >
+                  Select viewport cylinder
+                </button>
+                <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:4px;">
+                  <button type="button" class="ghost-button" onClick={() => selectScopeViewport('translate')}>Move</button>
+                  <button type="button" class="ghost-button" onClick={() => selectScopeViewport('rotate')}>Rotate</button>
+                  <button type="button" class="ghost-button" onClick={() => selectScopeViewport('scale')}>Scale</button>
+                </div>
+                <RangeField label="Radius (m)" value={scope().radius} min={0.005} max={0.12} step={0.001} onChange={(v) => updateScopeViewportField('radius', v)} />
+                <RangeField label="Depth (m)" value={scope().depth} min={0.001} max={0.04} step={0.001} onChange={(v) => updateScopeViewportField('depth', v)} />
+                <RangeField label="Magnification" value={scope().magnification} min={1} max={24} step={0.5} onChange={(v) => updateScopeViewportField('magnification', v)} />
+                <RangeField label="Eye relief (m)" value={scope().eyeRelief} min={0.05} max={0.4} step={0.01} onChange={(v) => updateScopeViewportField('eyeRelief', v)} />
+                <RangeField label="Resolution" value={scope().resolution} min={128} max={1024} step={64} onChange={(v) => updateScopeViewportField('resolution', v)} />
+                <RangeField label="View rotation °" value={scope().viewRotationDeg} min={-180} max={180} step={90} onChange={(v) => updateScopeViewportField('viewRotationDeg', v)} />
+                <p style="opacity:0.62; margin:0; font-size:10px;">
+                  The rear cap is the runtime scope screen. Weapon forward is −Z; keep the cylinder axis along Z.
+                </p>
+                <button type="button" class="ghost-button" onClick={removeScopeViewport}>Remove viewport</button>
+              </div>
+            )}
+          </Show>
         </Show>
 
         <Show when={tab() === 'stats'}>

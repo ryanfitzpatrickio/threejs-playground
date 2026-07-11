@@ -113,6 +113,12 @@ export class CameraSystem {
     this.smoothedHorizonPitch = 0;
     this.smoothedFov = config.vehicle.defaultFov;
     this.photoMode = false;
+    /** When true, free-fly camera stays active but the simulation keeps running. */
+    this.photoModeLive = false;
+    /** Freecam look — kept separate from gameplay yaw/pitch so live photo mode
+     *  does not rotate the player or drive aim IK from freecam look. */
+    this.photoFreecamYaw = 0;
+    this.photoFreecamPitch = 0;
     this.interiorFirstPerson = false;
     this.onFootFirstPerson = false;
     /** 0..1 ADS blend driven by WeaponSystem (M5). */
@@ -167,15 +173,25 @@ export class CameraSystem {
     this.photoMode = next;
     if (next) {
       freeEuler.setFromQuaternion(this.camera.quaternion, 'YXZ');
+      // Freeze gameplay look at the pose we entered with (body / aim IK keep using it).
       this.pitch = freeEuler.x;
       this.yaw = freeEuler.y;
+      this.photoFreecamPitch = freeEuler.x;
+      this.photoFreecamYaw = freeEuler.y;
       this.photoSettings.fov = this.camera.fov;
       this.camera.userData.photoMode = this.photoSettings;
     } else {
+      // Exit into freecam framing so the follow camera picks up where the shot left off.
+      this.pitch = this.photoFreecamPitch;
+      this.yaw = this.photoFreecamYaw;
       this.hasSmoothedTarget = false;
       this.smoothedFov = this.camera.fov;
       delete this.camera.userData.photoMode;
     }
+  }
+
+  setPhotoModeLive(enabled) {
+    this.photoModeLive = Boolean(enabled);
   }
 
   cycleVehicleCameraMode() {
@@ -250,13 +266,14 @@ export class CameraSystem {
 
   updatePhotoMode({ delta, input }) {
     const lookSensitivity = 0.0022;
-    this.yaw -= input.lookX * lookSensitivity;
-    this.pitch = THREE.MathUtils.clamp(
-      this.pitch - input.lookY * lookSensitivity,
+    // Mutate freecam look only — leave this.yaw/this.pitch for gameplay body/IK.
+    this.photoFreecamYaw -= input.lookX * lookSensitivity;
+    this.photoFreecamPitch = THREE.MathUtils.clamp(
+      this.photoFreecamPitch - input.lookY * lookSensitivity,
       -Math.PI * 0.495,
       Math.PI * 0.495,
     );
-    this.camera.rotation.set(this.pitch, this.yaw, 0, 'YXZ');
+    this.camera.rotation.set(this.photoFreecamPitch, this.photoFreecamYaw, 0, 'YXZ');
 
     freeForward.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
     freeRight.set(1, 0, 0).applyQuaternion(this.camera.quaternion);
@@ -857,6 +874,7 @@ export class CameraSystem {
         focusReticle: false,
         rearViewBlend: 0,
         photoMode: false,
+        photoModeLive: false,
         onFootFirstPerson: false,
       };
     }
@@ -879,6 +897,7 @@ export class CameraSystem {
       rearViewBlend: Number(this.rearViewBlend.toFixed(3)),
       modeBlendT,
       photoMode: this.photoMode,
+      photoModeLive: this.photoModeLive,
       onFootFirstPerson: this.usesOnFootFirstPerson(),
       interiorFirstPerson: this.interiorFirstPerson,
       onFootFirstPersonPreference: this.onFootFirstPerson,

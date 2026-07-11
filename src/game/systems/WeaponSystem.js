@@ -2,8 +2,8 @@
  * WeaponSystem (M5–M7) — loadout + perf-conscious fire path.
  *
  * Owns the unified weapon list (great sword first, then guns). Scroll cycles the
- * equipped entry; Z holsters / draws it. Fire path only runs when a gun is drawn
- * in first person.
+ * equipped entry; number keys 1–0 jump to catalog guns; Z holsters / draws it.
+ * Fire path only runs when a gun is drawn in first person.
  *
  * Hitscan prefers cheap enemy capsules; world Rapier rays are optional (expensive
  * against city heightfields). No PointLight flash, no per-shot layout force,
@@ -24,6 +24,7 @@ import {
   isSwordWeaponId,
   weaponIndex,
 } from '../weapons/weaponCatalog.js';
+import { GUN_CATALOG } from '../weapons/gunProfile.js';
 
 const TRACER_POOL = 12;
 const TRACER_LIFE = 0.055;
@@ -177,10 +178,10 @@ export class WeaponSystem {
   }
 
   /**
-   * Early-frame loadout: Z holster/draw, scroll cycle. Call before combat/FP
-   * consume the frame so sword and gun stance stay in sync.
+   * Early-frame loadout: Z holster/draw, scroll cycle, 1–0 gun hotkeys.
+   * Call before combat/FP consume the frame so sword and gun stance stay in sync.
    *
-   * @returns {object} patched input (drawSheathe consumed when handled)
+   * @returns {object} patched input (drawSheathe / gunSlot consumed when handled)
    */
   processLoadout({
     input,
@@ -199,8 +200,33 @@ export class WeaponSystem {
     );
     const reloading = Boolean(firstPersonWeaponSystem?.gunView?.gun?.isReloading);
 
+    // Number keys 1–0 equip GUN_CATALOG[0..9] directly (sword stays on scroll / Z).
+    const slot = Number.isInteger(input.gunSlotPressed) ? input.gunSlotPressed : -1;
+    if (slot >= 0 && slot < GUN_CATALOG.length && !busy && !reloading) {
+      const gunId = GUN_CATALOG[slot]?.id;
+      if (gunId) {
+        const prevId = this.equippedId;
+        const sameGun = prevId === gunId;
+        this.equip(gunId);
+        // Hotkey always draws the chosen gun (press again while drawn is a no-op equip).
+        if (sameGun && !this.holstered) {
+          // Already holding this gun — leave state alone.
+        } else {
+          this.holstered = false;
+          this._onEquippedChanged({ character, combatSystem, firstPersonWeaponSystem });
+          this._applyDrawnState({
+            character,
+            combatSystem,
+            firstPersonWeaponSystem,
+            animated: false,
+          });
+        }
+      }
+      nextInput = { ...nextInput, gunSlotPressed: null };
+    }
+
     // Scroll cycles the full weapon list (sword + guns) when free.
-    const zoom = Number(input.zoomDelta) || 0;
+    const zoom = Number(nextInput.zoomDelta) || 0;
     if (zoom !== 0 && !busy && !reloading) {
       const prevId = this.equippedId;
       this.cycle(zoom > 0 ? 1 : -1);
@@ -219,7 +245,7 @@ export class WeaponSystem {
     }
 
     // Z: holster put-away / draw the equipped weapon (sword first by default).
-    if (input.drawSheathePressed && !busy && canToggleHolster(character)) {
+    if (nextInput.drawSheathePressed && !busy && canToggleHolster(character)) {
       this.holstered = !this.holstered;
       this._applyDrawnState({ character, combatSystem, firstPersonWeaponSystem, animated: true });
       nextInput = {
@@ -464,7 +490,12 @@ export class WeaponSystem {
     const originAnchorName = shot.originAnchor || 'muzzle';
     const muzzle = fp?.gunView?.anchors?.[originAnchorName]
       || fp?.gunView?.anchors?.muzzle;
-    if (muzzle?.parent) muzzle.getWorldPosition(_muzzle);
+    if (muzzle?.parent) {
+      // Body yaw/recoil may change after the animation pass, so force the full
+      // parent chain current before reading the author-edited muzzle marker.
+      muzzle.updateWorldMatrix(true, false);
+      muzzle.getWorldPosition(_muzzle);
+    }
     else _muzzle.copy(_origin).addScaledVector(_fwd, 0.35);
 
     const pellets = Math.max(1, shot.pellets || 1);

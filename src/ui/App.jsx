@@ -509,6 +509,7 @@ export function App() {
                 setHudVisible(false);
               }}
               onToggle={(enabled) => gameRuntime?.setPhotoMode(enabled)}
+              onLiveChange={(enabled) => gameRuntime?.setPhotoModeLive(enabled)}
               onSetting={(name, value) => gameRuntime?.setPhotoSetting(name, value)}
             />
           </Show>

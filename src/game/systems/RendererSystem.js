@@ -15,6 +15,7 @@ import {
 } from 'three/webgpu';
 import { ClusteredLighting } from 'three/examples/jsm/lighting/ClusteredLighting.js';
 import { ssr } from 'three/examples/jsm/tsl/display/SSRNode.js';
+import { godrays } from 'three/examples/jsm/tsl/display/GodraysNode.js';
 import { ssao } from '../../three-addons/tsl/display/SSAONode.js';
 import { dualKawaseBloom } from '../../three-addons/tsl/display/DualKawaseBloomNode.js';
 import { getPostEffectMode, getRecommendedFogMaxDistance, getToneMappingMode, mergeQualityPresetForScene } from '../config/qualityPresets.js';
@@ -132,6 +133,8 @@ export class RendererSystem {
     this.drawCallProfiler = new DrawCallProfiler();
     this.drawProfileCounter = 0;
     this.sceneContext = 'exterior';
+    /** Directional/point light used by official TSL godrays (range warehouse). */
+    this.godRaysLight = null;
     this._aoCameraPos = new Vector3();
     this._aoCameraQuat = new Quaternion();
     this._aoCameraValid = false;
@@ -163,6 +166,20 @@ export class RendererSystem {
     this.invalidatePipeline();
     this.resizeIfNeeded();
     return this.snapshot();
+  }
+
+  /**
+   * Bind the sun (or another directional/point light with shadows) for the
+   * official three.js TSL godrays pass. Pass null to disable.
+   * @param {import('three').DirectionalLight|import('three').PointLight|null} light
+   */
+  setGodRaysLight(light = null) {
+    const next = light ?? null;
+    if (this.godRaysLight === next) return this.snapshot?.() ?? null;
+    this.godRaysLight = next;
+    // Rebuild post graph so godrays node is created/torn down with the light.
+    this.invalidatePipeline();
+    return this.snapshot?.() ?? null;
   }
 
   async initialize() {
@@ -357,8 +374,9 @@ export class RendererSystem {
     };
   }
 
-  render({ scene, camera, deferExpensivePasses = false }) {
+  render({ scene, camera, scopeViewport = null, deferExpensivePasses = false }) {
     if (!scene || !camera || !this.renderer) return;
+    this._renderScopeViewport(scene, camera, scopeViewport);
     this.ensureRenderPipeline(scene, camera);
     // Pipeline can be missing if ensure was interrupted (dispose / invalidate
     // re-entry during boot). Skip the frame rather than throw mid-load.
@@ -395,6 +413,26 @@ export class RendererSystem {
         totalDrawCalls: this.lastFrameDrawCalls,
         totalTriangles: this.lastFrameTriangles,
       });
+    }
+  }
+
+  _renderScopeViewport(scene, mainCamera, scopeViewport) {
+    if (!scopeViewport?.active || !scopeViewport.renderTarget || !scopeViewport.camera) return;
+    scopeViewport.updateCamera?.(mainCamera);
+
+    const gunRoot = scopeViewport.gunRoot;
+    const wasVisible = gunRoot?.visible;
+    const previousTarget = this.renderer.getRenderTarget?.() ?? null;
+    try {
+      // Prevent the scope pass from seeing the weapon or recursively sampling
+      // its own viewport. The main pass restores the complete first-person gun.
+      if (gunRoot) gunRoot.visible = false;
+      this.renderer.setRenderTarget(scopeViewport.renderTarget);
+      this.renderer.clear();
+      this.renderer.render(scene, scopeViewport.camera);
+    } finally {
+      this.renderer.setRenderTarget(previousTarget);
+      if (gunRoot) gunRoot.visible = wasVisible;
     }
   }
 
@@ -600,6 +638,39 @@ export class RendererSystem {
     // after those helpers have finished reconstructing scene depth/position.
     if (reflectionNode) {
       outputNode = vec4(outputNode.rgb.add(reflectionNode.rgb), outputNode.a);
+    }
+
+    // Official three.js WebGPU godrays (screen-space raymarch through the sun
+    // shadow map). Time-of-day is free: SkySystem moves the sun + intensity.
+    // Requires shadows on the bound light and casters on occluders.
+    //
+    // Composite is additive (not depthAwareBlend): by this point outputNode is
+    // often a composed TSL expression (fog/SSR/clouds), not a texture with
+    // .sample() — depthAwareBlend throws "baseNode.sample is not a function".
+    if (plan.godRays && this.godRaysLight?.castShadow && this.renderer?.shadowMap?.enabled) {
+      try {
+        const gr = godrays(sceneDepth, camera, this.godRaysLight);
+        gr.resolutionScale = plan.godRays.resolutionScale ?? 0.45;
+        if (gr.density) gr.density.value = plan.godRays.density ?? 0.62;
+        if (gr.maxDensity) gr.maxDensity.value = plan.godRays.maxDensity ?? 0.48;
+        if (gr.distanceAttenuation) {
+          gr.distanceAttenuation.value = plan.godRays.distanceAttenuation ?? 1.65;
+        }
+        if (gr.raymarchSteps) {
+          // UniformNode<uint> — keep within a perf-friendly range for the range.
+          const steps = Math.max(12, Math.min(72, Math.round(plan.godRays.raymarchSteps ?? 40)));
+          gr.raymarchSteps.value = steps;
+        }
+        trackedNodes.push(gr);
+        const grColor = gr.getTextureNode();
+        // Warm shaft tint; opacity scaled via maxDensity on the pass itself.
+        outputNode = vec4(
+          outputNode.rgb.add(grColor.rgb.mul(vec3(1.0, 0.93, 0.74))),
+          outputNode.a,
+        );
+      } catch (err) {
+        console.warn('[renderer] godrays pass failed; continuing without', err);
+      }
     }
 
     const environmentPreset = this.qualityPreset.environment ?? {};

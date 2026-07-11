@@ -15,8 +15,9 @@ import {
 } from './gunAnchors.js';
 import { normalizeGunSoundAssignments } from './gunSoundLibrary.js';
 import { createDefaultGunAppearance, normalizeGunAppearance } from './gunMaterials.js';
+import { normalizeScopeViewport } from './gunScopeViewport.js';
 
-export const GUN_PROFILE_VERSION = 2;
+export const GUN_PROFILE_VERSION = 5;
 
 export const WEAPON_KINDS = Object.freeze(['rifle', 'pistol', 'shotgun']);
 
@@ -37,12 +38,14 @@ export const WEAPON_KINDS = Object.freeze(['rifle', 'pistol', 'shotgun']);
  * @property {string} id
  * @property {string} label
  * @property {string} glbUrl
+ * @property {'weapon'|'source'} anchorSpace  coordinate space used by `anchors`
  * @property {'rifle'|'pistol'|'shotgun'} weaponKind
  * @property {string} [statsId]  key into gunConfig defaults
  * @property {object} [statOverrides]
  * @property {Record<string, string>} sounds
  * @property {Array<object>} anchors
  * @property {GunPartAnnotation[]} parts
+ * @property {object|null} scopeViewport generated cylindrical scope display
  * @property {number} [updatedAt]
  */
 
@@ -76,8 +79,10 @@ export function createEmptyProfile({
     statsId: statsId ?? weaponKind,
     statOverrides: {},
     sounds: normalizeGunSoundAssignments(null, id),
+    anchorSpace: 'weapon',
     anchors: createStubAnchors(weaponKind),
     parts,
+    scopeViewport: null,
     updatedAt: Date.now(),
   };
 }
@@ -90,6 +95,9 @@ export function normalizeProfile(raw) {
   if (!id) throw new Error('gun profile missing id');
 
   const weaponKind = WEAPON_KINDS.includes(raw.weaponKind) ? raw.weaponKind : 'rifle';
+  // Version 1/2 profiles saved from the original Gunsmith used raw Meshy space.
+  // New/editor-exported profiles explicitly carry `weapon`, matching runtime.
+  const anchorSpace = raw.anchorSpace === 'weapon' ? 'weapon' : 'source';
   const sounds = normalizeGunSoundAssignments(raw.sounds, id);
   const anchors = Array.isArray(raw.anchors) ? raw.anchors.map(normalizeAnchor) : createStubAnchors(weaponKind);
   const parts = Array.isArray(raw.parts) ? raw.parts.map(normalizePart) : [];
@@ -103,8 +111,20 @@ export function normalizeProfile(raw) {
     statsId: String(raw.statsId || weaponKind),
     statOverrides: raw.statOverrides && typeof raw.statOverrides === 'object' ? { ...raw.statOverrides } : {},
     sounds,
+    anchorSpace,
     anchors,
     parts,
+    // V4 introduced the viewport with a conservative 4× default. Migrate that
+    // exact default to the tighter V5 tactical sight; custom authored values stay.
+    scopeViewport: normalizeScopeViewport(raw.scopeViewport
+      ? {
+        ...raw.scopeViewport,
+        magnification: (Number(raw.version) || 1) < 5
+          && Number(raw.scopeViewport.magnification) === 4
+          ? 8
+          : raw.scopeViewport.magnification,
+      }
+      : null),
     updatedAt: Number(raw.updatedAt) || Date.now(),
   };
 }

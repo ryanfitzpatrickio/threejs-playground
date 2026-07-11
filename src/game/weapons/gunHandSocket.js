@@ -39,18 +39,18 @@ export const MIXAMO_RIGHT_HAND_GUN_REST_POSITION = Object.freeze([
  * Presentation offset after grip_mount is snapped to the hand (gun-local meters).
  */
 export const MIXAMO_RIGHT_HAND_GUN_VISUAL_OFFSET_METERS = Object.freeze([
-  -0.01,
-  0.01,
-  -0.165,
+  0.055,
+  -0.02,
+  -0.065,
 ]);
 
 /**
- * Left-hand support IK (live-fit 2026-07-10). Offset from left_hand_ik_target
- * in gun-local meters; Euler XYZ ° for palm/wrist after reach.
+ * Left-hand support IK (Desert AR-15 live-fit 2026-07-10). Offset from
+ * left_hand_ik_target in gun-local meters; Euler XYZ ° for palm/wrist after reach.
  * Hand blend is an on/off gate in the solver (>0 hard-locks palm).
  */
-export const LEFT_HAND_IK_POSITION = Object.freeze([-0.08, -0.035, 0.115]);
-export const LEFT_HAND_IK_ROTATION_DEG = Object.freeze([-19.5, 39, -47]);
+export const LEFT_HAND_IK_POSITION = Object.freeze([-0.055, 0.025, 0.06]);
+export const LEFT_HAND_IK_ROTATION_DEG = Object.freeze([-78.5, -11.5, -39]);
 /** >0 = hard-lock palm to support (walk clips cannot residual-twist the wrist). */
 export const LEFT_HAND_IK_HAND_BLEND = 1;
 
@@ -68,10 +68,38 @@ export const LEFT_HAND_IK_ELBOW_SWING_DEG = 0;
  */
 export const LEFT_HAND_IK_ELBOW_BEND_DEG = 0;
 
-/** Shared AR-family fallback socket (same numbers as the frozen exports above). */
+/**
+ * Right-hand (dominant grip) IK — mirror of the left support solve. The gun is
+ * anchored in body space (chest holder) and the right arm reaches grip_mount, so
+ * moving the gun in the debug pane pulls the right hand with it. Offset from
+ * grip_mount in gun-local meters; Euler XYZ ° for palm/wrist after reach.
+ */
+export const RIGHT_HAND_IK_ENABLED = true;
+export const RIGHT_HAND_IK_POSITION = Object.freeze([0.01, 0, 0.175]);
+export const RIGHT_HAND_IK_ROTATION_DEG = Object.freeze([-86, -98, 0]);
+/** >0 = hard-lock palm to grip (walk clips cannot residual-twist the wrist). */
+export const RIGHT_HAND_IK_HAND_BLEND = 1;
+/** Right elbow pole (body-local): right + down + slightly forward (mirror of left). */
+export const RIGHT_HAND_IK_ELBOW_POLE = Object.freeze([-0.3, -1, 0.15]);
+export const RIGHT_HAND_IK_ELBOW_SWING_DEG = 0;
+export const RIGHT_HAND_IK_ELBOW_BEND_DEG = 0;
+
+/**
+ * Base gun pose in chest-anchor (body) space — meters + Euler XYZ °. Meant to be
+ * re-fit live in the Guns debug pane; +X = character left, +Y = up, +Z = forward,
+ * so a right-shoulder hold sits at −X and the muzzle points +Z (gun −Z + 180° Y).
+ */
+export const BODY_ANCHORED_GUN_REST_POSITION = Object.freeze([-0.12, -0.05, 0.30]);
+export const BODY_ANCHORED_GUN_REST_EULER_DEG = Object.freeze([0, 180, 0]);
+
+/** Look-pitch multipliers (gun holder + spine). Negative flips direction. */
+export const AIM_PITCH_GUN = -1;
+export const AIM_PITCH_SPINE = -0.6;
+
+/** Shared AR-family fallback socket (Desert AR-15 live-fit; chest-anchored dual-hand IK). */
 export const DEFAULT_GUN_SOCKET_PRESET = Object.freeze({
-  handPosition: [...MIXAMO_RIGHT_HAND_GUN_REST_POSITION],
-  handRotationDeg: [...MIXAMO_RIGHT_HAND_GUN_REST_EULER_DEG],
+  handPosition: [...BODY_ANCHORED_GUN_REST_POSITION],
+  handRotationDeg: [...BODY_ANCHORED_GUN_REST_EULER_DEG],
   gunPosition: [...MIXAMO_RIGHT_HAND_GUN_VISUAL_OFFSET_METERS],
   gunRotationDeg: [0, 0, 0],
   gunScale: 1,
@@ -82,31 +110,131 @@ export const DEFAULT_GUN_SOCKET_PRESET = Object.freeze({
   leftIkElbowPole: [...LEFT_HAND_IK_ELBOW_POLE],
   leftIkElbowSwingDeg: LEFT_HAND_IK_ELBOW_SWING_DEG,
   leftIkElbowBendDeg: LEFT_HAND_IK_ELBOW_BEND_DEG,
+  rightIkEnabled: RIGHT_HAND_IK_ENABLED,
+  rightIkPosition: [...RIGHT_HAND_IK_POSITION],
+  rightIkRotationDeg: [...RIGHT_HAND_IK_ROTATION_DEG],
+  rightIkHandBlend: RIGHT_HAND_IK_HAND_BLEND,
+  rightIkElbowPole: [...RIGHT_HAND_IK_ELBOW_POLE],
+  rightIkElbowSwingDeg: RIGHT_HAND_IK_ELBOW_SWING_DEG,
+  rightIkElbowBendDeg: RIGHT_HAND_IK_ELBOW_BEND_DEG,
+  aimPitchGun: AIM_PITCH_GUN,
+  aimPitchSpine: AIM_PITCH_SPINE,
 });
+
+/** Shared long-gun dual-hand chest IK (cloned from desert-scar live-fit). */
+function freezeRifleSocketPreset(overrides = null) {
+  const base = {
+    handPosition: Object.freeze([-0.11, -0.055, 0.25]),
+    handRotationDeg: Object.freeze([0, 180, 0]),
+    gunPosition: Object.freeze([0.055, -0.02, -0.065]),
+    gunRotationDeg: Object.freeze([0, 0, 0]),
+    gunScale: 1,
+    leftIkEnabled: true,
+    leftIkPosition: Object.freeze([-0.055, 0.025, 0.045]),
+    leftIkRotationDeg: Object.freeze([-78.5, -11.5, -39]),
+    leftIkHandBlend: 1,
+    leftIkElbowPole: Object.freeze([0.3, -1, 0.15]),
+    leftIkElbowSwingDeg: 0,
+    leftIkElbowBendDeg: 0,
+    rightIkEnabled: true,
+    rightIkPosition: Object.freeze([0.015, -0.005, 0.125]),
+    rightIkRotationDeg: Object.freeze([-86, -98, 0]),
+    rightIkHandBlend: 1,
+    rightIkElbowPole: Object.freeze([-0.3, -1, 0.15]),
+    rightIkElbowSwingDeg: 0,
+    rightIkElbowBendDeg: 0,
+    aimPitchGun: -1,
+    aimPitchSpine: -0.6,
+  };
+  if (!overrides) return Object.freeze(base);
+  return Object.freeze({ ...base, ...overrides });
+}
 
 /**
  * Per-catalog-gun hand / support sockets (Guns debug pane live-fit).
  * Missing ids fall back to DEFAULT_GUN_SOCKET_PRESET.
  */
 export const GUN_SOCKET_PRESETS = Object.freeze({
-  // Midnight Glock — live-fit 2026-07 (pistol two-hand grip).
-  'midnight-glock': Object.freeze({
-    handPosition: Object.freeze([-0.055, 0.035, 0.065]),
-    handRotationDeg: Object.freeze([
-      101.66285564453351,
-      7.809732444202059,
-      -89.78932778278669,
-    ]),
-    gunPosition: Object.freeze([0.01, 0.01, -0.12]),
+  // Desert Tan AR-15 — live-fit after Gunsmith anchors (chest-anchored dual-hand IK).
+  'desert-ar15': Object.freeze({
+    handPosition: Object.freeze([-0.185, -0.085, 0.36]),
+    handRotationDeg: Object.freeze([0, 180, 0]),
+    gunPosition: Object.freeze([0, 0, 0]),
     gunRotationDeg: Object.freeze([0, 0, 0]),
     gunScale: 1,
     leftIkEnabled: true,
-    leftIkPosition: Object.freeze([-0.07, -0.06, 0.14]),
-    leftIkRotationDeg: Object.freeze([-47, 39, -39]),
+    leftIkPosition: Object.freeze([-0.065, -0.025, 0.01]),
+    leftIkRotationDeg: Object.freeze([-78.5, -8, -62.5]),
     leftIkHandBlend: 1,
-    leftIkElbowPole: Object.freeze([0.3, -1, 0.15]),
-    leftIkElbowSwingDeg: -8,
+    leftIkElbowPole: Object.freeze([0.5, -0.9, 0.25]),
+    leftIkElbowSwingDeg: 0,
     leftIkElbowBendDeg: 0,
+    rightIkEnabled: true,
+    rightIkPosition: Object.freeze([0.01, 0, 0.05]),
+    rightIkRotationDeg: Object.freeze([-82, -78.5, -4]),
+    rightIkHandBlend: 1,
+    rightIkElbowPole: Object.freeze([-0.3, -1, 0.15]),
+    rightIkElbowSwingDeg: 0,
+    rightIkElbowBendDeg: 0,
+    aimPitchGun: -1,
+    aimPitchSpine: -0.6,
+  }),
+  // Desert Tan SCAR — live-fit 2026-07-10 (chest-anchored dual-hand IK).
+  'desert-scar': freezeRifleSocketPreset(),
+  // Remaining long guns: same dual-hand pass as desert-scar (refine per-gun later).
+  'modern-ar15': freezeRifleSocketPreset(),
+  'ak47': freezeRifleSocketPreset(),
+  'folding-stock-ar': freezeRifleSocketPreset(),
+  'obsidian-carbine': freezeRifleSocketPreset(),
+  'olive-bullpup': freezeRifleSocketPreset(),
+  // Tactical Pump Shotgun — live-fit 2026-07-10 (chest-anchored dual-hand IK).
+  'tactical-shotgun': Object.freeze({
+    handPosition: Object.freeze([-0.055, -0.075, 0.215]),
+    handRotationDeg: Object.freeze([0, -180, 0]),
+    gunPosition: Object.freeze([0.085, -0.01, -0.1]),
+    gunRotationDeg: Object.freeze([0, 0, 0]),
+    gunScale: 1,
+    leftIkEnabled: true,
+    leftIkPosition: Object.freeze([0.12, 0.08, -0.13]),
+    leftIkRotationDeg: Object.freeze([-90, 4, 35]),
+    leftIkHandBlend: 1,
+    leftIkElbowPole: Object.freeze([0.55, -1, -0.65]),
+    leftIkElbowSwingDeg: 0,
+    leftIkElbowBendDeg: 0,
+    rightIkEnabled: true,
+    rightIkPosition: Object.freeze([0.025, 0.13, 0.25]),
+    rightIkRotationDeg: Object.freeze([-152.5, -180, -90]),
+    rightIkHandBlend: 1,
+    rightIkElbowPole: Object.freeze([-0.05, -1.15, -0.35]),
+    rightIkElbowSwingDeg: -39,
+    rightIkElbowBendDeg: 0,
+    aimPitchGun: -1,
+    aimPitchSpine: -0.6,
+  }),
+  'desert-sentinel': freezeRifleSocketPreset(),
+  // Midnight Glock — live-fit 2026-07-10 (chest-anchored dual-hand IK).
+  'midnight-glock': Object.freeze({
+    handPosition: Object.freeze([-0.13, 0.02, 0.465]),
+    handRotationDeg: Object.freeze([4, 180, 0]),
+    gunPosition: Object.freeze([0, 0.045, -0.175]),
+    gunRotationDeg: Object.freeze([0, 0, 0]),
+    gunScale: 0.98,
+    leftIkEnabled: true,
+    leftIkPosition: Object.freeze([-0.08, -0.055, 0.14]),
+    leftIkRotationDeg: Object.freeze([-90, -8, -51]),
+    leftIkHandBlend: 1,
+    leftIkElbowPole: Object.freeze([0.25, -1.1, -0.15]),
+    leftIkElbowSwingDeg: 8,
+    leftIkElbowBendDeg: 0,
+    rightIkEnabled: true,
+    rightIkPosition: Object.freeze([0.01, 0, 0.12]),
+    rightIkRotationDeg: Object.freeze([-74.5, -94, 11.5]),
+    rightIkHandBlend: 1,
+    rightIkElbowPole: Object.freeze([-0.3, -1.15, -0.45]),
+    rightIkElbowSwingDeg: -31,
+    rightIkElbowBendDeg: 170,
+    aimPitchGun: -1,
+    aimPitchSpine: -0.6,
   }),
 });
 
@@ -178,6 +306,7 @@ export function orientGunMeshToWeaponSpace(root) {
   visual.position.z -= center.z;
   visual.position.y -= box2.min.y;
   visual.updateMatrixWorld(true);
+  visual.updateMatrix();
 
   const finalSize = new THREE.Box3().setFromObject(root).getSize(new THREE.Vector3());
   return {
@@ -186,7 +315,29 @@ export function orientGunMeshToWeaponSpace(root) {
     length: finalSize.z,
     height: finalSize.y,
     width: finalSize.x,
+    // Maps an anchor authored against the source GLB into canonical weapon
+    // space (−Z muzzle, +Y top). Kept as a Matrix4 for the legacy Gunsmith
+    // migration path; new editor profiles are authored in weapon space.
+    anchorTransform: visual.matrix.clone(),
   };
+}
+
+/** Convert source-GLB anchor coordinates into canonical weapon space. */
+export function transformGunAnchorsToWeaponSpace(anchors, anchorTransform) {
+  if (!Array.isArray(anchors) || !anchorTransform) return anchors ?? [];
+  const transformRotation = new THREE.Quaternion().setFromRotationMatrix(anchorTransform);
+  return anchors.map((anchor) => {
+    const position = new THREE.Vector3().fromArray(anchor?.position ?? [0, 0, 0])
+      .applyMatrix4(anchorTransform);
+    const quaternion = transformRotation.clone().multiply(
+      new THREE.Quaternion().fromArray(anchor?.quaternion ?? [0, 0, 0, 1]),
+    ).normalize();
+    return {
+      ...anchor,
+      position: position.toArray(),
+      quaternion: quaternion.toArray(),
+    };
+  });
 }
 
 function axisVector(axis) {

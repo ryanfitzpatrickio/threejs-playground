@@ -220,7 +220,7 @@ export async function applyGunProfileMaterials(root, profile) {
   const parts = new Map((profile?.parts ?? []).map((part) => [part.meshName, part]));
   const jobs = [];
   root.traverse((mesh) => {
-    if (!mesh.isMesh) return;
+    if (!mesh.isMesh || mesh.userData?._scopeViewport) return;
     const part = parts.get(mesh.name) ?? { surfaceClass: 'metal' };
     const appearance = normalizeGunAppearance(part.appearance, part.surfaceClass);
     const sourceMaterials = cloneSourceMaterials(mesh);

@@ -274,6 +274,18 @@ export class GameRuntime {
       this.sceneSystem.setWeather?.('clear');
       this.sceneSystem.setSceneFogEnabled?.(false);
       this.rendererSystem.setWeather?.('clear');
+      // One shadow volume over the whole warehouse (not a 32 m player bubble).
+      // Aligns sun with sky so far walls cast and god rays match time of day.
+      this.sceneSystem.configureRangeShadows?.({
+        center: new THREE.Vector3(0, 1.5, 50),
+        halfExtent: 72,
+        far: 220,
+        sunDistance: 100,
+        mapSize: this.qualityPreset.shadowMapSize ?? 2048,
+      });
+      // Official TSL godrays march the sun shadow map — bind the scene sun so
+      // shafts track time-of-day direction + intensity automatically.
+      this.rendererSystem.setGodRaysLight?.(this.sceneSystem.sun ?? null);
     } else if (this.photorealismPresetId) {
       this.sceneSystem.skySystem?.setWeather?.('clear');
       this.sceneSystem.setWeather?.('clear');
@@ -303,6 +315,15 @@ export class GameRuntime {
     // the open-roof IBL boost after clear weather is applied.
     if (this.levelMode === 'range' && this.sceneSystem.scene) {
       this.sceneSystem.scene.environmentIntensity = 0.95;
+      // Re-apply after weather may have touched the sun; keep range shadow volume.
+      this.sceneSystem.configureRangeShadows?.({
+        center: new THREE.Vector3(0, 1.5, 50),
+        halfExtent: 72,
+        far: 220,
+        sunDistance: 100,
+        mapSize: this.qualityPreset.shadowMapSize ?? 2048,
+      });
+      this.rendererSystem.setGodRaysLight?.(this.sceneSystem.sun ?? null);
     }
 
     this.cameraSystem.initialize(this.sceneSystem.scene, this.qualityPreset);
@@ -959,6 +980,7 @@ export class GameRuntime {
         lookY: 0,
         photoModePressed: false,
         collisionDebugPressed: false,
+        gunSlotPressed: null,
       };
     }
     if (
@@ -975,17 +997,24 @@ export class GameRuntime {
       this.setPhotoMode(!this.cameraSystem.photoMode);
     }
     if (this.cameraSystem.photoMode) {
+      // Free-fly always owns look/WASD while photo mode is active.
       this.cameraSystem.updatePhotoMode({ delta, input });
-      this.rendererSystem.resizeIfNeeded((viewport) => this.cameraSystem.resize(viewport));
-      if (this.sceneSystem.skySystem?.update(delta, this.cameraSystem?.camera)) {
-        this.rendererSystem.installEnvironment(this.sceneSystem.scene, this.sceneSystem.skySystem);
+      if (!this.cameraSystem.photoModeLive) {
+        // Default: pause simulation, render from free camera only.
+        this.rendererSystem.resizeIfNeeded((viewport) => this.cameraSystem.resize(viewport));
+        if (this.sceneSystem.skySystem?.update(delta, this.cameraSystem?.camera)) {
+          this.rendererSystem.installEnvironment(this.sceneSystem.scene, this.sceneSystem.skySystem);
+        }
+        this.rendererSystem.render({
+          scene: this.sceneSystem.scene,
+          camera: this.cameraSystem.camera,
+        });
+        this.emitSnapshot(timeMs);
+        return;
       }
-      this.rendererSystem.render({
-        scene: this.sceneSystem.scene,
-        camera: this.cameraSystem.camera,
-      });
-      this.emitSnapshot(timeMs);
-      return;
+      // Live: sim + animation/IK continue, but player control is fully locked
+      // (no movement, rotation, combat, or vehicle drive from freecam keys).
+      input = this._photoModeLockedInput(input);
     }
     // Building enter/exit. Handled before the movement/ability pipeline so the E
     // (mount/interact) press is consumed here (returning early skips vehicle mount
@@ -1188,7 +1217,10 @@ export class GameRuntime {
 
     // 5. Construct gameplay input: lock locomotion/combat when aiming, but allow rotating/positioning the plane
     let gameplayInput = input;
-    if (this.rallyCinematicDemo?.active) {
+    if (this.cameraSystem.photoMode && this.cameraSystem.photoModeLive) {
+      // Already locked at frame start; keep a hard lock after any later input mutation.
+      gameplayInput = this._photoModeLockedInput(input);
+    } else if (this.rallyCinematicDemo?.active) {
       gameplayInput = {
         ...input,
         moveX: 0,
@@ -1214,6 +1246,7 @@ export class GameRuntime {
         mountPressed: false,
         lookX: 0,
         lookY: 0,
+        gunSlotPressed: null,
       };
     } else if (this.enemyCutSystem.state === 'aiming') {
       gameplayInput = {
@@ -1423,6 +1456,7 @@ export class GameRuntime {
     this.firstPersonWeaponSystem.postAnimation({
       character,
       cameraSystem: this.cameraSystem,
+      delta: scaledDelta,
     });
 
     // Bone-driven visuals read final bone poses after animation has settled.
@@ -1520,32 +1554,38 @@ export class GameRuntime {
       cameraInput.lookY = 0;
     }
 
-    if (this.rallyCinematicDemo?.active) {
-      this.rallyCinematicDemo.update(scaledDelta, {
-        vehicle: this.vehicleSystem?.activeVehicle,
-        camera: this.cameraSystem.camera,
-        level: this.levelSystem,
-      });
-    } else {
-      this.cameraSystem.update({
-        delta: scaledDelta,
-        target: character.group.position,
-        viewport: this.rendererSystem.getViewport(),
-        input: cameraInput,
-        rootMotionActive: isRootMotionCameraSmoothingActive(character),
-        character,
-        vehicle: this.vehicleSystem?.activeVehicle ?? null,
-      });
+    // Photo-mode free-fly is applied earlier this frame; skip follow/vehicle camera.
+    if (!this.cameraSystem.photoMode) {
+      if (this.rallyCinematicDemo?.active) {
+        this.rallyCinematicDemo.update(scaledDelta, {
+          vehicle: this.vehicleSystem?.activeVehicle,
+          camera: this.cameraSystem.camera,
+          level: this.levelSystem,
+        });
+      } else {
+        this.cameraSystem.update({
+          delta: scaledDelta,
+          target: character.group.position,
+          viewport: this.rendererSystem.getViewport(),
+          input: cameraInput,
+          rootMotionActive: isRootMotionCameraSmoothingActive(character),
+          character,
+          vehicle: this.vehicleSystem?.activeVehicle ?? null,
+        });
+      }
     }
 
     // FP body yaw after look input: turn torso past neck limit so the camera
     // never stares into chest/shoulder interiors; forward move straightens body.
-    this.firstPersonWeaponSystem.postCamera({
-      character,
-      cameraSystem: this.cameraSystem,
-      input: cameraInput,
-      delta: scaledDelta,
-    });
+    // Skip in photo mode — freecam must not rotate the player; gameplay yaw stays frozen.
+    if (!this.cameraSystem.photoMode) {
+      this.firstPersonWeaponSystem.postCamera({
+        character,
+        cameraSystem: this.cameraSystem,
+        input: cameraInput,
+        delta: scaledDelta,
+      });
+    }
 
     // M5–M7 hitscan fire / ADS / damage after camera so the ray matches look.
     this.frameStats.start('weapon');
@@ -1611,6 +1651,7 @@ export class GameRuntime {
     this.rendererSystem.render({
       scene: this.sceneSystem.scene,
       camera: this.cameraSystem.camera,
+      scopeViewport: this.firstPersonWeaponSystem.gunView?.scopeViewport ?? null,
       // SSAO's nested scene pre-pass is the worst possible companion to a
       // first-seen terrain object. Reuse the previous AO target until the
       // bounded streaming/compile queue is quiet.
@@ -2068,6 +2109,73 @@ export class GameRuntime {
       document.exitPointerLock?.();
     }
     this.emitSnapshot();
+  }
+
+  setPhotoModeLive(enabled) {
+    this.cameraSystem.setPhotoModeLive(enabled);
+    this.emitSnapshot(performance.now(), { force: true });
+  }
+
+  /**
+   * Player control lock for live photo mode: free-fly owns look/WASD, while
+   * physics, animation, and hand IK still advance each frame.
+   */
+  _photoModeLockedInput(input) {
+    return {
+      ...input,
+      moveX: 0,
+      moveZ: 0,
+      forward: false,
+      backward: false,
+      left: false,
+      right: false,
+      lookX: 0,
+      lookY: 0,
+      zoomDelta: 0,
+      jump: false,
+      jumpPressed: false,
+      jumpReleased: false,
+      jumpDoubleTapped: false,
+      wallRunJump: false,
+      brace: false,
+      bracePressed: false,
+      slide: false,
+      slidePressed: false,
+      leftPressed: false,
+      rightPressed: false,
+      lightAttackPressed: false,
+      heavyAttackPressed: false,
+      mousePrimaryHeld: false,
+      mouseSecondaryHeld: false,
+      mouseMiddleHeld: false,
+      mouseMiddlePressed: false,
+      drawSheathePressed: false,
+      grabSlamPressed: false,
+      shoulderThrowPressed: false,
+      cutModePressed: false,
+      cutModeReleased: false,
+      cutCommitPressed: false,
+      cutCancelPressed: false,
+      telekinesisPressed: false,
+      telekinesisReleased: false,
+      telekinesisHeld: false,
+      hookFire: false,
+      hookFirePressed: false,
+      hookAimHeld: false,
+      abilityPressed: false,
+      abilityHeld: false,
+      abilityDoubleTapped: false,
+      wingsuitTogglePressed: false,
+      wingsuitHeld: false,
+      rearViewHeld: false,
+      dodgeDirection: null,
+      mountPressed: false,
+      crouchHeld: false,
+      leanLeftHeld: false,
+      leanRightHeld: false,
+      inspectHeld: false,
+      gunSlotPressed: null,
+    };
   }
 
   startRallyCinematicDemo() {
@@ -3346,6 +3454,8 @@ export class GameRuntime {
     this._loadGeneration += 1;
     this.stage = 'disposed';
     this.frameLoop.stop();
+    this.rendererSystem.setGodRaysLight?.(null);
+    this.sceneSystem.clearRangeShadows?.();
     this.rendererSystem.setAnimationLoop(null);
     document.removeEventListener('visibilitychange', this._onVisibilityChange);
     this.inputSystem.dispose();

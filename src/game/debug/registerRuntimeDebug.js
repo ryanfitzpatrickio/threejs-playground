@@ -22,6 +22,7 @@ import {
   listGunDebugOptions,
   logGunDebugSocket,
   resetGunDebugSocket,
+  snapGunDebugSocketToAnchors,
 } from '../weapons/gunDebugSocket.js';
 
 /** Local overlay state (not always in snapshot). */
@@ -846,14 +847,14 @@ export function registerRuntimeDebug(runtime = null) {
 
   registerShaderDebugParam({
     id: 'runtime.gunHandPosition',
-    label: 'Hand offset (m)',
+    label: 'Gun body offset (m)',
     folder: 'Guns',
     type: 'vec3',
     min: -0.5,
     max: 0.5,
     step: 0.005,
     pinPolicy: 'allow',
-    help: 'Attach offset under the right hand before grip snap (meters).',
+    help: 'Base gun position in chest/body space (meters). +X = left, +Y = up, +Z = forward. Both hands IK to follow it.',
     get: () => [...gunDebugSocket.handPosition],
     set: ([x, y, z]) => {
       gunDebugSocket.handPosition = [Number(x) || 0, Number(y) || 0, Number(z) || 0];
@@ -863,14 +864,14 @@ export function registerRuntimeDebug(runtime = null) {
 
   registerShaderDebugParam({
     id: 'runtime.gunHandRotation',
-    label: 'Hand rotation °',
+    label: 'Gun body rotation °',
     folder: 'Guns',
     type: 'vec3',
     min: -180,
     max: 180,
     step: 0.5,
     pinPolicy: 'allow',
-    help: 'Attach Euler XYZ degrees under the right hand (before grip snap).',
+    help: 'Base gun orientation in body space (Euler XYZ °). Muzzle is gun −Z; ~[0,180,0] points it forward.',
     get: () => [...gunDebugSocket.handRotationDeg],
     set: ([x, y, z]) => {
       gunDebugSocket.handRotationDeg = [Number(x) || 0, Number(y) || 0, Number(z) || 0];
@@ -887,7 +888,7 @@ export function registerRuntimeDebug(runtime = null) {
     max: 0.5,
     step: 0.005,
     pinPolicy: 'allow',
-    help: 'Extra gun-local offset after grip snap (meters). Moves the mesh relative to the grip.',
+    help: 'Extra gun-local offset on top of the body pose (meters). Moves the mesh relative to itself.',
     get: () => [...gunDebugSocket.gunPosition],
     set: ([x, y, z]) => {
       gunDebugSocket.gunPosition = [Number(x) || 0, Number(y) || 0, Number(z) || 0];
@@ -1054,11 +1055,216 @@ export function registerRuntimeDebug(runtime = null) {
   });
 
   registerShaderDebugParam({
+    id: 'runtime.rightIkEnabled',
+    label: 'Right hand IK',
+    folder: 'Guns',
+    type: 'bool',
+    pinPolicy: 'allow',
+    help: 'Pull the right (dominant) arm onto grip_mount so the trigger hand follows the gun.',
+    get: () => gunDebugSocket.rightIkEnabled,
+    set: (v) => {
+      gunDebugSocket.rightIkEnabled = Boolean(v);
+      bumpGunDebugSocket();
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'runtime.rightIkPosition',
+    label: 'Right IK offset (m)',
+    folder: 'Guns',
+    type: 'vec3',
+    min: -0.25,
+    max: 0.25,
+    step: 0.005,
+    pinPolicy: 'allow',
+    help: 'Offset of the right-hand target relative to grip_mount (gun-local meters).',
+    get: () => [...gunDebugSocket.rightIkPosition],
+    set: ([x, y, z]) => {
+      gunDebugSocket.rightIkPosition = [Number(x) || 0, Number(y) || 0, Number(z) || 0];
+      bumpGunDebugSocket();
+      fpWeapons()?.handIk?.layoutGunInHand?.({ force: true });
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'runtime.rightIkRotation',
+    label: 'Right IK rotation °',
+    folder: 'Guns',
+    type: 'vec3',
+    min: -180,
+    max: 180,
+    step: 0.5,
+    pinPolicy: 'allow',
+    help: 'Extra Euler XYZ degrees on the right-hand target orientation (palm/wrist). Primary control for right-hand twist.',
+    get: () => [...gunDebugSocket.rightIkRotationDeg],
+    set: ([x, y, z]) => {
+      gunDebugSocket.rightIkRotationDeg = [Number(x) || 0, Number(y) || 0, Number(z) || 0];
+      bumpGunDebugSocket();
+      fpWeapons()?.handIk?.layoutGunInHand?.({ force: true });
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'runtime.rightIkHandBlend',
+    label: 'Right hand rot blend',
+    folder: 'Guns',
+    type: 'float',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    pinPolicy: 'allow',
+    help: '0 = keep animated wrist, any value >0 hard-locks palm to grip + Right IK rotation (no soft slerp).',
+    get: () => gunDebugSocket.rightIkHandBlend,
+    set: (v) => {
+      const n = Number(v);
+      gunDebugSocket.rightIkHandBlend = Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 1;
+      bumpGunDebugSocket();
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'runtime.rightIkElbowPole',
+    label: 'Right elbow pole',
+    folder: 'Guns',
+    type: 'vec3',
+    min: -2,
+    max: 2,
+    step: 0.05,
+    pinPolicy: 'allow',
+    help: 'Body-local direction the right elbow points (X left/right, Y up/down, Z forward/back). Default ≈ right + down + slightly forward.',
+    get: () => [...gunDebugSocket.rightIkElbowPole],
+    set: ([x, y, z]) => {
+      gunDebugSocket.rightIkElbowPole = [Number(x) || 0, Number(y) || 0, Number(z) || 0];
+      bumpGunDebugSocket();
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'runtime.rightIkElbowSwing',
+    label: 'Right elbow swing °',
+    folder: 'Guns',
+    type: 'float',
+    min: -180,
+    max: 180,
+    step: 1,
+    pinPolicy: 'allow',
+    help: 'Rotate the right elbow around the shoulder→hand axis (degrees).',
+    get: () => gunDebugSocket.rightIkElbowSwingDeg,
+    set: (v) => {
+      const n = Number(v);
+      gunDebugSocket.rightIkElbowSwingDeg = Number.isFinite(n) ? n : 0;
+      bumpGunDebugSocket();
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'runtime.rightIkElbowBend',
+    label: 'Right elbow bend °',
+    folder: 'Guns',
+    type: 'float',
+    min: 0,
+    max: 170,
+    step: 1,
+    pinPolicy: 'allow',
+    help: 'Preferred interior right-elbow angle (0 = auto from grip distance). ~90 = right angle, ~140–160 = nearly straight.',
+    get: () => gunDebugSocket.rightIkElbowBendDeg,
+    set: (v) => {
+      const n = Number(v);
+      gunDebugSocket.rightIkElbowBendDeg = Number.isFinite(n)
+        ? Math.max(0, Math.min(170, n))
+        : 0;
+      bumpGunDebugSocket();
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'runtime.aimPitchGun',
+    label: 'Aim pitch → gun',
+    folder: 'Guns',
+    type: 'float',
+    min: -1.5,
+    max: 1.5,
+    step: 0.05,
+    pinPolicy: 'allow',
+    help: 'Multiplier on camera look-pitch tilting the gun holder (muzzle up/down). 1 = full follow, negative flips direction, 0 = level.',
+    get: () => gunDebugSocket.aimPitchGun,
+    set: (v) => {
+      const n = Number(v);
+      gunDebugSocket.aimPitchGun = Number.isFinite(n) ? n : 0;
+      bumpGunDebugSocket();
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'runtime.aimPitchSpine',
+    label: 'Aim pitch → spine',
+    folder: 'Guns',
+    type: 'float',
+    min: -1.5,
+    max: 1.5,
+    step: 0.05,
+    pinPolicy: 'allow',
+    help: 'Multiplier on camera look-pitch bending the torso toward the aim. ~0.6 leans partway, negative flips direction, 0 = no bend.',
+    get: () => gunDebugSocket.aimPitchSpine,
+    set: (v) => {
+      const n = Number(v);
+      gunDebugSocket.aimPitchSpine = Number.isFinite(n) ? n : 0;
+      bumpGunDebugSocket();
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'runtime.gunSnapToAnchors',
+    label: 'Snap to anchors (override)',
+    folder: 'Guns',
+    type: 'action',
+    pinPolicy: 'allow',
+    help: 'Zero all gun-local + hand-IK fudge so grip/support sit on Gunsmith anchors (grip_mount / left_hand_ik_target). Keeps body hold, scale, elbow poles, aim pitch. Then tune palms and Log gun socket for defaults.',
+    action: () => {
+      const fp = fpWeapons();
+      const ik = fp?.handIk;
+      const view = fp?.gunView;
+      const anchors = view?.anchors ?? {};
+      const grip = anchors.grip_mount;
+      const support = anchors.left_hand_ik_target;
+      if (!view?.root) {
+        console.warn('[gun-debug] snap-to-anchors: equip a gun first');
+        return;
+      }
+      snapGunDebugSocketToAnchors();
+      ik?.layoutGunInHand?.({ force: true });
+      const snap = logGunDebugSocket();
+      const report = {
+        gunId: view.id ?? gunDebugSocket.selectedGunId,
+        grip_mount: grip
+          ? { position: grip.position.toArray(), name: grip.name }
+          : null,
+        left_hand_ik_target: support
+          ? { position: support.position.toArray(), name: support.name }
+          : null,
+        socket: snap,
+      };
+      if (!grip || !support) {
+        console.warn(
+          '[gun-debug] snap-to-anchors: missing anchors (check Gunsmith profile)',
+          report,
+        );
+      } else {
+        console.info(
+          '[gun-debug] snap-to-anchors: hands on authored anchors (offsets cleared)',
+          report,
+        );
+      }
+    },
+  });
+
+  registerShaderDebugParam({
     id: 'runtime.gunResetSocket',
     label: 'Reset gun socket',
     folder: 'Guns',
     type: 'action',
     pinPolicy: 'allow',
+    help: 'Reload catalog defaults for the selected gun (undoes live fit / snap-to-anchors).',
     action: () => {
       resetGunDebugSocket();
       fpWeapons()?.handIk?.layoutGunInHand?.({ force: true });

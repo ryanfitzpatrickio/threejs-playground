@@ -65,5 +65,16 @@ export function buildPostPipelinePlan({
           threshold: environmentPreset.bloomThreshold ?? 1.1,
         }
       : null,
+    // Official three.js TSL screen-space godrays (requires directional/point light + shadows).
+    // Used by the shooting-range warehouse so shafts track time-of-day sun direction/intensity.
+    godRays: environmentPreset.rangeGodRays === true && backend === 'webgpu'
+      ? {
+          resolutionScale: environmentPreset.rangeGodRayResolutionScale ?? 0.45,
+          density: environmentPreset.rangeGodRayDensity ?? 0.62,
+          maxDensity: environmentPreset.rangeGodRayMaxDensity ?? 0.48,
+          distanceAttenuation: environmentPreset.rangeGodRayDistanceAttenuation ?? 1.65,
+          raymarchSteps: environmentPreset.rangeGodRaySteps ?? 40,
+        }
+      : null,
   };
 }

@@ -67,6 +67,31 @@ select {
 .photo-mode label output { color: #d0a15c; font-variant-numeric: tabular-nums; }
 .photo-mode input { grid-column: 1 / -1; width: 100%; accent-color: #d0a15c; }
 .photo-mode button { color: #f7f4e8; background: rgb(247 244 232 / 8%); border: 1px solid rgb(247 244 232 / 18%); border-radius: 7px; padding: 5px 9px; cursor: pointer; }
+.photo-mode__check {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 8px;
+  align-items: center;
+  margin: 0 0 4px;
+  padding: 8px 0 2px;
+  border-bottom: 1px solid rgb(247 244 232 / 10%);
+  font-size: .72rem;
+  cursor: pointer;
+}
+.photo-mode__check input {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  width: auto;
+  margin: 0;
+  accent-color: #d0a15c;
+}
+.photo-mode__check span { grid-column: 2; font-weight: 600; }
+.photo-mode__check small {
+  grid-column: 2;
+  color: rgb(247 244 232 / 55%);
+  font-size: .62rem;
+  line-height: 1.25;
+}
 .photo-mode__hud { width: 100%; margin-top: 16px; }
 
 .cloth-editor {

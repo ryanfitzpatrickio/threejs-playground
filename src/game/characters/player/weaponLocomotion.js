@@ -157,3 +157,30 @@ export function weaponLocoJumpState(weaponKind, phase = 'default') {
 export function hasWeaponLocoFamily(weaponKind) {
   return normalizeWeaponLocoKind(weaponKind) != null;
 }
+
+/**
+ * Per-state hand behaviour — which animations should let a hand swing free
+ * instead of being pinned to the gun, and whether the gun should ride the right
+ * hand (a "carry" socket) instead of being body-anchored. Matched by substring
+ * on the resolved playback state (`${kind}_${slug}`).
+ *
+ * `left`/`right` = whether that hand's IK stays ACTIVE. `carry` = socket the gun
+ * to the right hand (frozen from the moment carry begins) so it's held through
+ * the clip rather than floating at the chest anchor. Sprint pumps the arms and
+ * the reach-clamp fights the swing, so it drops both IK and carries in-hand.
+ */
+const HAND_IK_GATES = [
+  { test: (s) => s.includes('sprint'), left: false, right: false, carry: true },
+];
+
+/**
+ * @param {string|null|undefined} stateKey  resolved playback state
+ * @returns {{ left: boolean, right: boolean, carry: boolean }}
+ */
+export function resolveWeaponHandIk(stateKey) {
+  const s = String(stateKey || '');
+  for (const rule of HAND_IK_GATES) {
+    if (rule.test(s)) return { left: rule.left, right: rule.right, carry: !!rule.carry };
+  }
+  return { left: true, right: true, carry: false };
+}
