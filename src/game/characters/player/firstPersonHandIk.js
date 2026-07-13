@@ -645,6 +645,30 @@ export function createFirstPersonHandIk(modelRoot, bodyRoot = modelRoot) {
     });
   }
 
+  /** Apply the same two-bone solver to a hand-parented melee weapon's grip markers. */
+  function updateMeleeHandIk({ rightTarget = null, leftTarget = null, config = {}, dt = 1 / 60 } = {}) {
+    const solveExternal = (targetObject, armBone, foreArmBone, handBone, defaults, side) => {
+      const enabled = config?.[`${side}IkEnabled`] === true;
+      if (!enabled || !targetObject || !armBone || !foreArmBone || !handBone) return;
+      targetObject.updateWorldMatrix(true, false);
+      solveArmToTarget({
+        armBone,
+        foreArmBone,
+        handBone,
+        ikTarget: targetObject,
+        poleArr: config[`${side}IkElbowPole`],
+        defaultPole: defaults,
+        swingDeg: Number(config[`${side}IkElbowSwingDeg`]) || 0,
+        bendDeg: Number(config[`${side}IkElbowBendDeg`]) || 0,
+        blend: THREE.MathUtils.clamp(Number(config[`${side}IkHandBlend`]) || 0, 0, 1),
+        weight: 1,
+      });
+    };
+
+    solveExternal(rightTarget, rightArmBone, rightForeArmBone, rightHandBone, RIGHT_DEFAULT_POLE, 'right');
+    solveExternal(leftTarget, leftArmBone, leftForeArmBone, leftHandBone, LEFT_DEFAULT_POLE, 'left');
+  }
+
   /**
    * Carry the gun in the right hand instead of body-anchoring it. On the rising
    * edge (carry begins) the gun's pose RELATIVE TO the right hand is frozen while
@@ -756,6 +780,7 @@ export function createFirstPersonHandIk(modelRoot, bodyRoot = modelRoot) {
     updateWeaponAnchorFromRightHand,
     updateRightHandIk,
     updateLeftHandIk,
+    updateMeleeHandIk,
     setLeftHandProceduralTarget,
     applyHandCarry,
     measure,

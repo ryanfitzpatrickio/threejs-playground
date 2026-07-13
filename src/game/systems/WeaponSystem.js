@@ -1,10 +1,10 @@
 /**
  * WeaponSystem (M5–M7) — loadout + perf-conscious fire path.
  *
- * Owns the unified weapon list (great sword first, then guns). Number keys 1–0
- * jump to catalog guns; Z holsters / draws the equipped weapon. Scroll is left
- * for camera zoom (no weapon cycling). Fire path only runs when a gun is drawn
- * in first person.
+ * Owns the unified weapon list (great sword first, then guns). Hotkeys:
+ * 1 = sword/melee, 2 = pistol, 3 = random non-pistol gun. Z holsters / draws
+ * the equipped weapon. Scroll is left for camera zoom (no weapon cycling).
+ * Fire path only runs when a gun is drawn in first person.
  *
  * Hitscan prefers cheap enemy capsules; world Rapier rays are optional (expensive
  * against city heightfields). No PointLight flash, no per-shot layout force,
@@ -23,6 +23,7 @@ import {
 } from '../weapons/weaponHitscan.js';
 import {
   DEFAULT_WEAPON_ID,
+  SWORD_WEAPON_ID,
   WEAPON_CATALOG,
   findWeapon,
   isGunWeaponId,
@@ -55,6 +56,25 @@ const _fwd = new THREE.Vector3();
 const _right = new THREE.Vector3();
 const _up = new THREE.Vector3(0, 1, 0);
 const _hitPoint = new THREE.Vector3();
+
+/**
+ * Resolve number-key loadout (0-based gunSlotPressed → key 1/2/3).
+ * 1 sword, 2 pistol, 3 random from the other catalog guns (rifles + shotgun).
+ * @param {number} slot
+ * @returns {string|null}
+ */
+function resolveLoadoutHotkeyId(slot) {
+  if (slot === 0) return SWORD_WEAPON_ID;
+  if (slot === 1) {
+    return GUN_CATALOG.find((g) => g.weaponKind === 'pistol')?.id ?? null;
+  }
+  if (slot === 2) {
+    const pool = GUN_CATALOG.filter((g) => g.weaponKind !== 'pistol');
+    if (!pool.length) return null;
+    return pool[Math.floor(Math.random() * pool.length)].id;
+  }
+  return null;
+}
 
 export class WeaponSystem {
   constructor() {
@@ -96,6 +116,24 @@ export class WeaponSystem {
     this._originScratch = { x: 0, y: 0, z: 0 };
     this.presentationSystem = new WeaponPresentationSystem();
     this._gunRoot = null;
+    /**
+     * Optional deathmatch combat interceptor (M4).
+     * When set and returns true for a fire event, local enemy hitscan is skipped
+     * (server owns damage). Cosmetics still play. Null in offline modes.
+     * @type {null|((payload: object) => boolean)}
+     */
+    this._combatInterceptor = null;
+    /**
+     * Optional reload interceptor for networked deathmatch (sends RELOAD intent).
+     * @type {null|((payload: object) => boolean)}
+     */
+    this._reloadInterceptor = null;
+    /**
+     * Optional fire gate: when it returns true, local tryFire is suppressed
+     * (dead / countdown) so the mag is not burned without a SHOT_RESULT.
+     * @type {null|(() => boolean)}
+     */
+    this._combatFireGate = null;
     /** Spent-magazine physics props (AR2). */
     this._droppedMags = null;
   }
@@ -197,7 +235,7 @@ export class WeaponSystem {
   }
 
   /**
-   * Early-frame loadout: Z holster/draw, 1–0 gun hotkeys.
+   * Early-frame loadout: Z holster/draw, 1/2/3 weapon hotkeys.
    * Call before combat/FP consume the frame so sword and gun stance stay in sync.
    * Scroll is not used for weapons (camera zoom keeps zoomDelta).
    *
@@ -220,17 +258,19 @@ export class WeaponSystem {
     );
     const reloading = Boolean(firstPersonWeaponSystem?.gunView?.gun?.isReloading);
 
-    // Number keys 1–0 equip GUN_CATALOG[0..9] directly (sword stays on Z).
+    // 1 = sword/melee, 2 = pistol, 3 = random rifle/shotgun from the other 9.
+    // Keys 4–0 are ignored for loadout (elevators still use floor bindings).
     const slot = Number.isInteger(input.gunSlotPressed) ? input.gunSlotPressed : -1;
-    if (slot >= 0 && slot < GUN_CATALOG.length && !busy && !reloading) {
-      const gunId = GUN_CATALOG[slot]?.id;
-      if (gunId) {
+    if (slot >= 0 && !busy && !reloading) {
+      const weaponId = resolveLoadoutHotkeyId(slot);
+      if (weaponId) {
         const prevId = this.equippedId;
-        const sameGun = prevId === gunId;
-        this.equip(gunId);
-        // Hotkey always draws the chosen gun (press again while drawn is a no-op equip).
-        if (sameGun && !this.holstered) {
-          // Already holding this gun — leave state alone.
+        const sameWeapon = prevId === weaponId;
+        this.equip(weaponId);
+        // Hotkey always draws the chosen weapon (press again while drawn is a no-op).
+        // Slot 3 re-rolls each press, so sameWeapon is rare unless RNG repeats.
+        if (sameWeapon && !this.holstered) {
+          // Already holding this weapon — leave state alone.
         } else {
           this.holstered = false;
           this._onEquippedChanged({ character, combatSystem, firstPersonWeaponSystem });
@@ -274,10 +314,53 @@ export class WeaponSystem {
     this._applyDrawnState({ character, combatSystem, firstPersonWeaponSystem, animated: false });
   }
 
+  /**
+   * Deathmatch M4: install/clear a fire interceptor. Offline modes leave this null.
+   * When the interceptor returns true, local enemy hitscan is skipped (server owns damage).
+   * @param {null|((payload: object) => boolean)} fn
+   */
+  setCombatInterceptor(fn) {
+    this._combatInterceptor = typeof fn === 'function' ? fn : null;
+  }
+
+  /**
+   * Deathmatch M4: install/clear a reload intent interceptor.
+   * @param {null|((payload: object) => boolean)} fn
+   */
+  setReloadInterceptor(fn) {
+    this._reloadInterceptor = typeof fn === 'function' ? fn : null;
+  }
+
+  /**
+   * Deathmatch M4: when the gate returns true, suppress local gun tryFire
+   * (no mag burn while dead / countdown).
+   * @param {null|(() => boolean)} fn
+   */
+  setCombatFireGate(fn) {
+    this._combatFireGate = typeof fn === 'function' ? fn : null;
+  }
+
   _onEquippedChanged({ character, combatSystem, firstPersonWeaponSystem }) {
     if (this.isSwordEquipped()) {
       // Hide any gun; sword visibility follows holstered state.
+      // Drop gun stance immediately so movement/anim don't keep rifle/pistol
+      // settings for the rest of the frame (TP never set fpWeaponStance).
       firstPersonWeaponSystem?.setHolstered?.(true);
+      if (character?.combat) {
+        character.combat.weaponClass = null;
+        character.combat.fpWeaponStance = false;
+        character.combat.aiming = false;
+        character.combat.reloading = false;
+        const ov = character.combat.animationOverride;
+        if (typeof ov === 'string' && (
+          ov.startsWith('fp_')
+          || ov.startsWith('armed')
+          || ov.startsWith('rifle_')
+          || ov.startsWith('pistol_')
+        )) {
+          character.combat.animationOverride = null;
+        }
+      }
     } else if (this.isGunEquipped()) {
       // Sheathe sword quietly when switching to a firearm.
       combatSystem?.forceSheathe?.({ character, silent: true });
@@ -412,8 +495,10 @@ export class WeaponSystem {
     const iAlpha = 1 - Math.exp(-INSPECT_BLEND_SPEED * dt);
     this.inspectBlend += (inspectTarget - this.inspectBlend) * iAlpha;
 
-    const firePressed = Boolean(input?.lightAttackPressed || input?.firePressed);
-    const fireHeld = Boolean(input?.mousePrimaryHeld || input?.fireHeld || firePressed);
+    // Networked deathmatch: suppress tryFire while dead/countdown so mag is not burned.
+    const suppressFire = Boolean(this._combatFireGate?.());
+    const firePressed = !suppressFire && Boolean(input?.lightAttackPressed || input?.firePressed);
+    const fireHeld = !suppressFire && Boolean(input?.mousePrimaryHeld || input?.fireHeld || firePressed);
     const adsHeld = Boolean(input?.mouseSecondaryHeld || input?.heavyAttackPressed || input?.adsHeld);
     const reloadPressed = Boolean(
       input?.reloadPressed
@@ -429,7 +514,7 @@ export class WeaponSystem {
       dt,
       fireHeld: fireHeld && canShoot,
       firePressed: firePressed && canShoot,
-      reloadPressed,
+      reloadPressed: reloadPressed && !suppressFire,
       adsHeld: adsHeld && canShoot,
       pumpPressed: !fireHeld,
     });
@@ -442,10 +527,15 @@ export class WeaponSystem {
     if (events.includes('reloadStart')) {
       this._reloadAnimTimer = gun.stats.reloadTime || 1.5;
       if (!this._playGunSound(gun, 'reloadStart')) this._playClick(220, 0.03);
+      // Networked deathmatch: server owns reload completion / ammo grant.
+      this._reloadInterceptor?.({ weaponId: this.equippedId, gun });
     }
     if (events.includes('reloadComplete')) {
       this._reloadAnimTimer = 0;
       if (!this._playGunSound(gun, 'reloadComplete')) this._playClick(420, 0.025);
+      // Networked deathmatch: server reload_complete owns mag contents. Local
+      // BaseGun may have already refilled — keep presentation until server event
+      // by not treating this as authoritative ammo (combat adapter syncs later).
     }
     if (events.includes('pump')) {
       if (!this._playGunSound(gun, 'pump')) this._playClick(360, 0.03);
@@ -501,6 +591,40 @@ export class WeaponSystem {
     void character;
   }
 
+  /**
+   * Cosmetics-only shot path used when networked deathmatch owns hit resolution.
+   * Still plays muzzle flash, recoil, tracer, shell, and audio.
+   */
+  _presentNetworkedShot({ gun, fp, cameraSystem, origin, direction, muzzlePos }) {
+    this.totalShots += 1;
+    const camera = cameraSystem?.camera;
+    if (camera) {
+      _fwd.set(direction[0], direction[1], direction[2]);
+      if (_fwd.lengthSq() < 1e-8) camera.getWorldDirection(_fwd);
+      else _fwd.normalize();
+      _origin.set(origin[0], origin[1], origin[2]);
+      if (muzzlePos) _muzzle.copy(muzzlePos);
+      else _muzzle.copy(_origin).addScaledVector(_fwd, 0.35);
+      _hitPoint.copy(_origin).addScaledVector(_fwd, 40);
+      this._spawnTracer(_muzzle, _hitPoint, null);
+      this.presentationSystem.presentShot({
+        gun,
+        muzzlePosition: _muzzle,
+        aimDirection: _fwd,
+        cameraSystem,
+        gunRoot: fp?.gunView?.root,
+        ads: gun.ads,
+        bounce: null,
+      });
+      const presentation = this.presentationSystem.snapshot();
+      this.gunKick = presentation.weaponBack;
+      this._ejectShell(_muzzle, _fwd);
+      this._playShotTransient(gun);
+      this._playGunshot(gun);
+    }
+    this.lastShots.length = 0;
+  }
+
   _resolveShot({
     shot,
     gun,
@@ -516,7 +640,6 @@ export class WeaponSystem {
     hordeProxySystem = null,
     resolveHordeTarget = null,
   }) {
-    this.totalShots += 1;
     const camera = cameraSystem?.camera;
     if (!camera) return;
 
@@ -533,6 +656,29 @@ export class WeaponSystem {
       muzzle.getWorldPosition(_muzzle);
     }
     else _muzzle.copy(_origin).addScaledVector(_fwd, 0.35);
+
+    // Deathmatch M4: server owns damage. Send fire intent + cosmetics only.
+    if (this._combatInterceptor) {
+      const intercepted = this._combatInterceptor({
+        origin: [_origin.x, _origin.y, _origin.z],
+        direction: [_fwd.x, _fwd.y, _fwd.z],
+        weaponId: this.equippedId,
+        gun,
+      });
+      if (intercepted) {
+        this._presentNetworkedShot({
+          gun,
+          fp,
+          cameraSystem,
+          origin: [_origin.x, _origin.y, _origin.z],
+          direction: [_fwd.x, _fwd.y, _fwd.z],
+          muzzlePos: _muzzle,
+        });
+        return;
+      }
+    }
+
+    this.totalShots += 1;
 
     const pellets = Math.max(1, shot.pellets || 1);
     // Cap pellets hard — shotgun lag guard

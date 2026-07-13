@@ -31,6 +31,13 @@ import {
   resetReloadDebugSocket,
 } from '../weapons/reloadDebugSocket.js';
 import {
+  bumpMeleeDebugSocket,
+  logMeleeDebugSocket,
+  meleeDebugSocket,
+  resetMeleeDebugSocket,
+  applyMeleeDebugSocket,
+} from '../weapons/meleeDebugSocket.js';
+import {
   HORDE_ARCHETYPES,
   hordeDebugState,
   snapshotHordeDebug,
@@ -1287,6 +1294,75 @@ export function registerRuntimeDebug(runtime = null) {
       console.info('[gun-debug] socket reset');
     },
   });
+
+  // --- Melee (live sword hand socket, IK targets, and back sheath) ---
+  const meleeCharacter = () => (
+    globalThis.__DREAMFALL_SHADER_DEBUG_RUNTIME__ ?? runtime
+  )?.characterSystem?.character ?? null;
+  const relayoutMelee = () => {
+    bumpMeleeDebugSocket();
+    const sword = meleeCharacter()?.sword;
+    if (!sword) {
+      console.warn('[melee-debug] no sword attached (start a play session first)');
+      return;
+    }
+    applyMeleeDebugSocket(sword);
+  };
+  const registerMeleeVec3 = ({ id, label, key, min, max, step, help }) => {
+    registerShaderDebugParam({
+      id, label, folder: 'Melee', type: 'vec3', min, max, step, pinPolicy: 'allow', help,
+      get: () => [...meleeDebugSocket[key]],
+      set: ([x, y, z]) => {
+        meleeDebugSocket[key] = [Number(x) || 0, Number(y) || 0, Number(z) || 0];
+        relayoutMelee();
+      },
+    });
+  };
+  const registerMeleeFloat = ({ id, label, key, min, max, step, help }) => {
+    registerShaderDebugParam({
+      id, label, folder: 'Melee', type: 'float', min, max, step, pinPolicy: 'allow', help,
+      get: () => meleeDebugSocket[key],
+      set: (value) => {
+        const next = Number(value);
+        if (!Number.isFinite(next)) return;
+        meleeDebugSocket[key] = next;
+        relayoutMelee();
+      },
+    });
+  };
+  const registerMeleeBool = ({ id, label, key, help }) => {
+    registerShaderDebugParam({
+      id, label, folder: 'Melee', type: 'bool', pinPolicy: 'allow', help,
+      get: () => meleeDebugSocket[key],
+      set: (value) => { meleeDebugSocket[key] = Boolean(value); relayoutMelee(); },
+    });
+  };
+
+  registerMeleeVec3({ id: 'runtime.meleeHandPosition', label: 'Hand socket offset (m)', key: 'handPosition', min: -0.5, max: 0.5, step: 0.005, help: 'Moves the sword in right-hand bone space.' });
+  registerMeleeVec3({ id: 'runtime.meleeHandRotation', label: 'Hand socket rotation °', key: 'handRotationDeg', min: -180, max: 180, step: 0.5, help: 'Extra Euler XYZ degrees on the hand sword.' });
+  registerMeleeFloat({ id: 'runtime.meleeHandScale', label: 'Hand sword scale', key: 'handScale', min: 0.25, max: 2.5, step: 0.01, help: 'Multiplier on the authored Violet Tempest hand scale.' });
+
+  registerMeleeBool({ id: 'runtime.meleeLeftIkEnabled', label: 'Left sword IK', key: 'leftIkEnabled', help: 'Enable the left sword-grip IK target.' });
+  registerMeleeVec3({ id: 'runtime.meleeLeftIkPosition', label: 'Left sword IK offset (m)', key: 'leftIkPosition', min: -0.5, max: 0.5, step: 0.005, help: 'Left grip target offset from the sword handle.' });
+  registerMeleeVec3({ id: 'runtime.meleeLeftIkRotation', label: 'Left sword IK rotation °', key: 'leftIkRotationDeg', min: -180, max: 180, step: 0.5, help: 'Extra Euler XYZ degrees on the left grip target.' });
+  registerMeleeFloat({ id: 'runtime.meleeLeftIkHandBlend', label: 'Left sword IK hand blend', key: 'leftIkHandBlend', min: 0, max: 1, step: 0.01, help: 'Palm rotation influence for the left grip.' });
+  registerMeleeVec3({ id: 'runtime.meleeLeftIkElbowPole', label: 'Left sword elbow pole', key: 'leftIkElbowPole', min: -2, max: 2, step: 0.05, help: 'Body-local direction for the left elbow plane.' });
+  registerMeleeFloat({ id: 'runtime.meleeLeftIkElbowSwing', label: 'Left sword elbow swing °', key: 'leftIkElbowSwingDeg', min: -180, max: 180, step: 1, help: 'Rotates the left elbow pole around the shoulder-to-grip axis.' });
+  registerMeleeFloat({ id: 'runtime.meleeLeftIkElbowBend', label: 'Left sword elbow bend °', key: 'leftIkElbowBendDeg', min: 0, max: 170, step: 1, help: 'Preferred interior bend angle for the left sword arm.' });
+
+  registerMeleeBool({ id: 'runtime.meleeRightIkEnabled', label: 'Right sword IK', key: 'rightIkEnabled', help: 'Enable the right sword-grip IK target.' });
+  registerMeleeVec3({ id: 'runtime.meleeRightIkPosition', label: 'Right sword IK offset (m)', key: 'rightIkPosition', min: -0.5, max: 0.5, step: 0.005, help: 'Right grip target offset from the sword socket.' });
+  registerMeleeVec3({ id: 'runtime.meleeRightIkRotation', label: 'Right sword IK rotation °', key: 'rightIkRotationDeg', min: -180, max: 180, step: 0.5, help: 'Extra Euler XYZ degrees on the right grip target.' });
+  registerMeleeFloat({ id: 'runtime.meleeRightIkHandBlend', label: 'Right sword IK hand blend', key: 'rightIkHandBlend', min: 0, max: 1, step: 0.01, help: 'Palm rotation influence for the right grip.' });
+  registerMeleeVec3({ id: 'runtime.meleeRightIkElbowPole', label: 'Right sword elbow pole', key: 'rightIkElbowPole', min: -2, max: 2, step: 0.05, help: 'Body-local direction for the right elbow plane.' });
+  registerMeleeFloat({ id: 'runtime.meleeRightIkElbowSwing', label: 'Right sword elbow swing °', key: 'rightIkElbowSwingDeg', min: -180, max: 180, step: 1, help: 'Rotates the right elbow pole around the shoulder-to-grip axis.' });
+  registerMeleeFloat({ id: 'runtime.meleeRightIkElbowBend', label: 'Right sword elbow bend °', key: 'rightIkElbowBendDeg', min: 0, max: 170, step: 1, help: 'Preferred interior bend angle for the right sword arm.' });
+
+  registerMeleeVec3({ id: 'runtime.meleeSheathPosition', label: 'Sheath offset (m)', key: 'sheathPosition', min: -0.75, max: 0.75, step: 0.005, help: 'Moves the sheath relative to its upper-back spine socket.' });
+  registerMeleeVec3({ id: 'runtime.meleeSheathRotation', label: 'Sheath rotation °', key: 'sheathRotationDeg', min: -180, max: 180, step: 0.5, help: 'Extra Euler XYZ degrees on the back sheath.' });
+  registerMeleeFloat({ id: 'runtime.meleeSheathScale', label: 'Sheath scale', key: 'sheathScale', min: 0.25, max: 2.5, step: 0.01, help: 'Multiplier on the authored back-sheath scale.' });
+  registerShaderDebugParam({ id: 'runtime.meleeResetSocket', label: 'Reset melee socket', folder: 'Melee', type: 'action', pinPolicy: 'allow', get: () => null, action: () => { resetMeleeDebugSocket(); relayoutMelee(); console.info('[melee-debug] socket reset'); } });
+  registerShaderDebugParam({ id: 'runtime.meleeLogSocket', label: 'Log melee socket values', folder: 'Melee', type: 'action', pinPolicy: 'allow', get: () => null, action: () => logMeleeDebugSocket() });
 
   // --- Reload (left-hand IK path along the magazine-change track) ---
   registerShaderDebugParam({

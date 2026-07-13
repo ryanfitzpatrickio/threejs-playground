@@ -56,6 +56,9 @@ export class RuntimeSnapshotStore {
         prewarm: this._cityPrewarmProgress,
         hordeScale: this.hordeScaleSnapshot(),
         hordeProxies: this.hordeProxySystem.snapshot(),
+        deathmatch: this.deathmatchFeature?.snapshot?.()
+          ?? this.modeController?.snapshot?.()
+          ?? null,
         frame: this.frameStats.summary(),
         allocation: this.allocationSampler.status(),
         player: playerObj
@@ -92,6 +95,9 @@ export class RuntimeSnapshotStore {
       prewarm: this._cityPrewarmProgress,
       hordeScale: this.hordeScaleSnapshot(),
       hordeProxies: this.hordeProxySystem.snapshot(),
+      deathmatch: this.deathmatchFeature?.snapshot?.()
+        ?? this.modeController?.snapshot?.()
+        ?? null,
       frame: this.frameStats.summary(),
       allocation: this.allocationSampler.status(),
       player: playerObj

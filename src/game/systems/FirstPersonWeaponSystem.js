@@ -23,6 +23,7 @@ import {
 import { createFirstPersonHandIk } from '../characters/player/firstPersonHandIk.js';
 import { defaultGunIdFromQuery, loadGunView } from '../weapons/loadGunView.js';
 import { applyGunSocketPreset, gunDebugSocket } from '../weapons/gunDebugSocket.js';
+import { meleeDebugSocket } from '../weapons/meleeDebugSocket.js';
 import { sampleReloadLeftHand } from '../weapons/reloadIkDirector.js';
 import {
   getReloadDebugPathOptions,
@@ -142,8 +143,14 @@ export class FirstPersonWeaponSystem {
     this.holstered = Boolean(holstered);
     if (this.holstered) {
       this._setWeaponVisible(false);
-    } else if (this.active && this.gunView) {
+      // Detach gun from hand IK so sword/melee (or unarmed) is not left in a
+      // rifle/pistol grip pose after a hotkey switch.
+      this.cancelReloadMagazineCycle();
+      this.handIk?.setWeapon?.(null);
+    } else if (this.gunView) {
       this._setWeaponVisible(true);
+      // Re-parent after a holster detach (setWeapon(null) above).
+      this.handIk?.setWeapon?.(this.gunView.root, this.gunView.anchors);
     }
   }
 
@@ -667,6 +674,7 @@ export class FirstPersonWeaponSystem {
   /**
    * Head/neck scale-down for on-foot first person so the head mesh never fills
    * the view — drawn gun/sword and unarmed/stowed holster alike.
+   * Also keeps the back sheath out of first person (clips the camera / body).
    */
   _syncHeadHide(character, { fp, driving }) {
     // Independent of drawn loadout: stowed/unarmed FP still sees the body and
@@ -674,6 +682,19 @@ export class FirstPersonWeaponSystem {
     const wantHide = Boolean(fp && !driving);
     if (wantHide) this._ensureHeadHidden(character);
     else this._restoreHead(character);
+    this._syncSheathVisibility(character, { fp });
+  }
+
+  /** Sheath stays on the back in third person; never shown in first person. */
+  _syncSheathVisibility(character, { fp }) {
+    const sheath = character?.sword?.sheath?.group
+      || character?.combat?.sword?.sheath?.group
+      || null;
+    if (!sheath) return;
+    const wantVisible = !fp;
+    if (sheath.visible !== wantVisible) {
+      sheath.visible = wantVisible;
+    }
   }
 
   /**
@@ -715,9 +736,10 @@ export class FirstPersonWeaponSystem {
         void this.equipGun(wantedGun);
       } else if (this.gunView && !this.holstered) {
         this._setWeaponVisible(true);
-        if (!this.handIk) {
-          const ik = this._ensureIk(character);
-          ik?.setWeapon(this.gunView.root, this.gunView.anchors);
+        const ik = this.handIk || this._ensureIk(character);
+        // Always re-bind: holster/sword may have cleared setWeapon(null).
+        if (ik && this.gunView.root && this.gunView.root.parent !== ik.weaponAnchor) {
+          ik.setWeapon(this.gunView.root, this.gunView.anchors);
         }
       }
     }
@@ -909,14 +931,33 @@ export class FirstPersonWeaponSystem {
   /**
    * After AnimationStateSystem mixer write: spine bend toward the look pitch, then
    * body-anchored gun with both-hand IK onto grip/support (all debug-tunable).
+   * Sword melee IK runs when the gun is not drawn — even if a holstered gunView
+   * is still cached from the last firearm equip.
    */
   postAnimation({ character, cameraSystem, delta = 1 / 60 }) {
-    if (!this.active || !character) return;
+    if (!character) return;
+    const sword = character.sword;
+    const swordActive = Boolean(sword?.group?.visible && character.combat?.weapon !== 'sheathed');
+    if (!this.active && !swordActive) return;
 
     const root = character.animationController?.modelRoot || character.group;
     root?.updateMatrixWorld?.(true);
 
-    if (!this.gunView) return;
+    // Melee grip IK when sword is out and the firearm is not the active draw.
+    if (swordActive && !this.active) {
+      const meleeIk = this.handIk || this._ensureIk(character);
+      meleeIk?.updateMeleeHandIk?.({
+        rightTarget: sword.rightGrip ?? sword.group,
+        leftTarget: sword.leftGrip ?? null,
+        config: meleeDebugSocket,
+        dt: Number(delta) || 1 / 60,
+      });
+      root?.updateMatrixWorld?.(true);
+      return;
+    }
+
+    // Gun path only while the firearm is the drawn loadout (this.active).
+    if (!this.active || !this.gunView) return;
     const ik = this.handIk || this._ensureIk(character);
     if (!ik?.ready) return;
 
@@ -1113,20 +1154,44 @@ export class FirstPersonWeaponSystem {
     this._headHidden = false;
   }
 
+  /**
+   * Drop gun stance flags when the firearm is no longer drawn.
+   * Must run in third person too: TP keeps fpWeaponStance false while weaponClass
+   * is still set for rifle/pistol loco — early-outing on fp only left sword with
+   * gun movement/aim after pressing 1.
+   */
   _clearOverride(character) {
-    if (!character?.combat?.fpWeaponStance) return;
-    character.combat.fpWeaponStance = false;
-    character.combat.weaponClass = null;
-    if (!character.combat.attack
-      && (character.combat.animationOverride === this.playbackState
-        || character.combat.animationOverride?.startsWith?.('armed')
-        || character.combat.animationOverride?.startsWith?.('fp_')
-        || character.combat.animationOverride?.startsWith?.('rifle_')
-        || character.combat.animationOverride?.startsWith?.('pistol_'))) {
-      character.combat.animationOverride = null;
+    if (!character?.combat) return;
+    const combat = character.combat;
+    const hadGunStance = Boolean(
+      combat.fpWeaponStance
+      || combat.weaponClass
+      || combat.aiming
+      || combat.reloading,
+    );
+    const ov = combat.animationOverride;
+    const gunOverride = Boolean(
+      ov
+      && (ov === this.playbackState
+        || (typeof ov === 'string' && (
+          ov.startsWith('armed')
+          || ov.startsWith('fp_')
+          || ov.startsWith('rifle_')
+          || ov.startsWith('pistol_')
+        ))),
+    );
+    if (!hadGunStance && !gunOverride) return;
+
+    combat.fpWeaponStance = false;
+    combat.weaponClass = null;
+    combat.aiming = false;
+    combat.reloading = false;
+    if (!combat.attack && gunOverride) {
+      combat.animationOverride = null;
     }
-    if (character.combat.weapon === 'sheathed') {
-      character.combat.armed = false;
+    // Sword forceDraw may already have set weapon=armed; only demote if still sheathed.
+    if (combat.weapon === 'sheathed') {
+      combat.armed = false;
     }
   }
 

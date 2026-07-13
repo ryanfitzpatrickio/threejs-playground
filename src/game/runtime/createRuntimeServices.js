@@ -42,6 +42,7 @@ import { VehicleDamageSystem } from '../systems/VehicleDamageSystem.js';
 import { PlatformRidingSystem } from '../systems/PlatformRidingSystem.js';
 import { CarLeapSystem } from '../systems/CarLeapSystem.js';
 import { WeatherSystem } from '../systems/WeatherSystem.js';
+import { RemotePlayerSystem } from '../systems/RemotePlayerSystem.js';
 import {
   HORDE_FULL_SHADOW_CASTER_LIMIT,
   HORDE_ATTACK_TOKEN_LIMIT,
@@ -102,6 +103,8 @@ export function createRuntimeServices({ canvas, qualityPreset, levelMode }) {
   const rallyCinematicDemo = new RallyCinematicDemo();
   const vehicleDamageSystem = new VehicleDamageSystem();
   const weatherSystem = new WeatherSystem();
+  // Deathmatch M3: always constructed; only updated when deathmatch feature is active.
+  const remotePlayerSystem = new RemotePlayerSystem();
   const frameStats = new FrameStats();
   const allocationSampler = new AllocationSampler();
   const renderRateLimiter = new RenderRateLimiter(60);
@@ -151,6 +154,7 @@ export function createRuntimeServices({ canvas, qualityPreset, levelMode }) {
     rallyCinematicDemo,
     vehicleDamageSystem,
     weatherSystem,
+    remotePlayerSystem,
     frameStats,
     allocationSampler,
     renderRateLimiter,

@@ -48,6 +48,7 @@ export const FRAME_STEPS = [
   { id: 'car-leap-bullet-time', phase: 'time-and-input', description: 'Car-leap bullet time scale' },
   { id: 'physics-begin-frame', phase: 'time-and-input', description: 'PhysicsSystem.beginFrame planning' },
   { id: 'loadout-hijack-ability', phase: 'time-and-input', description: 'Loadout / hijack / ability routing' },
+  { id: 'deathmatch-net-apply', phase: 'time-and-input', description: 'Deathmatch corrections / teleport events' },
 
   { id: 'horse-level-presim', phase: 'actors', description: 'Horse / level / mode pre-sim' },
   { id: 'player-damage', phase: 'actors', description: 'Player damage system' },
@@ -63,12 +64,14 @@ export const FRAME_STEPS = [
   { id: 'traversal-router', phase: 'locomotion', description: 'Traversal router' },
   { id: 'combat-input', phase: 'locomotion', description: 'Combat input processing' },
   { id: 'movement-traversal-chain', phase: 'locomotion', description: 'Movement + traversal override chain' },
+  { id: 'deathmatch-sample-send', phase: 'locomotion', description: 'Deathmatch local player_state sample' },
 
   { id: 'fp-locomotion', phase: 'animation', description: 'FP locomotion' },
   { id: 'animation-state', phase: 'animation', description: 'Animation state system' },
   { id: 'spine-weapon-ik', phase: 'animation', description: 'Spine / weapon / hand IK' },
   { id: 'wingsuit-visuals', phase: 'animation', description: 'Wingsuit visuals' },
   { id: 'jacket-cloth', phase: 'animation', description: 'Jacket / cloth sim' },
+  { id: 'deathmatch-remote-puppets', phase: 'animation', description: 'Deathmatch remote puppet interpolation' },
 
   { id: 'telekinesis', phase: 'pre-physics', description: 'Telekinesis resolution' },
   { id: 'combat-resolution', phase: 'pre-physics', description: 'Combat resolution' },

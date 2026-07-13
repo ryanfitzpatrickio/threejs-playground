@@ -3551,3 +3551,209 @@ select {
   .builder-left-panel,
   .builder-right-panel { max-height: 28vh; }
 }
+
+/* ── Deathmatch lobby + room overlay (M2) ─────────────────────────────────── */
+.dm-lobby {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px 16px;
+  background:
+    radial-gradient(ellipse 80% 60% at 50% 20%, rgb(208 161 92 / 0.12), transparent 55%),
+    rgb(10 9 8 / 0.96);
+  color: #f7f4e8;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+.dm-lobby__panel {
+  width: min(420px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 26px 24px;
+  border: 1px solid rgb(208 161 92 / 0.25);
+  border-radius: 14px;
+  background: rgb(18 16 14 / 0.9);
+  backdrop-filter: blur(10px);
+}
+
+.dm-lobby__title {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #d0a15c;
+}
+
+.dm-lobby__subtitle {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: rgb(247 244 232 / 65%);
+}
+
+.dm-lobby__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgb(247 244 232 / 60%);
+}
+
+.dm-lobby__field input,
+.dm-lobby__code {
+  padding: 10px 12px;
+  border: 1px solid rgb(247 244 232 / 18%);
+  border-radius: 8px;
+  background: rgb(0 0 0 / 35%);
+  color: #f7f4e8;
+  font-size: 15px;
+  letter-spacing: 0.02em;
+}
+
+.dm-lobby__code {
+  flex: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+}
+
+.dm-lobby__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.dm-lobby__join {
+  display: flex;
+  gap: 8px;
+}
+
+.dm-lobby__btn,
+.dm-room__btn {
+  padding: 11px 16px;
+  border: 1px solid rgb(247 244 232 / 22%);
+  border-radius: 8px;
+  background: rgb(247 244 232 / 6%);
+  color: #f7f4e8;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.dm-lobby__btn:hover,
+.dm-room__btn:hover { background: rgb(247 244 232 / 12%); }
+
+.dm-lobby__btn:disabled,
+.dm-room__btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.dm-lobby__btn--primary,
+.dm-room__btn--primary {
+  border-color: rgb(208 161 92 / 0.6);
+  background: rgb(208 161 92 / 0.18);
+  color: #f3dcae;
+}
+
+.dm-lobby__error { margin: 0; font-size: 13px; color: #e2a0a0; }
+
+.dm-lobby__back {
+  align-self: flex-start;
+  padding: 4px 0;
+  border: none;
+  background: none;
+  color: rgb(247 244 232 / 55%);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.dm-room {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  z-index: 30;
+  pointer-events: none;
+}
+
+.dm-room__panel {
+  width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid rgb(208 161 92 / 0.22);
+  border-radius: 12px;
+  background: rgb(14 12 10 / 0.82);
+  backdrop-filter: blur(10px);
+  color: #f7f4e8;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  pointer-events: auto;
+}
+
+.dm-room__code {
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dm-room__code strong { letter-spacing: 0.18em; color: #d0a15c; }
+
+.dm-room__copy {
+  margin-left: auto;
+  border: none;
+  background: none;
+  color: rgb(247 244 232 / 55%);
+  font-size: 11px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.dm-room__status { font-size: 12px; color: rgb(247 244 232 / 60%); }
+
+.dm-room__countdown {
+  font-size: 14px;
+  font-weight: 700;
+  color: #f3dcae;
+}
+
+.dm-room__players {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.dm-room__player {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  padding: 3px 0;
+}
+
+.dm-room__player--self .dm-room__name { color: #f3dcae; font-weight: 600; }
+
+.dm-room__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgb(247 244 232 / 30%);
+  flex: 0 0 auto;
+}
+
+.dm-room__dot.is-ready { background: #7fce7f; }
+.dm-room__dot.is-off { background: #b06060; }
+
+.dm-room__name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dm-room__frags { color: rgb(247 244 232 / 55%); font-variant-numeric: tabular-nums; }
+.dm-room__empty { font-size: 12px; color: rgb(247 244 232 / 45%); }
+
+.dm-room__actions { display: flex; gap: 8px; }
+.dm-room__actions .dm-room__btn { flex: 1; padding: 8px 10px; font-size: 13px; }

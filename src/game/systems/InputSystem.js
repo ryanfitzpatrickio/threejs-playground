@@ -29,7 +29,7 @@ const KEY_BINDINGS = {
   KeyH: 'roofSurf',
   // Optional alias for car leap (primary is Space while roof-surfing).
   KeyL: 'carLeap',
-  // 1–0: equip catalog guns (index 0–9). Elevators re-read 1–9 when at a cab.
+  // 1–3: loadout (sword / pistol / random rifle). 1–9 also elevator floors at a cab.
   Digit1: 'gunSlot1',
   Digit2: 'gunSlot2',
   Digit3: 'gunSlot3',

@@ -5,6 +5,7 @@ import { createComposedWorldLevel } from '../world/createComposedWorldLevel.js';
 import { createWildsLevel } from '../world/createWildsLevel.js';
 import { createShootingRangeLevel } from '../world/createShootingRangeLevel.js';
 import { createHordeModeLevel } from '../world/createHordeModeLevel.js';
+import { createDeathmatchArenaLevel } from '../world/createDeathmatchArenaLevel.js';
 import { createMatrixHighwayLevel } from '../world/createMatrixHighwayLevel.js';
 import { getActiveWorldMap, getRallyWorldMap } from '../../world/worldMap/worldMapScenes.js';
 
@@ -97,13 +98,15 @@ export class LevelSystem {
 
   async loadBaseLevel(scene, qualityPreset = {}, mode = 'city', renderer = null) {
     this.status = 'loading';
-    this.mode = ['world', 'wilds', 'rally', 'range', 'horde', 'highway'].includes(mode) ? mode : 'city';
+    this.mode = ['world', 'wilds', 'rally', 'range', 'horde', 'highway', 'deathmatch'].includes(mode) ? mode : 'city';
     if (this.mode === 'wilds') {
       this.level = createWildsLevel(qualityPreset);
     } else if (this.mode === 'range') {
       this.level = createShootingRangeLevel(qualityPreset);
     } else if (this.mode === 'horde') {
       this.level = createHordeModeLevel(qualityPreset);
+    } else if (this.mode === 'deathmatch') {
+      this.level = createDeathmatchArenaLevel(qualityPreset);
     } else if (this.mode === 'highway') {
       this.level = createMatrixHighwayLevel(qualityPreset);
     } else if (this.mode === 'world' || this.mode === 'rally') {

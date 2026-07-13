@@ -327,6 +327,12 @@ function frameUpdate(timeMs) {
       : PHYSICS_FIXED_STEP,
   });
 
+  // Deathmatch M3: apply server corrections / teleports before predicted movement.
+  this.deathmatchFeature?.applyAuthoritative?.({
+    character,
+    physics: this.physicsSystem,
+  });
+
   // 5. Construct gameplay input: lock locomotion/combat when aiming, but allow rotating/positioning the plane
   let gameplayInput = input;
   if (this.cameraSystem.photoMode && this.cameraSystem.photoModeLive) {
@@ -374,7 +380,7 @@ function frameUpdate(timeMs) {
     };
   }
 
-  // Weapon loadout first: 1–0 equip guns, Z holsters/draws equipped.
+  // Weapon loadout first: 1 sword / 2 pistol / 3 random rifle, Z holsters/draws.
   // Sword starts drawn; guns join the same list after the great sword.
   gameplayInput = this.weaponSystem.processLoadout({
     input: gameplayInput,
@@ -643,6 +649,13 @@ function frameUpdate(timeMs) {
   });
   this.frameStats.endSection();
 
+  // Deathmatch M3: sample predicted pose and send player_state at movement cadence.
+  this.deathmatchFeature?.sampleAndSend?.({
+    character,
+    animationStateSystem: this.animationStateSystem,
+    cameraSystem: this.cameraSystem,
+  });
+
   // FP weapon locomotion override (M3) — sets animationOverride before anim system.
   this.firstPersonWeaponSystem.update({
     delta: scaledDelta,
@@ -661,6 +674,8 @@ function frameUpdate(timeMs) {
     character,
     level: this.levelSystem,
   });
+  // Deathmatch M3: remote puppet interpolation (animation labels + weapon stub).
+  this.deathmatchFeature?.updateRemotes?.({ delta: scaledDelta });
   this.frameStats.endSection();
 
   // Spine aim → weapon anchor → hand IK (same order as dust-and-bullets playerBody).

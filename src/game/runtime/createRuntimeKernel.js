@@ -10,6 +10,7 @@ import { createRuntimeServices } from './createRuntimeServices.js';
 import { HordeRuntimeFeature } from './features/horde/HordeRuntimeFeature.js';
 import { InteriorRuntimeFeature } from './features/InteriorRuntimeFeature.js';
 import { VehicleRuntimeFeature } from './features/VehicleRuntimeFeature.js';
+import { DeathmatchRuntimeFeature } from './features/deathmatch/DeathmatchRuntimeFeature.js';
 import { RuntimeCommands } from './RuntimeCommands.js';
 import { RuntimeSnapshotStore } from './RuntimeSnapshotStore.js';
 import { RuntimeVisibility } from './RuntimeVisibility.js';
@@ -29,10 +30,19 @@ import { validateFramePlan } from './runtimeFramePlan.js';
  * feature modules — not GameRuntime.js.
  */
 export class RuntimeKernel {
-  constructor({ canvas, qualityPreset = {}, qualityLevel = 'high', onSnapshot, levelMode = 'city' }) {
+  constructor({
+    canvas,
+    qualityPreset = {},
+    qualityLevel = 'high',
+    onSnapshot,
+    levelMode = 'city',
+    networkSystem = null,
+  }) {
     this.canvas = canvas;
-    this.levelMode = ['world', 'wilds', 'rally', 'range', 'horde', 'highway'].includes(levelMode) ? levelMode : 'city';
+    this.levelMode = ['world', 'wilds', 'rally', 'range', 'horde', 'highway', 'deathmatch'].includes(levelMode) ? levelMode : 'city';
     this.qualityLevel = qualityLevel;
+    // App-owned deathmatch socket (optional). Offline deathmatch leaves this null.
+    this.networkSystem = networkSystem ?? null;
     this.qualityPreset = applyHordeLevelOverrides(
       applyRangeLevelOverrides(
         applyCityLevelOverrides(qualityPreset, qualityLevel, this.levelMode),
@@ -98,6 +108,9 @@ export class RuntimeKernel {
     this.hordeFeature = new HordeRuntimeFeature(this);
     this.interiorFeature = new InteriorRuntimeFeature(this);
     this.vehicleFeature = new VehicleRuntimeFeature(this);
+    this.deathmatchFeature = this.levelMode === 'deathmatch'
+      ? new DeathmatchRuntimeFeature(this)
+      : null;
     this.commands = new RuntimeCommands(this);
     this.snapshotStore = new RuntimeSnapshotStore(this);
     this.visibility = new RuntimeVisibility(this);
@@ -660,6 +673,9 @@ export class RuntimeKernel {
     this.vehicleSystem.dispose();
     this.rallyCinematicDemo?.stop?.();
     this.ledgeHangSystem.dispose();
+    this.deathmatchFeature?.dispose?.();
+    this.deathmatchFeature = null;
+    this.remotePlayerSystem?.dispose?.();
     this.characterSystem.dispose();
     this.levelSystem.dispose();
     this.physicsSystem.dispose();
@@ -669,6 +685,12 @@ export class RuntimeKernel {
     this.rendererSystem.dispose();
 
     this.debugHost?.uninstall?.();
+  }
+
+  /** Late-bind the App-owned deathmatch socket after kernel construction. */
+  setNetworkSystem(network) {
+    this.networkSystem = network ?? null;
+    this.deathmatchFeature?.setNetworkSystem?.(this.networkSystem);
   }
 
 

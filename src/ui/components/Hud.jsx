@@ -106,7 +106,7 @@ export function Hud(props) {
             <div class="hud__range-banner hud__range-banner--countdown">
               <span class="hud__range-title">Breach course</span>
               <span class="hud__range-big">{Math.ceil(range().countdownLeft || 0) || 'GO'}</span>
-              <span class="hud__range-hint">Red = hostile · Blue = friendly · 1–0 to switch guns</span>
+              <span class="hud__range-hint">Red = hostile · Blue = friendly · 1 sword · 2 pistol · 3 random rifle</span>
             </div>
           </Show>
           <Show when={range().phase === 'running'}>

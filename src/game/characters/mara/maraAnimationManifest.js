@@ -62,6 +62,7 @@ const LOCO_DIRS_6 = ['fwd', 'fwd_left', 'fwd_right', 'bwd', 'bwd_left', 'bwd_rig
 // closed grip from armedIdle (these packs export loose fingers) like the fp_* set.
 function weaponLocoClip(pack, slug, {
   loop = true,
+  loopBlend = 0,
   moving = true,
   movementScale = 1,
   blend = 0.35,
@@ -79,6 +80,7 @@ function weaponLocoClip(pack, slug, {
     trackOverrideBonePrefixes: FP_RIFLE_GRIP_FINGER_PREFIXES,
   };
   if (timeScale != null) entry.timeScale = timeScale;
+  if (loopBlend > 0) entry.loopBlend = loopBlend;
   if (moving) {
     entry.rootMotion = { horizontal: true, movementScale, blend, drive: 'locomotion' };
   }
@@ -103,7 +105,17 @@ function buildWeaponLocoStates(kind, pack, opts) {
     const movementScale = tier === 'sprint' ? 1.2 : 1;
     const blend = tier === 'walk' ? 0.4 : 0.35;
     for (const dir of opts.dirs) {
-      states[key(`${tier}_${dir}`)] = move(`${tier}_${dir}`, { timeScale, movementScale, blend });
+      // Some source packs have diagonal clips whose hips track is not safe to
+      // use for gameplay displacement. Keep the animation, but let the normal
+      // movement solver own translation for those directions.
+      const rootMotionScale = opts.rootMotionScaleByDir?.[dir] ?? 1;
+      const sourceDir = opts.sourceDirByDir?.[dir] ?? dir;
+      states[key(`${tier}_${dir}`)] = move(`${tier}_${sourceDir}`, {
+        timeScale,
+        movementScale: movementScale * rootMotionScale,
+        blend,
+        loopBlend: opts.loopBlendByDir?.[dir] ?? 0,
+      });
     }
   }
   if (opts.crouchWalk) {
@@ -149,6 +161,23 @@ const PISTOL_LOCO_STATES = buildWeaponLocoStates('pistol', PISTOL_LOCO_PACK, {
   crouchAim: false,
   crouchWalk: false,
   strafe: true,
+  // The pistol forward-diagonal hips tracks introduce a visible positional
+  // snap when sampled as gameplay root motion. The clips still play normally;
+  // movement remains driven by the regular input/velocity solver.
+  rootMotionScaleByDir: {
+    fwd_left: 0,
+    fwd_right: 0,
+    bwd_left: 0,
+    bwd_right: 0,
+  },
+  // The source pistol pack's forward arc files are mislabeled left/right.
+  sourceDirByDir: { fwd_left: 'fwd_right', fwd_right: 'fwd_left' },
+  loopBlendByDir: {
+    fwd_left: 0.12,
+    fwd_right: 0.12,
+    bwd_left: 0.12,
+    bwd_right: 0.12,
+  },
   turn: false,
   crouchTurn: false,
   crouchEnterExit: true,

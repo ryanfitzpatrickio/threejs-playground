@@ -16,7 +16,13 @@ export function GameCanvas(props) {
       qualityLevel,
       onSnapshot: props.onSnapshot,
       levelMode: props.levelMode ?? 'city',
+      // Deathmatch M3: App-owned socket; optional for offline / other modes.
+      networkSystem: props.networkSystem ?? null,
     });
+    // Late bind if the prop arrives after mount or changes identity.
+    if (props.networkSystem) {
+      runtime.setNetworkSystem?.(props.networkSystem);
+    }
     props.onRuntime?.(runtime);
 
     runtime.start().catch((error) => {

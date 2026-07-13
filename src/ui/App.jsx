@@ -12,6 +12,11 @@ import { ClothColliderEditor } from './components/ClothColliderEditor.jsx';
 import { SettingsDialog } from './components/SettingsDialog.jsx';
 import { LoadingScreen } from './components/LoadingScreen.jsx';
 import { MainMenu } from './components/MainMenu.jsx';
+import { DeathmatchLobby } from './components/DeathmatchLobby.jsx';
+import { DeathmatchRoomOverlay } from './components/DeathmatchRoomOverlay.jsx';
+import { DeathmatchNetworkSystem } from '../game/systems/DeathmatchNetworkSystem.js';
+import { resolvePartyKitHost } from '../game/net/deathmatchClientConfig.js';
+import { MATCH_PHASE } from '../game/config/deathmatch/deathmatchRules.js';
 import { isJacketClothUiEnabled } from '../game/characters/mara/jacketConfig.js';
 import {
   setActiveSceneId,
@@ -40,7 +45,7 @@ import { createDevTools, BodyshopScene, GunsmithScene } from 'virtual:dreamfall-
 import { mountShaderDebugPane } from 'virtual:dreamfall-shader-debug';
 import { loadGarageChassisOptions } from '../game/vehicles/bodyshopChassisRegistry.js';
 
-const LEVELS = new Set(['city', 'world', 'wilds', 'rally', 'range', 'horde', 'highway']);
+const LEVELS = new Set(['city', 'world', 'wilds', 'rally', 'range', 'horde', 'highway', 'deathmatch']);
 
 /** Resolve experience id from a remount key like `range:3` or `world:id:rev:1`. */
 function levelModeFromGameKey(key) {
@@ -135,6 +140,11 @@ export function App() {
   const [chassisRefreshToken, setChassisRefreshToken] = createSignal(0);
   const [levelMode, setLevelModeSignal] = createSignal(initialLevel);
   const [gameSnapshot, setGameSnapshot] = createSignal(null);
+  // Deathmatch (M2): the app owns the single network socket across the lobby →
+  // room → play flow; `dmNet` is the live instance, `dmSnapshot` its UI view.
+  /** @type {DeathmatchNetworkSystem | null} */
+  let dmNet = null;
+  const [dmSnapshot, setDmSnapshot] = createSignal(null);
   const [quality, setQuality] = createSignal(getQualityLevel());
   const [toneMapping, setToneMapping] = createSignal(getToneMappingMode());
   const [postEffect, setPostEffect] = createSignal(getPostEffectMode());
@@ -285,9 +295,13 @@ export function App() {
   const isLoadBlocked = createMemo(
     () => appPhase() === 'booting'
       || appPhase() === 'warming_shared'
-      || appPhase() === 'loading_experience',
+      || appPhase() === 'loading_experience'
+      || appPhase() === 'deathmatch_lobby',
   );
   const isPlaying = createMemo(() => isGame() && appPhase() === 'playing');
+  const showDeathmatchLobby = createMemo(
+    () => isGame() && appPhase() === 'deathmatch_lobby',
+  );
 
   const activeWorldMap = createMemo(() =>
     levelMode() === 'world'
@@ -295,7 +309,19 @@ export function App() {
       : levelMode() === 'rally' ? getRallyWorldMapSync() : null,
   );
 
+  // Tear down the deathmatch socket (best-effort leave, no network wait).
+  const disposeDmNet = () => {
+    if (dmNet) {
+      try {
+        dmNet.leaveAndDispose();
+      } catch { /* ignore */ }
+      dmNet = null;
+    }
+    setDmSnapshot(null);
+  };
+
   const returnToMenu = () => {
+    disposeDmNet();
     setShowSettings(false);
     setShowControls(false);
     setGameSnapshot(null);
@@ -308,13 +334,13 @@ export function App() {
     const current = viewMode();
     if (current === mode) return;
 
-    if (
-      current === 'game'
-      && mode !== 'game'
-      && (appPhase() === 'playing' || appPhase() === 'loading_experience')
-    ) {
-      setGameSnapshot(null);
-      setAppPhase('menu');
+    if (current === 'game' && mode !== 'game') {
+      // Any exit from the game view drops a live deathmatch socket.
+      disposeDmNet();
+      if (appPhase() === 'playing' || appPhase() === 'loading_experience') {
+        setGameSnapshot(null);
+        setAppPhase('menu');
+      }
     }
 
     devTools.beforeSwitch(current, mode);
@@ -323,7 +349,7 @@ export function App() {
 
   /**
    * Sole entry that mounts/remounts a playable experience.
-   * @param {'city'|'world'|'wilds'|'rally'|'range'|'horde'|'highway'} mode
+   * @param {'city'|'world'|'wilds'|'rally'|'range'|'horde'|'highway'|'deathmatch'} mode
    * @param {{ sceneId?: string|null }} [opts]
    */
   const enterExperience = (mode, opts = {}) => {
@@ -331,6 +357,17 @@ export function App() {
     try {
       localStorage.setItem('dreamfall:level', next);
     } catch { /* ignore */ }
+
+    // Deathmatch needs a room before an arena. Route to the lobby unless the
+    // lobby itself is re-entering with a live session (opts.inSession).
+    if (next === 'deathmatch' && !opts.inSession) {
+      disposeDmNet();
+      setLevelModeSignal(next);
+      setGameSnapshot(null);
+      switchTo('game');
+      setAppPhase('deathmatch_lobby');
+      return;
+    }
 
     if (next === 'world') {
       const id = opts.sceneId !== undefined
@@ -356,6 +393,37 @@ export function App() {
     enterExperience(mode);
   };
 
+  // Lobby submit: open the single socket, then mount the arena. The combined
+  // barrier (`experienceReady`) waits for both network welcome and asset load.
+  const startDeathmatchSession = ({ displayName, roomCode }) => {
+    disposeDmNet();
+    dmNet = new DeathmatchNetworkSystem({
+      host: resolvePartyKitHost(),
+      room: roomCode,
+      displayName,
+    });
+    dmNet.onChange((snap) => setDmSnapshot(snap));
+    setDmSnapshot(dmNet.getSnapshot());
+    dmNet.connect();
+    enterExperience('deathmatch', { inSession: true });
+  };
+
+  const toggleDeathmatchReady = (ready) => {
+    dmNet?.sendReady(ready);
+  };
+
+  // The LoadingScreen dismisses on arena asset-load so the player always reaches
+  // the arena even if PartyKit is unreachable. The network half of the barrier
+  // is enforced by the room overlay: it shows connection state and gates Ready
+  // (and therefore the RUNNING match) on the server welcome.
+  const experienceReady = createMemo(() => gameSnapshot()?.stage === 'running');
+
+  // Room overlay shows until the match is actually running (waiting/countdown).
+  const showDeathmatchRoom = createMemo(
+    () => levelMode() === 'deathmatch'
+      && (dmSnapshot()?.phase ?? MATCH_PHASE.WAITING) !== MATCH_PHASE.RUNNING,
+  );
+
   const toggleMode = () => {
     devTools.toggleMode();
   };
@@ -365,7 +433,9 @@ export function App() {
     if (t && (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement
       || t.tagName === 'SELECT' || t.isContentEditable)) return;
 
-    if (e.key === 'Escape' && appPhase() === 'loading_experience' && isGame()) {
+    if (e.key === 'Escape'
+      && (appPhase() === 'loading_experience' || appPhase() === 'deathmatch_lobby')
+      && isGame()) {
       e.preventDefault();
       returnToMenu();
       return;
@@ -402,6 +472,7 @@ export function App() {
 
   globalThis.addEventListener('keydown', onGlobalKey);
   onCleanup(() => globalThis.removeEventListener('keydown', onGlobalKey));
+  onCleanup(() => disposeDmNet());
 
   let bodyshopApi = null;
   let gunsmithApi = null;
@@ -502,6 +573,14 @@ export function App() {
         />
       </Show>
 
+      <Show when={showDeathmatchLobby()}>
+        <DeathmatchLobby
+          defaultName={dmSnapshot()?.playerId ?? 'Player'}
+          onEnter={startDeathmatchSession}
+          onCancel={returnToMenu}
+        />
+      </Show>
+
       {isGame() && showCanvas() && (
         <>
           <Show when={gameKey()} keyed>
@@ -510,12 +589,19 @@ export function App() {
                 <GameCanvas
                   levelMode={levelModeFromGameKey(key)}
                   onSnapshot={setGameSnapshot}
-                  onRuntime={(runtime) => { gameRuntime = runtime; }}
+                  networkSystem={levelModeFromGameKey(key) === 'deathmatch' ? dmNet : null}
+                  onRuntime={(runtime) => {
+                    gameRuntime = runtime;
+                    // Ensure the live socket is bound even if GameCanvas mounted first.
+                    if (dmNet && levelModeFromGameKey(key) === 'deathmatch') {
+                      runtime?.setNetworkSystem?.(dmNet);
+                    }
+                  }}
                 />
                 <Show when={showExperienceLoader()}>
                   <LoadingScreen
                     progress={() => gameSnapshot()?.loadProgress}
-                    ready={() => gameSnapshot()?.stage === 'running'}
+                    ready={experienceReady}
                     onDismissed={() => setAppPhase('playing')}
                   />
                 </Show>
@@ -524,6 +610,14 @@ export function App() {
           </Show>
           {hudVisible() && isPlaying() && <StatsPanel snapshot={gameSnapshot()} />}
           {hudVisible() && isPlaying() && <Hud snapshot={gameSnapshot()} />}
+          <Show when={isPlaying() && showDeathmatchRoom()}>
+            <DeathmatchRoomOverlay
+              snapshot={dmSnapshot()}
+              assetReady={gameSnapshot()?.stage === 'running'}
+              onToggleReady={toggleDeathmatchReady}
+              onLeave={returnToMenu}
+            />
+          </Show>
           <Show when={hudVisible() && isPlaying() && isJacketClothUiEnabled() && showClothEditor()}>
             <ClothColliderEditor
               runtime={() => gameRuntime}

@@ -51,13 +51,17 @@ const SAMPLES = [
   { file: `${PACKS}/weapon-rifle-8way/turn_left.fbx`, moves: false },
   { file: `${PACKS}/weapon-pistol/idle.fbx`, moves: false },
   { file: `${PACKS}/weapon-pistol/walk_fwd.fbx`, moves: true },
+  { file: `${PACKS}/weapon-pistol/run_fwd_left.fbx`, moves: true, loopBlend: 0.12 },
+  { file: `${PACKS}/weapon-pistol/run_fwd_right.fbx`, moves: true, loopBlend: 0.12 },
+  { file: `${PACKS}/weapon-pistol/run_bwd_left.fbx`, moves: true, loopBlend: 0.12 },
+  { file: `${PACKS}/weapon-pistol/run_bwd_right.fbx`, moves: true, loopBlend: 0.12 },
   { file: `${PACKS}/weapon-pistol/strafe_left.fbx`, moves: true },
   { file: `${PACKS}/weapon-rifle-8way/reload.fbx`, moves: false },
 ];
 
 const ARM_BONES = ['RightArm', 'RightForeArm', 'RightHand', 'LeftArm', 'LeftForeArm', 'LeftHand'];
 
-for (const { file, moves } of SAMPLES) {
+for (const { file, moves, loopBlend } of SAMPLES) {
   const source = loadFbx(path.join(root, file));
   normalizeMixamoAnimationSource(source, targetNames);
   const sourceClip = source.animations[0];
@@ -78,6 +82,7 @@ for (const { file, moves } of SAMPLES) {
     targetNames,
     retargetQuaternionTracks: false,
     rootPosition: 'locked',
+    loopBlend,
   });
 
   assert.ok(prepared.tracks.length >= 20, `${file} retained only ${prepared.tracks.length} tracks`);
@@ -93,6 +98,15 @@ for (const { file, moves } of SAMPLES) {
   }
   if (moves) {
     assert.ok(travel > 5, `${file} is a travelling clip but hips barely move (${travel.toFixed(1)})`);
+  }
+  if (loopBlend) {
+    const hipsRotation = prepared.tracks.find((t) => t.name === 'mixamorigHips.quaternion');
+    assert.ok(hipsRotation, `${file} must retain hips rotation for loop blending`);
+    const size = hipsRotation.getValueSize();
+    const values = hipsRotation.values;
+    const seam = Math.max(...Array.from({ length: size }, (_, i) =>
+      Math.abs(values[values.length - size + i] - values[i])));
+    assert.ok(seam < 1e-3, `${file} loop seam remains visible (${seam.toFixed(4)})`);
   }
 }
 

@@ -507,30 +507,32 @@ async function streamAssetsInBackground() {
     }
   }
 
-  // Horde: third-person combat with normal weapon switching. Apply spawn yaw
-  // and level environment (no forced FP / gun / range systems).
-  if (this.levelMode === 'horde') {
+  // Horde / Deathmatch: third-person arena with normal weapon switching. Apply
+  // spawn yaw and the level's environment (no forced FP / gun / range systems).
+  if (this.levelMode === 'horde' || this.levelMode === 'deathmatch') {
     const spawnYaw = this.levelSystem.level?.spawnYaw;
     if (Number.isFinite(spawnYaw) && this.characterSystem.character) {
       this.characterSystem.character.yaw = spawnYaw;
       this.cameraSystem.yaw = spawnYaw;
     }
-    const hordeEnv = this.levelSystem.level?.hordeEnvironment ?? {};
-    if (Number.isFinite(hordeEnv.timeOfDay)) {
-      this.sceneSystem.skySystem?.setTimeOfDay?.(hordeEnv.timeOfDay);
+    const arenaEnv = this.levelSystem.level?.hordeEnvironment
+      ?? this.levelSystem.level?.deathmatchEnvironment
+      ?? {};
+    if (Number.isFinite(arenaEnv.timeOfDay)) {
+      this.sceneSystem.skySystem?.setTimeOfDay?.(arenaEnv.timeOfDay);
     }
-    this.sceneSystem.skySystem?.setWeather?.(hordeEnv.weather ?? 'clear');
-    this.sceneSystem.setWeather?.(hordeEnv.weather ?? 'clear');
-    this.sceneSystem.setSceneFogEnabled?.(hordeEnv.fogEnabled === true);
-    this.rendererSystem.setWeather?.(hordeEnv.weather ?? 'clear');
-    // Initial M6 haze from level environment (preset may override later).
-    if (hordeEnv.fogEnabled && this.sceneSystem?._sceneFog) {
-      const density = Number.isFinite(hordeEnv.fogDensity) ? hordeEnv.fogDensity : 0.0065;
+    this.sceneSystem.skySystem?.setWeather?.(arenaEnv.weather ?? 'clear');
+    this.sceneSystem.setWeather?.(arenaEnv.weather ?? 'clear');
+    this.sceneSystem.setSceneFogEnabled?.(arenaEnv.fogEnabled === true);
+    this.rendererSystem.setWeather?.(arenaEnv.weather ?? 'clear');
+    // Initial haze from level environment (preset may override later).
+    if (arenaEnv.fogEnabled && this.sceneSystem?._sceneFog) {
+      const density = Number.isFinite(arenaEnv.fogDensity) ? arenaEnv.fogDensity : 0.0065;
       const far = Math.min(160, Math.max(55, 0.55 / Math.max(0.003, density)));
       this.sceneSystem._sceneFog.near = far * 0.32;
       this.sceneSystem._sceneFog.far = far;
-      if (Number.isFinite(hordeEnv.fogColor)) {
-        this.sceneSystem._sceneFog.color?.setHex?.(hordeEnv.fogColor);
+      if (Number.isFinite(arenaEnv.fogColor)) {
+        this.sceneSystem._sceneFog.color?.setHex?.(arenaEnv.fogColor);
       }
     }
   }

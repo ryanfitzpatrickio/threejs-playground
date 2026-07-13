@@ -39,3 +39,4 @@ docs/
 .dev.vars*
 !.dev.vars.example
 /volumetric-sky-cloud-analysis.md
+/.partykit/

@@ -532,6 +532,10 @@ export class MaraAnimationController {
     if (!additionalClips) return;
     for (const [state, entry] of additionalClips) {
       if (this.actions.has(state)) continue;
+      // Keep the source clip registry complete as lazy packs arrive. Consumers
+      // that clone the player rig (deathmatch remote shells) need the same
+      // metadata as the live controller, not just its already-bound actions.
+      this.clips.set(state, entry);
       const clip = entry.clip ?? entry;
       const loop = entry.loop !== false;
       const pingPong = loop && entry.pingPong === true;
@@ -1951,6 +1955,7 @@ export function prepareClip({
   startAt,
   rootMotion,
   rootMotionScale = 1,
+  loopBlend = 0,
 }) {
   const preparedClip = clip.clone();
   preparedClip.name = state;
@@ -1990,9 +1995,42 @@ export function prepareClip({
 
       return normalizeRootMotion({ track, rootBindPosition, rootPosition });
     });
+  if (loopBlend > 0 && preparedClip.duration > 0) {
+    preparedClip.tracks = preparedClip.tracks.map((track) => blendQuaternionLoopBoundary({
+      track,
+      duration: preparedClip.duration,
+      blendSeconds: loopBlend,
+    }));
+  }
   preparedClip.optimize();
 
   return preparedClip;
+}
+
+function blendQuaternionLoopBoundary({ track, duration, blendSeconds }) {
+  if (!track.name.endsWith('.quaternion') || track.times.length < 2) {
+    return track;
+  }
+
+  const valueSize = track.getValueSize();
+  if (valueSize !== 4) {
+    return track;
+  }
+
+  const values = track.values.slice();
+  const lastTime = track.times[track.times.length - 1] ?? duration;
+  const startTime = Math.max(0, lastTime - Math.min(blendSeconds, lastTime));
+  const first = new THREE.Quaternion().fromArray(values, 0);
+  const current = new THREE.Quaternion();
+
+  for (let index = 0; index < track.times.length; index += 1) {
+    const time = track.times[index];
+    if (time < startTime) continue;
+    const amount = THREE.MathUtils.clamp((time - startTime) / Math.max(lastTime - startTime, 1e-6), 0, 1);
+    current.fromArray(values, index * valueSize).slerp(first, amount).toArray(values, index * valueSize);
+  }
+
+  return new track.constructor(track.name, track.times, values, track.getInterpolation());
 }
 
 export function trimClipStart(clip, startAt) {

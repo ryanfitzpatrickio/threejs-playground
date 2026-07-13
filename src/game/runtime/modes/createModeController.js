@@ -3,6 +3,7 @@ import { OpenWorldModeController } from './OpenWorldModeController.js';
 import { RallyModeController } from './RallyModeController.js';
 import { RangeModeController } from './RangeModeController.js';
 import { HordeModeController } from './HordeModeController.js';
+import { DeathmatchModeController } from './DeathmatchModeController.js';
 
 /**
  * Select exactly one mode policy controller at startup.
@@ -22,6 +23,8 @@ export function createModeController(levelMode, host) {
       return new RangeModeController(host);
     case 'horde':
       return new HordeModeController(host);
+    case 'deathmatch':
+      return new DeathmatchModeController(host);
     case 'world':
     case 'wilds':
     case 'city':

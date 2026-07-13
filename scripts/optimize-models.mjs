@@ -43,6 +43,7 @@ const MODELS = {
   saddle: 'saddle.glb',
   enemy: 'enemy1.glb',
   neonblade: 'neonblade.glb',
+  violettempest: 'violet-tempest.glb',
   climber: 'climber.fbx', // legacy Tripo body (kept as ?playerModel=climber)
   player: 'player-tpose.fbx', // default Mixamo-compatible T-pose player; → player-tpose.glb
   newplayerv3: 'newplayerv3.fbx', // replacement default Mixamo-compatible player
@@ -64,6 +65,7 @@ const TARGET_SIZES = {
   saddle: [1024, 1024],
   enemy: [1024, 1024],
   neonblade: [512, 512],
+  violettempest: [1024, 1024],
   climber: [1024, 1024], // Tripo body/face textures
   player: [1024, 1024],
   newplayerv3: [1024, 1024],

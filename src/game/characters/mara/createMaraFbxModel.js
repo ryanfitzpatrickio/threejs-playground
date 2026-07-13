@@ -229,16 +229,23 @@ export async function createMaraFbxModel({
   animationController.start();
 
   // Stream the remaining animations in the background without blocking startup.
-  loadRest().then((restClips) => {
+  const animationsReady = loadRest().then((restClips) => {
     if (restClips && restClips.size > 0) {
       animationController.addClips(restClips);
     }
-  }).catch((e) => console.warn('Failed to load some animation clips', e));
+    return restClips;
+  }).catch((e) => {
+    console.warn('Failed to load some animation clips', e);
+    return new Map();
+  });
 
   return {
     group,
     velocity: new THREE.Vector3(),
     animationController,
+    // Optional readiness seam for clone-based consumers. Normal player startup
+    // remains non-blocking; remote shells await this for the complete state set.
+    animationsReady,
     source: isGlb ? 'glb' : 'fbx',
     modelId,
     skeletonSource,
@@ -331,6 +338,7 @@ async function loadAnimationClipsPartial({
           startAt: entry.startAt,
           rootMotion: rootMotionFor({ state, entry }),
           rootMotionScale: modelScale,
+          loopBlend: entry.loopBlend,
         }),
         loop: entry.loop,
         pingPong: entry.pingPong === true,
@@ -384,6 +392,7 @@ async function loadAnimationClipsPartial({
             startAt: entry.startAt,
             rootMotion: rootMotionFor({ state, entry }),
             rootMotionScale: modelScale,
+            loopBlend: entry.loopBlend,
           }),
           loop: entry.loop,
           pingPong: entry.pingPong === true,

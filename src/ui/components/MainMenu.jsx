@@ -34,6 +34,12 @@ const EXPERIENCES = [
     blurb: 'Robot wave arena — sword cuts and firearms.',
     accent: true,
   },
+  {
+    id: 'deathmatch',
+    label: 'Deathmatch',
+    blurb: 'Rail Crucible arena — solo route preview (multiplayer WIP).',
+    accent: true,
+  },
 ];
 
 /**

@@ -1,0 +1,6 @@
+{
+  "$schema": "https://www.partykit.io/schema.json",
+  "name": "dreamfall-deathmatch",
+  "main": "party/server.js",
+  "compatibilityDate": "2025-01-01"
+}

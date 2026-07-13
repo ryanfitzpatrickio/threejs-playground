@@ -11,6 +11,7 @@ import { attachJacketCloth, disposeJacketCloth } from '../characters/mara/attach
 import { isJacketExperimentsEnabled, resolveJacketMode } from '../characters/mara/jacketConfig.js';
 import { disposeObject3D } from '../utils/disposeObject3D.js';
 import { GAME_CONFIG } from '../config/gameConfig.js';
+import { applyMeleeDebugSocket } from '../weapons/meleeDebugSocket.js';
 
 export class CharacterSystem {
   constructor() {
@@ -102,9 +103,10 @@ export class CharacterSystem {
     this.character?.proceduralJacket?.update?.(delta);
   }
 
-  // Attach the great sword to the right hand bone. The glTF and FBX rigs both have
-  // mixamorig bones (after conversion). The procedural fallback has no skeleton.
-  // The sword starts hidden (sheathed); CombatSystem toggles visibility on draw.
+  // Attach the blade to the right hand and, when supplied by the asset, the
+  // separate sheath to the upper back. The glTF and FBX rigs both have
+  // mixamorig bones (after conversion). The sword starts hidden (sheathed);
+  // CombatSystem toggles the blade visibility on draw while the sheath stays put.
   async attachSword(character) {
     if (!character || (character.source !== 'fbx' && character.source !== 'glb')) {
       return;
@@ -119,6 +121,18 @@ export class CharacterSystem {
     sword.group.visible = false;
     hand.add(sword.group);
 
+    const back = sword.sheath?.group
+      ? (character.animationController?.modelRoot?.getObjectByName('mixamorigSpine2')
+        ?? character.animationController?.modelRoot?.getObjectByName('mixamorigSpine1')
+        ?? character.animationController?.modelRoot?.getObjectByName('mixamorigSpine'))
+      : null;
+    if (back) {
+      sword.sheath.group.position.set(0, 0.04, -0.18);
+      sword.sheath.group.rotation.set(0, 0, THREE.MathUtils.degToRad(-12));
+      back.add(sword.sheath.group);
+      sword.sheath.group.visible = true;
+    }
+
     // The hand bone lives inside the FBX object, which is scaled to normalize the
     // character to 1.72m (a ~0.017x factor). A unit-scale child would render
     // thumb-sized, so cancel the inherited parent scale to keep the sword at
@@ -129,6 +143,32 @@ export class CharacterSystem {
     if (Number.isFinite(inherited) && inherited > 1e-6) {
       sword.group.scale.setScalar(1 / inherited);
     }
+
+    let backInherited = 1;
+    if (sword.sheath?.group && back) {
+      back.updateWorldMatrix(true, false);
+      const be = back.matrixWorld.elements;
+      backInherited = Math.hypot(be[0], be[1], be[2]);
+      if (Number.isFinite(backInherited) && backInherited > 1e-6) {
+        sword.sheath.group.scale.multiplyScalar(1 / backInherited);
+      }
+    }
+
+    sword.group.userData.meleeSocketBase = {
+      position: sword.group.position.toArray(),
+      quaternion: sword.group.quaternion.clone(),
+      scale: sword.group.scale.x,
+      parentScale: inherited,
+    };
+    if (sword.sheath?.group && back) {
+      sword.sheath.group.userData.meleeSocketBase = {
+        position: sword.sheath.group.position.toArray(),
+        quaternion: sword.sheath.group.quaternion.clone(),
+        scale: sword.sheath.group.scale.x,
+        parentScale: Number.isFinite(backInherited) && backInherited > 1e-6 ? backInherited : 1,
+      };
+    }
+    applyMeleeDebugSocket(sword);
 
     character.sword = sword;
   }

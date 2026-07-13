@@ -38,4 +38,39 @@ for (const kind of Object.keys(EXPECTED)) {
   assert.equal(counts[kind], EXPECTED[kind], `expected ${EXPECTED[kind]} ${kind}_ states, found ${counts[kind]}`);
 }
 
+// Pistol-only source-pack corrections: diagonal hips tracks are animation-only
+// (the regular movement solver owns translation), and the forward arc source
+// files are exported with their left/right labels reversed. Rifle mappings and
+// the pistol pure-strafe mapping remain untouched.
+for (const tier of ['walk', 'run']) {
+  for (const dir of ['fwd_left', 'fwd_right', 'bwd_left', 'bwd_right']) {
+    assert.equal(
+      MARA_ANIMATION_MANIFEST[`pistol_${tier}_${dir}`].rootMotion?.movementScale,
+      0,
+      `pistol_${tier}_${dir} must not contribute root motion`,
+    );
+    assert.equal(
+      MARA_ANIMATION_MANIFEST[`pistol_${tier}_${dir}`].loop,
+      true,
+      `pistol_${tier}_${dir} must remain looped`,
+    );
+    assert.equal(
+      MARA_ANIMATION_MANIFEST[`pistol_${tier}_${dir}`].loopBlend,
+      0.12,
+      `pistol_${tier}_${dir} must smooth its loop boundary`,
+    );
+  }
+}
+for (const tier of ['walk', 'run']) {
+  assert.match(MARA_ANIMATION_MANIFEST[`pistol_${tier}_fwd_left`].url, new RegExp(`/${tier}_fwd_right\\.fbx$`));
+  assert.match(MARA_ANIMATION_MANIFEST[`pistol_${tier}_fwd_right`].url, new RegExp(`/${tier}_fwd_left\\.fbx$`));
+}
+assert.match(MARA_ANIMATION_MANIFEST.pistol_strafe_left.url, /\/strafe_left\.fbx$/);
+assert.match(MARA_ANIMATION_MANIFEST.pistol_strafe_right.url, /\/strafe_right\.fbx$/);
+assert.notEqual(
+  MARA_ANIMATION_MANIFEST.rifle_run_fwd_left.rootMotion?.movementScale,
+  0,
+  'rifle diagonal root motion must remain enabled',
+);
+
 console.log(`verify-weapon-loco-manifest: ${counts.rifle} rifle_ + ${counts.pistol} pistol_ states resolve to files`);

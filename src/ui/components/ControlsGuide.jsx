@@ -37,9 +37,11 @@ const CONTROL_SECTIONS = [
   },
   {
     title: 'Combat & Weapons',
-    intro: 'Number keys 1–0 jump straight to each catalog gun and draw it. Z holsters or draws whatever is equipped. Sword starts out. Unarmed specials need a nearby target when holstered.',
+    intro: 'Keys 1–3 pick loadout and draw: sword, pistol, or a random rifle/shotgun. Z holsters or draws whatever is equipped. Sword starts out. Unarmed specials need a nearby target when holstered.',
     items: [
-      ['1–0', 'Equip & draw catalog guns (10 slots)'],
+      ['1', 'Equip & draw sword / melee'],
+      ['2', 'Equip & draw pistol'],
+      ['3', 'Equip & draw random rifle/shotgun'],
       ['Z', 'Holster / draw equipped weapon'],
       ['X', 'Inspect gun (hold, while firearm is out)'],
       ['Q + A / D', 'Lean left / right (gun out)'],
