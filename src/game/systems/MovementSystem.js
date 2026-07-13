@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GAME_CONFIG } from '../config/gameConfig.js';
 import { rainWetness } from './weatherUniforms.js';
 import { cameraYawToBodyYaw, shortestAngleDelta } from '../characters/player/firstPersonRig.js';
+import { SLIDE_MIN_SPEED } from './SlideSystem.js';
 
 const moveVector = new THREE.Vector3();
 const desiredVelocity = new THREE.Vector3();
@@ -130,9 +131,13 @@ export class MovementSystem {
     const groundMovementScale = isGrounded && !inWater && groundSurface === 'mud'
       ? MUD_ON_FOOT_SPEED_SCALE
       : 1;
-    // Crouch stance layer (weapon locomotion): hold Ctrl/X on the ground. Cannot
-    // sprint while crouched; caps ground speed and drives the crouch clip set.
-    const isCrouching = Boolean(input.crouchHeld) && isGrounded && !inWater;
+    // Crouch stance (hold C): only when not already at slide speed. Tap-C while
+    // jogging/sprinting is a slide (SlideSystem), so don't decelerate into crouch
+    // on that press and steal the slide window.
+    const preMoveHorizSpeed = Math.hypot(character.velocity.x, character.velocity.z);
+    const atSlideSpeed = preMoveHorizSpeed >= SLIDE_MIN_SPEED
+      || (Boolean(input.brace) && isTryingToMove && isGrounded && !input.suppressSprint);
+    const isCrouching = Boolean(input.crouchHeld) && isGrounded && !inWater && !atSlideSpeed;
     if (character.combat) character.combat.stance = isCrouching ? 'crouch' : 'stand';
     character.crouching = isCrouching;
     const crouchSpeedScale = isCrouching ? GAME_CONFIG.character.crouchSpeedScale : 1;

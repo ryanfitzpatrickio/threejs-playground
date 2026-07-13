@@ -96,6 +96,7 @@ export class RuntimeCommands {
       dodgeDirection: null,
       mountPressed: false,
       crouchHeld: false,
+      crouchPressed: false,
       leanLeftHeld: false,
       leanRightHeld: false,
       inspectHeld: false,

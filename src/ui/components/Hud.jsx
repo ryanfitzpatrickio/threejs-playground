@@ -21,13 +21,12 @@ const EMPTY_SNAPSHOT = {
 
 export function Hud(props) {
   const snapshot = () => props.snapshot ?? EMPTY_SNAPSHOT;
-  const staminaPercent = () => `${Math.round((snapshot().character?.stamina ?? 1) * 100)}%`;
-  const healthPercent = () => {
+  const staminaRatio = () => Math.max(0, Math.min(1, snapshot().character?.stamina ?? 1));
+  const healthRatio = () => {
     const c = snapshot().character ?? {};
-    const ratio = (c.health ?? 1) / (c.maxHealth ?? 1);
-    return `${Math.round(Math.max(0, Math.min(1, ratio)) * 100)}%`;
+    return Math.max(0, Math.min(1, (c.health ?? 1) / (c.maxHealth ?? 1)));
   };
-  const swayDegrees = () => `${(snapshot().character?.sway ?? 0) * 12}deg`;
+  const swayAmount = () => Math.abs(snapshot().character?.sway ?? 0);
 
   const combat = () => snapshot().combat;
   const fpWeapon = () => snapshot().firstPersonWeapon;
@@ -37,37 +36,44 @@ export function Hud(props) {
     if (!fp?.active || !fp?.weaponVisible || !gun) return null;
     return gun;
   };
-  const combatLabel = () => {
-    const c = combat();
-    if (!c?.active) return null;
+
+  /** Loadout / combat mode only — no locomotion override spam. */
+  const loadoutLabel = () => {
     const w = snapshot().weapon;
+    const c = combat();
     const gun = gunHud();
     const holstered = Boolean(w?.holstered);
     const short = w?.equippedShortLabel
-      || (gun ? (gun.label || gun.id || 'GUN').toUpperCase().slice(0, 14) : null)
-      || (c.armed ? 'SWORD' : 'UNARMED');
-    const mode = holstered ? `${short} · STOW` : short;
-    let act = '';
+      || (gun ? (gun.label || gun.id || 'Gun').toString().slice(0, 14) : null)
+      || (c?.armed ? 'Sword' : null);
+    if (!short && !c?.active) return null;
+    const name = short || 'Unarmed';
+    if (holstered && short) return `${name} · stowed`;
     if (gun && !holstered) {
-      if (gun.state === 'reloading') act = 'RELOAD';
-      else if ((w?.inspectBlend ?? 0) > 0.4) act = 'INSPECT';
-      else if (gun.ads > 0.5) act = 'ADS';
-      else if (gun.state === 'firing') act = 'FIRE';
-    } else if (c.animationOverride) {
-      const raw = c.animationOverride;
-      // Short human friendly labels for the common ones
-      if (raw === 'unarmedLight') act = 'LIGHT';
-      else if (raw === 'butterflyTwirl') act = 'TWIRL';
-      else if (raw.startsWith('lightSlash')) act = 'SLASH';
-      else if (raw === 'heavyAttack') act = 'HEAVY';
-      else if (raw === 'dropKick') act = 'KICK';
-      else if (raw === 'drawSword') act = 'DRAW';
-      else if (raw === 'sheatheSword') act = 'SHEATH';
-      else act = formatState(raw).slice(0, 8).toUpperCase();
-    } else if (c.attack?.kind) {
-      act = c.attack.kind.toUpperCase();
+      if (gun.state === 'reloading') return `${name} · reload`;
+      if ((w?.inspectBlend ?? 0) > 0.4) return `${name} · inspect`;
+      if (gun.ads > 0.5) return `${name} · ads`;
+      if (gun.state === 'firing') return `${name} · fire`;
     }
-    return act ? `${mode} · ${act}` : mode;
+    if (c?.attack?.kind) return `${name} · ${c.attack.kind}`;
+    // Meaningful combat acts only (skip armedIdle / fp_walk locomotion noise).
+    const raw = c?.animationOverride;
+    if (raw && isCombatActionOverride(raw)) {
+      return `${name} · ${formatCombatAct(raw)}`;
+    }
+    return name;
+  };
+
+  const statusPrimary = () => loadoutLabel() || snapshot().level?.name || 'Dreamfall';
+  const statusSecondary = () => {
+    const ability = snapshot().ability?.shortLabel;
+    const holstered = Boolean(snapshot().weapon?.holstered);
+    const showAbility = ability && (holstered || !gunHud());
+    const district = snapshot().character?.district;
+    const parts = [];
+    if (showAbility) parts.push(`[F] ${ability}`);
+    if (district) parts.push(district);
+    return parts.length ? parts.join(' · ') : null;
   };
 
   const drivingVehicle = () => {
@@ -324,16 +330,34 @@ export function Hud(props) {
           const gun = gunHud();
           const ads = gun.ads > 0.55;
           return (
-            <>
+            <div
+              class={ads ? 'hud__crosshair hud__crosshair--ads' : 'hud__crosshair'}
+              aria-hidden="true"
+            >
+              <span class="hud__crosshair-h" />
+              <span class="hud__crosshair-v" />
+              <span class="hud__crosshair-dot" />
+            </div>
+          );
+        })()}
+      </Show>
+      <Show when={snapshot().timing?.showHud}>
+        <div class="hud__timing" role="status">
+          sim {Number(snapshot().timing?.simTime ?? 0).toFixed(2)}s · steps {snapshot().timing?.stepsPerFrame ?? 0} · α {Number(snapshot().timing?.alpha ?? 0).toFixed(2)}
+        </div>
+      </Show>
+
+      {/* Bottom-right dock: ammo + vitals + status (single column, no overlap). */}
+      <div class="hud__dock">
+        <Show when={gunHud()}>
+          {(() => {
+            const gun = gunHud();
+            return (
               <div
-                class={ads ? 'hud__crosshair hud__crosshair--ads' : 'hud__crosshair'}
-                aria-hidden="true"
+                class="hud__ammo"
+                role="status"
+                aria-label={`Ammo ${gun.ammoInMag} of ${gun.magazineSize}, reserve ${gun.reserveAmmo}`}
               >
-                <span class="hud__crosshair-h" />
-                <span class="hud__crosshair-v" />
-                <span class="hud__crosshair-dot" />
-              </div>
-              <div class="hud__ammo" role="status" aria-label={`Ammo ${gun.ammoInMag} of ${gun.magazineSize}, reserve ${gun.reserveAmmo}`}>
                 <span class="hud__ammo-mag">{gun.ammoInMag}</span>
                 <span class="hud__ammo-sep">/</span>
                 <span class="hud__ammo-reserve">{gun.reserveAmmo}</span>
@@ -344,59 +368,55 @@ export function Hud(props) {
                   <span class="hud__ammo-state hud__ammo-state--empty">EMPTY</span>
                 </Show>
               </div>
-            </>
-          );
-        })()}
-      </Show>
-      <Show when={snapshot().timing?.showHud}>
-        <div class="hud__timing" role="status">
-          sim {Number(snapshot().timing?.simTime ?? 0).toFixed(2)}s · steps {snapshot().timing?.stepsPerFrame ?? 0} · α {Number(snapshot().timing?.alpha ?? 0).toFixed(2)}
-        </div>
-      </Show>
+            );
+          })()}
+        </Show>
 
-      <div class="hud__cluster">
-      <div class="hud__indicators">
-        <div class="hud__grip" style={{ '--stamina': staminaPercent() }}>
-          <span />
-        </div>
-        <div class="hud__health" style={{ '--health': healthPercent() }}>
-          <span />
-        </div>
-        <div class="hud__sway" style={{ '--sway': swayDegrees() }}>
-          <span />
-        </div>
-      </div>
-
-      <div class="hud__panel">
-        <div class="hud__readout">
-          <span>{combatLabel() || snapshot().level?.name || 'Base Level'}</span>
-          <span>{formatState(snapshot().animation?.state)}</span>
-          <Show when={snapshot().ability?.shortLabel && (snapshot().weapon?.holstered || !gunHud())}>
-            <span
-              style={{ color: '#c8e6c9', marginLeft: '8px', fontSize: '11px' }}
-              title="F to use ability · Z holsters weapon"
-            >
-              [F] {snapshot().ability.shortLabel}
-            </span>
-          </Show>
-          <Show when={snapshot().character?.district}>
-            <span style={{ color: '#a0d0ff', marginLeft: '8px', fontSize: '11px' }}>📍 {snapshot().character.district}</span>
+        <div class="hud__vitals" aria-hidden="true">
+          <div class="hud__bar hud__bar--health" title="Health">
+            <span class="hud__bar-fill" style={{ width: `${Math.round(healthRatio() * 100)}%` }} />
+          </div>
+          <div class="hud__bar hud__bar--stamina" title="Stamina">
+            <span class="hud__bar-fill" style={{ width: `${Math.round(staminaRatio() * 100)}%` }} />
+          </div>
+          <Show when={swayAmount() > 0.04}>
+            <div class="hud__bar hud__bar--sway" title="Sway">
+              <span
+                class="hud__bar-fill"
+                style={{ width: `${Math.round(Math.min(1, swayAmount()) * 100)}%` }}
+              />
+            </div>
           </Show>
         </div>
-      </div>
+
+        <div class="hud__status" role="status">
+          <span class="hud__status-primary">{statusPrimary()}</span>
+          <Show when={statusSecondary()}>
+            <span class="hud__status-secondary">{statusSecondary()}</span>
+          </Show>
+        </div>
       </div>
     </section>
   );
 }
 
-function formatState(state) {
-  if (!state) {
-    return 'Loading';
-  }
+/** Combat / draw acts only — not armed locomotion keys. */
+function isCombatActionOverride(raw) {
+  if (!raw || typeof raw !== 'string') return false;
+  if (raw.startsWith('fp_') || raw.startsWith('rifle_') || raw.startsWith('pistol_')) return false;
+  if (raw.startsWith('armed') || raw === 'runningSlide') return false;
+  return true;
+}
 
-  const label = state.replace(/([a-z])([A-Z])/g, '$1 $2');
-
-  return label.charAt(0).toUpperCase() + label.slice(1);
+function formatCombatAct(raw) {
+  if (raw === 'unarmedLight') return 'light';
+  if (raw === 'butterflyTwirl') return 'twirl';
+  if (raw.startsWith('lightSlash')) return 'slash';
+  if (raw === 'heavyAttack') return 'heavy';
+  if (raw === 'dropKick') return 'kick';
+  if (raw === 'drawSword') return 'draw';
+  if (raw === 'sheatheSword') return 'sheath';
+  return raw.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase().slice(0, 10);
 }
 
 function formatRangeTime(seconds) {

@@ -12,7 +12,8 @@ const KEY_BINDINGS = {
   ShiftLeft: 'brace',
   ShiftRight: 'brace',
   Space: 'jump',
-  // C: crouch (weapon stance / low profile). Slide moved to Ctrl.
+  // C: crouch hold when slow; tap while running/sprinting starts a slide
+  // (SlideSystem promotes crouchPressed → slide when speed ≥ threshold).
   KeyC: 'crouch',
   // F activates the equipped ability (swing / wingsuit).
   KeyF: 'ability',
@@ -41,7 +42,7 @@ const KEY_BINDINGS = {
   Digit0: 'gunSlot0',
   AltLeft: 'hookAim',
   AltRight: 'hookAim',
-  // Ctrl: slide (was crouch; crouch is C now).
+  // Ctrl: dedicated slide (same as tap-C while running).
   ControlLeft: 'slide',
   ControlRight: 'slide',
   // X: inspect equipped gun (hold).
@@ -121,6 +122,7 @@ export class InputSystem {
     const rightPressed = this.pressedActions.has('right');
     const bracePressed = this.pressedActions.has('brace');
     const slidePressed = this.pressedActions.has('slide');
+    const crouchPressed = this.pressedActions.has('crouch');
     const collisionDebugPressed = this.pressedActions.has('collisionDebug');
     const mountPressed = this.pressedActions.has('mount');
     const roofSurfPressed = this.pressedActions.has('roofSurf');
@@ -168,6 +170,7 @@ export class InputSystem {
     this.pressedActions.delete('right');
     this.pressedActions.delete('brace');
     this.pressedActions.delete('slide');
+    this.pressedActions.delete('crouch');
     this.pressedActions.delete('collisionDebug');
     this.pressedActions.delete('mount');
     this.pressedActions.delete('roofSurf');
@@ -223,6 +226,8 @@ export class InputSystem {
       rightPressed: leanModHeld ? false : rightPressed,
       slidePressed,
       slide: this.actions.has('slide'),
+      // Edge for C: SlideSystem may promote to slide when running.
+      crouchPressed,
       collisionDebugPressed,
       mountPressed,
       roofSurfPressed,
@@ -247,7 +252,7 @@ export class InputSystem {
       mouseSecondaryHeld: this.mouseSecondaryHeld,
       mouseMiddleHeld: this.mouseMiddleHeld,
       mouseMiddlePressed,
-      // Hold C to crouch (weapon-locomotion stance layer).
+      // Hold C to crouch when not at slide speed (weapon-locomotion stance layer).
       crouchHeld: this.actions.has('crouch'),
       // Cover-peek: hold Q, then A/D lean left/right (armed). E stays pure use/interact.
       leanLeftHeld: leanModHeld && leftHeld,
@@ -317,7 +322,7 @@ export class InputSystem {
     }
 
     if (
-      (action === 'jump' || action === 'left' || action === 'right' || action === 'brace' || action === 'slide' || action === 'collisionDebug' || action === 'mount' || action === 'roofSurf' || action === 'carLeap' || action === 'ability' || action === 'drawSheathe' || action === 'grabSlam' || action === 'reload' || action === 'shoulderThrow' || action === 'cutMode' || action === 'photoMode' || action === 'cutCommit' || action === 'cutCancel' || action === 'telekinesis'
+      (action === 'jump' || action === 'left' || action === 'right' || action === 'brace' || action === 'slide' || action === 'crouch' || action === 'collisionDebug' || action === 'mount' || action === 'roofSurf' || action === 'carLeap' || action === 'ability' || action === 'drawSheathe' || action === 'grabSlam' || action === 'reload' || action === 'shoulderThrow' || action === 'cutMode' || action === 'photoMode' || action === 'cutCommit' || action === 'cutCancel' || action === 'telekinesis'
         || action === 'gunSlot0' || action === 'gunSlot1' || action === 'gunSlot2' || action === 'gunSlot3'
         || action === 'gunSlot4' || action === 'gunSlot5' || action === 'gunSlot6' || action === 'gunSlot7'
         || action === 'gunSlot8' || action === 'gunSlot9') &&

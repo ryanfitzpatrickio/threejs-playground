@@ -7,7 +7,10 @@ import { defaultGunIdFromQuery } from '../weapons/loadGunView.js';
 import { BaseVehicle } from '../vehicles/BaseVehicle.js';
 import { QuadBikeVehicle } from '../vehicles/QuadBikeVehicle.js';
 import { spawnVehicleOptions } from '../vehicles/garageBuilds.js';
-import { getActiveWorldMapSync } from '../../world/worldMap/worldMapScenes.js';
+import {
+  getActiveWorldMapSync,
+  getRallyWorldMapSync,
+} from '../../world/worldMap/worldMapScenes.js';
 import { sanitizeWebGPUVertexBuffers } from '../geometry/prepareWebGPUGeometry.js';
 import { installRangeEnvironment } from '../world/installRangeEnvironment.js';
 import { registerBuiltinShaderDebug } from 'virtual:dreamfall-shader-debug';
@@ -336,7 +339,10 @@ async function streamAssetsInBackground() {
     : null;
 
   // Highway combat: preload only when debug/encounter content is requested (O6).
-  this._highwayDebug = this._resolveHighwayDebugFlag();
+  // highwayMode is null outside highway — never call mode-only helpers bare.
+  this._highwayDebug = this.levelMode === 'highway'
+    ? Boolean(this._resolveHighwayDebugFlag?.() ?? false)
+    : false;
   const highwayCombatPreloadPromise = this.levelMode === 'highway' && this._highwayDebug
     ? this.enemySystem.preloadArchetypes(this.sceneSystem.scene, {
       archetypes: ['highwayGangMember', 'soldier'],
@@ -426,52 +432,20 @@ async function streamAssetsInBackground() {
   // track, which spawns two autopilot chassis cars from opposite directions.
   // Indoor range and horde arena have no vehicles. Highway spawns a dedicated
   // player car plus a bounded parked-traffic pool (not open-world garage logic).
-  if (this.levelMode === 'highway') {
-    await this._initializeHighwayVehicles(character);
-    // O6: test platforms + combat deck only when ?highwayDebug=1 (or local flag).
-    if (this._highwayDebug) {
-      this._spawnHighwayTestPlatform();
-      this._spawnHighwayCombatDeck();
-    }
-  } else if (this.levelMode !== 'range' && this.levelMode !== 'horde') {
-    const worldMap = getActiveWorldMapSync();
-    if (isCollisionTestMap(worldMap)) {
-      await spawnCollisionTestVehicles(this.vehicleSystem);
-    } else {
-      const carPosition = this.levelMode === 'rally'
-        ? new THREE.Vector3(-129, 0, 136)
-        : carSpawnPosition(this.horseSystem, character?.group.position);
-      const carYaw = this.levelMode === 'rally'
-        ? -Math.PI / 4
-        : (this.horseSystem.group?.rotation.y ?? 0);
-      const garageVehicleOptions = spawnVehicleOptions(this.levelMode);
-      const VehicleConstructor = garageVehicleOptions.vehicleKind === 'quad'
-        ? QuadBikeVehicle
-        : BaseVehicle;
-      const spawnCar = await this.vehicleSystem.spawnVehicle({
-        vehicle: new VehicleConstructor({
-          ...garageVehicleOptions,
-          name: 'Spawn Car',
-          position: carPosition,
-          rotationY: carYaw,
-        }),
-      });
-      if (this.levelMode === 'rally' && character && spawnCar) {
-        await this.vehicleSystem.enterVehicle(character, spawnCar, { warmup: true });
-      }
-      if (this.levelMode === 'rally') {
-        const quadSpawns = [
-          { name: 'Rally Quad 1', position: new THREE.Vector3(-124.5, 0, 132.5), rotationY: -Math.PI / 4 },
-          { name: 'Rally Quad 2', position: new THREE.Vector3(-121.5, 0, 136), rotationY: -Math.PI / 4 },
-        ];
-        const parkedQuadSpawns = garageVehicleOptions.vehicleKind === 'quad'
-          ? quadSpawns.slice(1)
-          : quadSpawns;
-        for (const spec of parkedQuadSpawns) {
-          await this.vehicleSystem.spawnVehicle({ vehicle: new QuadBikeVehicle(spec) });
-        }
-      }
-    }
+  // Fail-open: never block play-ready on chassis/audio GLB stalls.
+  const VEHICLE_SPAWN_BUDGET_MS = 12_000;
+  try {
+    await Promise.race([
+      spawnPlayVehicles(this, character),
+      new Promise((resolve) => {
+        setTimeout(() => {
+          console.warn('[RuntimeLoader] vehicle spawn budget exceeded; continuing load');
+          resolve(null);
+        }, VEHICLE_SPAWN_BUDGET_MS);
+      }),
+    ]);
+  } catch (err) {
+    console.error('[RuntimeLoader] vehicle spawn failed', err);
   }
   if (this._aborted(gen)) {
     return;
@@ -608,6 +582,109 @@ async function streamAssetsInBackground() {
   await nearFieldPromise;
   if (this._aborted(gen)) return;
   this._tryEnterRunning();
+}
+
+/**
+ * Spawn the stage car (+ rally quads). Uses map spawn for rally so custom
+ * default rally scenes do not hang ensureGroundCollider at Pine Ridge coords.
+ */
+async function spawnPlayVehicles(host, character) {
+  if (host.levelMode === 'highway') {
+    await host._initializeHighwayVehicles(character);
+    if (host._highwayDebug) {
+      host._spawnHighwayTestPlatform();
+      host._spawnHighwayCombatDeck();
+    }
+    return;
+  }
+  if (host.levelMode === 'range' || host.levelMode === 'horde') {
+    return;
+  }
+
+  // Rally must use the rally default map — active world draft is a different scene.
+  const worldMap = host.levelMode === 'rally'
+    ? getRallyWorldMapSync()
+    : getActiveWorldMapSync();
+  if (isCollisionTestMap(worldMap)) {
+    await spawnCollisionTestVehicles(host.vehicleSystem);
+    return;
+  }
+
+  const spawn = host.levelSystem.level?.spawnPoint
+    ?? character?.group?.position
+    ?? null;
+  // World-map yaw is degrees (0–360).
+  const spawnYaw = Number.isFinite(worldMap?.spawn?.yaw)
+    ? (worldMap.spawn.yaw * Math.PI) / 180
+    : (host.levelMode === 'rally' ? -Math.PI / 4 : (host.horseSystem.group?.rotation.y ?? 0));
+  const carPosition = host.levelMode === 'rally' && spawn
+    ? new THREE.Vector3(spawn.x + 3.2, spawn.y ?? 0, spawn.z + 1.5)
+    : carSpawnPosition(host.horseSystem, character?.group.position);
+  const carYaw = host.levelMode === 'rally'
+    ? spawnYaw
+    : (host.horseSystem.group?.rotation.y ?? 0);
+  const garageVehicleOptions = spawnVehicleOptions(host.levelMode);
+  const VehicleConstructor = garageVehicleOptions.vehicleKind === 'quad'
+    ? QuadBikeVehicle
+    : BaseVehicle;
+
+  let spawnCar = null;
+  try {
+    spawnCar = await host.vehicleSystem.spawnVehicle({
+      vehicle: new VehicleConstructor({
+        ...garageVehicleOptions,
+        name: 'Spawn Car',
+        position: carPosition,
+        rotationY: carYaw,
+      }),
+    });
+  } catch (err) {
+    console.error('[RuntimeLoader] spawn car failed', err);
+  }
+
+  if (host.levelMode === 'rally' && character && spawnCar) {
+    try {
+      // Do not await engine sample decode — primes on first drive tick.
+      await host.vehicleSystem.enterVehicle(character, spawnCar, { warmup: false });
+    } catch (err) {
+      console.error('[RuntimeLoader] enter rally car failed', err);
+    }
+  }
+
+  if (host.levelMode === 'rally' && spawn) {
+    const rightX = Math.cos(spawnYaw);
+    const rightZ = -Math.sin(spawnYaw);
+    const quadSpawns = [
+      {
+        name: 'Rally Quad 1',
+        position: new THREE.Vector3(
+          spawn.x + rightX * 6.5,
+          spawn.y ?? 0,
+          spawn.z + rightZ * 6.5,
+        ),
+        rotationY: spawnYaw,
+      },
+      {
+        name: 'Rally Quad 2',
+        position: new THREE.Vector3(
+          spawn.x + rightX * 9.5,
+          spawn.y ?? 0,
+          spawn.z + rightZ * 9.5,
+        ),
+        rotationY: spawnYaw,
+      },
+    ];
+    const parkedQuadSpawns = garageVehicleOptions.vehicleKind === 'quad'
+      ? quadSpawns.slice(1)
+      : quadSpawns;
+    for (const spec of parkedQuadSpawns) {
+      try {
+        await host.vehicleSystem.spawnVehicle({ vehicle: new QuadBikeVehicle(spec) });
+      } catch (err) {
+        console.error('[RuntimeLoader] spawn rally quad failed', err);
+      }
+    }
+  }
 }
 
 export { startRuntime, streamAssetsInBackground };

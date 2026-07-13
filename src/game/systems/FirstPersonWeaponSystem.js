@@ -665,13 +665,13 @@ export class FirstPersonWeaponSystem {
   }
 
   /**
-   * Head/neck scale-down for on-foot first person when any weapon is drawn
-   * (firearm or sword). Guns already did this; sword must match so the head
-   * mesh does not fill the view.
+   * Head/neck scale-down for on-foot first person so the head mesh never fills
+   * the view — drawn gun/sword and unarmed/stowed holster alike.
    */
-  _syncHeadHide(character, { fp, driving, weaponSystem, gunDrawn }) {
-    const swordDrawn = Boolean(weaponSystem?.isSwordDrawn?.());
-    const wantHide = Boolean(fp && !driving && (gunDrawn || swordDrawn));
+  _syncHeadHide(character, { fp, driving }) {
+    // Independent of drawn loadout: stowed/unarmed FP still sees the body and
+    // would clip the head without this.
+    const wantHide = Boolean(fp && !driving);
     if (wantHide) this._ensureHeadHidden(character);
     else this._restoreHead(character);
   }
@@ -697,7 +697,7 @@ export class FirstPersonWeaponSystem {
 
     if (!this.armed) {
       this._clearOverride(character);
-      this._syncHeadHide(character, { fp, driving, weaponSystem, gunDrawn });
+      this._syncHeadHide(character, { fp, driving });
       this._setWeaponVisible(false);
       return input;
     }
@@ -725,7 +725,8 @@ export class FirstPersonWeaponSystem {
     if (!input) return input;
 
     let next = input;
-    // Gate traversal while a firearm is drawn in FP.
+    // Gate most traversal while a firearm is drawn in FP. Slide stays allowed
+    // (tap C / Ctrl while running) in both first and third person.
     if (this.gateTraversal) {
       next = {
         ...next,
@@ -733,7 +734,6 @@ export class FirstPersonWeaponSystem {
         wallRunPressed: false,
         wallClimbPressed: false,
         ledgeGrabPressed: false,
-        slidePressed: false,
         ropePressed: false,
         wingsuitPressed: false,
         wingsuitTogglePressed: false,
@@ -778,8 +778,7 @@ export class FirstPersonWeaponSystem {
 
     if (!this.armed) {
       this._clearOverride(character);
-      // Still hide head when the sword is drawn in on-foot FP (gun path is armed).
-      this._syncHeadHide(character, { fp, driving, weaponSystem, gunDrawn });
+      this._syncHeadHide(character, { fp, driving });
       this._setWeaponVisible(false);
       return;
     }
@@ -795,7 +794,7 @@ export class FirstPersonWeaponSystem {
     // Don't fight sword combat overrides mid-attack/draw.
     const combat = character.combat;
     if (combat?.attack || (combat?.weapon && combat.weapon !== 'sheathed' && combat.weapon !== 'armed')) {
-      this._syncHeadHide(character, { fp, driving, weaponSystem, gunDrawn });
+      this._syncHeadHide(character, { fp, driving });
       this._setWeaponVisible(false);
       return;
     }
@@ -903,7 +902,7 @@ export class FirstPersonWeaponSystem {
     // right on the grip). Keyed off the clip actually playing.
     this.handIkGate = resolveWeaponHandIk(this.playbackState);
 
-    this._syncHeadHide(character, { fp, driving, weaponSystem, gunDrawn });
+    this._syncHeadHide(character, { fp, driving });
     this._setWeaponVisible(true);
   }
 

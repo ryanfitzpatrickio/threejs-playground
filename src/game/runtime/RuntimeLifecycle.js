@@ -109,7 +109,20 @@ export class RuntimeLifecycle {
           nearField: { completed: 0, total: 1, label: 'streaming' },
         },
       });
-      await new Promise((resolve) => requestAnimationFrame(resolve));
+      // Prefer rAF so streaming can pump; fall back to timeout when rAF is
+      // throttled (background tab / headless) so the budget still advances.
+      await new Promise((resolve) => {
+        let settled = false;
+        const done = () => {
+          if (settled) return;
+          settled = true;
+          resolve();
+        };
+        if (typeof requestAnimationFrame === 'function') {
+          requestAnimationFrame(done);
+        }
+        setTimeout(done, 32);
+      });
     }
     return false;
   }

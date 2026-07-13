@@ -356,27 +356,27 @@ export class RuntimeKernel {
 
 
   async _initializeHighwayVehicles(...args) {
-    return await this.highwayMode._initializeHighwayVehicles(...args);
+    return await this.highwayMode?._initializeHighwayVehicles?.(...args);
   }
 
 
   _highwayProtectedVehicles(...args) {
-    return this.highwayMode._highwayProtectedVehicles(...args);
+    return this.highwayMode?._highwayProtectedVehicles?.(...args) ?? new Set();
   }
 
 
   _resolveHighwayDebugFlag(...args) {
-    return this.highwayMode._resolveHighwayDebugFlag(...args);
+    return this.highwayMode?._resolveHighwayDebugFlag?.(...args) ?? false;
   }
 
 
   _spawnHighwayTestPlatform(...args) {
-    return this.highwayMode._spawnHighwayTestPlatform(...args);
+    return this.highwayMode?._spawnHighwayTestPlatform?.(...args) ?? null;
   }
 
 
   _spawnHighwayCombatDeck(...args) {
-    return this.highwayMode._spawnHighwayCombatDeck(...args);
+    return this.highwayMode?._spawnHighwayCombatDeck?.(...args) ?? null;
   }
 
 

@@ -2,7 +2,8 @@ import * as THREE from 'three';
 import { GAME_CONFIG } from '../config/gameConfig.js';
 import { TraversalActionSystem } from './TraversalActionSystem.js';
 
-const SLIDE_MIN_SPEED = 2.8;
+/** Min horizontal speed (m/s) to start a slide — also used by MovementSystem crouch gate. */
+export const SLIDE_MIN_SPEED = 2.8;
 const SLIDE_COOLDOWN_SECONDS = 0.3;
 const SLIDE_COLLISION_HEIGHT = 0.78;
 const slideDirection = new THREE.Vector3();
@@ -111,7 +112,11 @@ export class SlideSystem {
 }
 
 function canStartSlide({ input, movement, character }) {
-  return input.slidePressed === true
+  // Ctrl always slides; tap-C while already at jog+ speed also slides (crouch
+  // only applies when slower — see MovementSystem).
+  const slideTap = input.slidePressed === true
+    || (input.crouchPressed === true && movement.speed >= SLIDE_MIN_SPEED);
+  return slideTap
     && character.grounded === true
     && movement.grounded === true
     && movement.moving === true

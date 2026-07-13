@@ -67,29 +67,51 @@ const CRAWL_LOCOMOTION_CLIPS = new Set([
   SOLDIER_LOCOMOTION_CLIPS.crawlBack,
 ]);
 
-// Inner.rotation.x overrides while ground disability clips play. Every soldier
-// clip is authored in the GLB's lying-down space, so all of them use the upright
-// base fix (-π/2). Crawl uses -π/2. One-legged (leg-missing clips which are
-// upright-authored) now uses +π/2 to lay it on his back (supine) instead of belly.
+// Inner.rotation.x overrides while ground disability clips play.
+//
+// All posture targets are relative to baseOrientationFixX (the archetype's
+// residual armature fix). Soldier.glb is −π/2; upright horde robots are 0.
+// Absolute angles were soldier-tuned and broke robots.
+//
+// Crawl: bone keys already encode the lying pose → use base only
+//   (soldier −π/2, robot 0). Absolute −π/2 tipped robots on their side.
+//
+// One-leg: upright-authored clips need an extra −π/2 from standing → base − π/2
+//   (soldier −π, robot −π/2).
+/** @deprecated Soldier residual; prefer resolveSoldierInnerRotationX. */
 export const SOLDIER_CRAWL_INNER_ROTATION_X = -Math.PI / 2;
+/** @deprecated Absolute value for soldier only; prefer resolveSoldierInnerRotationX. */
 export const SOLDIER_ONE_LEG_PRONE_INNER_ROTATION_X = -Math.PI;
+/** Extra X rotation from baseOrientationFixX for single-leg prone posture. */
+export const SOLDIER_ONE_LEG_PRONE_DELTA_X = -Math.PI / 2;
 
 export function isSoldierCrawlLocomotionClip(clipName) {
   return CRAWL_LOCOMOTION_CLIPS.has(clipName);
 }
 
+export function isSoldierSingleLegLocomotionClip(clipName) {
+  return SINGLE_LEG_LOCOMOTION_CLIPS.has(clipName);
+}
+
 export function resolveSoldierInnerRotationX(enemy, clipName) {
+  const base = enemy?.baseOrientationFixX ?? 0;
+
+  // Crawl: no extra inner tip — residual base matches the clip bind for both
+  // soldier (lying residual) and upright robots (crawl keys carry the pose).
   if (isSoldierCrawlLocomotionClip(clipName) || enemy?.locomotionMode === 'crawl') {
-    return SOLDIER_CRAWL_INNER_ROTATION_X;
+    return base;
   }
 
-  // One-legged prone: rotate so on his back.
+  // One-legged prone: upright-authored leg-missing clips → base − π/2.
   const loss = enemy?.limbLoss;
-  if (loss && ((!loss.legL || !loss.legR) && loss.legL !== loss.legR)) {
-    return SOLDIER_ONE_LEG_PRONE_INNER_ROTATION_X;
+  const singleLegLoss = Boolean(
+    loss && ((!loss.legL || !loss.legR) && loss.legL !== loss.legR),
+  );
+  if (singleLegLoss || isSoldierSingleLegLocomotionClip(clipName)) {
+    return base + SOLDIER_ONE_LEG_PRONE_DELTA_X;
   }
 
-  return enemy?.baseOrientationFixX ?? 0;
+  return base;
 }
 
 export function soldierPostureOffsetCacheKey(clipName, rotationX) {

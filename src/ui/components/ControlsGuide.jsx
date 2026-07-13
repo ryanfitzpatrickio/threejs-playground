@@ -29,7 +29,7 @@ const CONTROL_SECTIONS = [
       ['Mouse', 'Look (click the world to lock pointer)'],
       ['Space', 'Jump (double-tap for air dash)'],
       ['Shift', 'Brace (wall-run, hang, climb, horse sprint)'],
-      ['C', 'Crouch'],
+      ['C', 'Crouch · tap while running to slide'],
       ['Ctrl', 'Slide'],
       ['Double-tap direction', 'Dodge'],
       ['E', 'Use / interact (mount, vehicle, doors)'],
