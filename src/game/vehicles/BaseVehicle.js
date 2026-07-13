@@ -264,6 +264,12 @@ export class BaseVehicle {
             : null,
         }
       : null;
+    /**
+     * Highway convoy cruise (M6). When set, VehicleSystem feeds
+     * computeHighwayCruiseControls() for non-active vehicles.
+     * @type {{ targetSpeed: number, laneX: number, dSpeed?: number, slotId?: string }|null}
+     */
+    this.highwayCruise = null;
 
     // Caller may hand in a pre-loaded model; otherwise buildMesh() makes one.
     this.providedModel = model;
@@ -894,6 +900,17 @@ export class BaseVehicle {
     }
     this._detectCollisionImpact(body, dt);
 
+    // Highway TSL-proxy traffic: no mesh articulation, tyre particles, or engine
+    // audio — only latch controls + cheap cruise integrate (see substepIntegrate).
+    if (this.userData?.highwayProxyVisual && this.highwayCruise && !this.hasDriver?.()) {
+      this.controls = controls ?? makeNeutralControls();
+      Object.assign(this._smoothed, this.controls);
+      if (integrate) {
+        this.substepIntegrate({ dt, physics });
+      }
+      return;
+    }
+
     // Spin the tyres from chassis forward velocity (purely visual, negligible cost).
     this._updateWheelSpin(body, dt);
 
@@ -941,12 +958,87 @@ export class BaseVehicle {
     }
   }
 
+  /**
+   * Cheap highway convoy step: hold FLOW_SPEED + dSpeed and soft lane X.
+   * No raycast suspension, tyre model, powertrain, or forces.
+   */
+  _integrateHighwayCruiseCheap(body, dt, physics) {
+    const cruise = this.highwayCruise;
+    if (!cruise) return;
+    const targetSpeed = Number.isFinite(cruise.targetSpeed) ? cruise.targetSpeed : 22;
+    const laneX = cruise.laneX;
+    const t = body.translation();
+    const lv = body.linvel?.() ?? { x: 0, y: 0, z: 0 };
+    const isSemi = this.userData?.highwayArchetype === 'semi';
+    let vx = 0;
+    if (Number.isFinite(laneX)) {
+      const err = laneX - t.x;
+      // Semis correct gently so the cab does not strafe and whip the trailer.
+      const laneGain = isSemi ? 0.7 : 2.2;
+      const maxLateralSpeed = isSemi ? 1.25 : 4;
+      const desiredVx = THREE.MathUtils.clamp(err * laneGain, -maxLateralSpeed, maxLateralSpeed);
+      const response = 1 - Math.exp(-Math.max(0, dt) * (isSemi ? 2.5 : 8));
+      vx = THREE.MathUtils.lerp(lv.x ?? 0, desiredVx, response);
+    }
+    // Keep ride height: prefer analytic road if available, else hold Y.
+    let y = t.y;
+    const level = physics?.level ?? null;
+    // VehicleSystem sets vehicle.mudField / surface; ground height via optional sampler.
+    if (typeof this._highwayGroundY === 'number' && Number.isFinite(this._highwayGroundY)) {
+      y = this._highwayGroundY;
+    }
+    // Kill vertical bounce from residual contacts.
+    body.setLinvel({ x: vx, y: Math.min(0, lv.y * 0.2), z: -targetSpeed }, true);
+    body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    body.resetForces(true);
+    body.resetTorques(true);
+    // Face −Z (highway forward); slight yaw toward lane correction.
+    const maxYaw = isSemi ? 0.065 : 0.12;
+    const yawGain = isSemi ? 0.022 : 0.04;
+    const yaw = Number.isFinite(laneX)
+      ? THREE.MathUtils.clamp(-(laneX - t.x) * yawGain, -maxYaw, maxYaw)
+      : 0;
+    const half = yaw * 0.5;
+    // Quaternion from yaw about Y.
+    body.setRotation({ x: 0, y: Math.sin(half), z: 0, w: Math.cos(half) }, true);
+    if (Number.isFinite(y) && Math.abs(y - t.y) > 0.02) {
+      body.setTranslation({ x: t.x + vx * dt, y, z: t.z }, true);
+    }
+    this.parkedMode = false;
+    this.speed = targetSpeed;
+    this.linearVelocity.set(vx, 0, -targetSpeed);
+    this.grounded = true;
+    this.groundedFraction = 1;
+    this.groundSurface = 'asphalt';
+    // Keep group pose current for TSL instance matrix writes.
+    if (this.group) {
+      const nt = body.translation();
+      this.group.position.set(nt.x, nt.y, nt.z);
+      this.group.quaternion.set(0, Math.sin(half), 0, Math.cos(half));
+      this.group.updateMatrix();
+      this.group.matrixWorld.copy(this.group.matrix);
+    }
+    void dt;
+    void level;
+  }
+
   // Apply the latched controls and drive model once per fixed physics tick.
   substepIntegrate({ dt, physics }) {
     if (this.status !== 'ready' || !physics?.world) return;
     const body = physics.getFreshBody(this.bodyHandle);
     if (!body) return;
     try {
+      // Highway traffic convoy (undriven proxy): skip full raycast tyre model.
+      // Trace: _integrateGroundRayCast + resolveTyreConfig dominate main-thread CPU
+      // when ~18 traffic cars each run the full suspension stack.
+      if (
+        this.highwayCruise
+        && this.userData?.highwayProxyVisual
+        && !this.hasDriver?.()
+      ) {
+        this._integrateHighwayCruiseCheap(body, dt, physics);
+        return;
+      }
       if (physics.fixedStepPlanning) this._applyControlSmoothing(this.controls, dt);
       // Parked hold is only for undriven vehicles that have an explicit park pose
       // (park() / settleParked()). Unpark only on throttle/steer/boost — not
@@ -1020,6 +1112,11 @@ export class BaseVehicle {
 
   // Record the pre-step pose. Called once per fixed step, before integration.
   capturePosePreStep(physics) {
+    // Highway TSL proxies write pose in the cheap cruise step — skip interpolation bookkeeping.
+    if (this.userData?.highwayProxyVisual && this.highwayCruise && !this.hasDriver?.()) {
+      this._hasPrevStepPose = false;
+      return;
+    }
     const body = physics?.getFreshBody?.(this.bodyHandle);
     if (!body) return;
     try {
@@ -1037,6 +1134,9 @@ export class BaseVehicle {
   // frame's steps, before the camera reads the group.
   syncVisualFromBody(physics, alpha = 1) {
     if (this.status !== 'ready' || !this.group) return;
+    if (this.userData?.highwayProxyVisual && this.highwayCruise && !this.hasDriver?.()) {
+      return;
+    }
     const body = physics?.getFreshBody?.(this.bodyHandle);
     if (!body) return;
     try {
@@ -2777,12 +2877,26 @@ export class BaseVehicle {
   // ---- occupants / seats ---------------------------------------------------
 
   get driverSeatIndex() {
-    const idx = this.config.seats.findIndex((s) => s.isDriver);
-    return idx >= 0 ? idx : 0;
+    // Prefer the named cabin driver seat (roof is also isDriver for M2 stunt).
+    const byName = this.config.seats.findIndex((s) => s.name === 'driver');
+    if (byName >= 0) return byName;
+    const idx = this.config.seats.findIndex((s) => s.isDriver && s.name !== 'roof');
+    if (idx >= 0) return idx;
+    const anyDriver = this.config.seats.findIndex((s) => s.isDriver);
+    return anyDriver >= 0 ? anyDriver : 0;
+  }
+
+  get roofSeatIndex() {
+    return this.config.seats.findIndex((s) => s.name === 'roof');
   }
 
   hasDriver() {
-    return this.occupants[this.driverSeatIndex] != null;
+    // Any isDriver seat counts (cabin or roof-surf).
+    return this.config.seats.some((seat, i) => seat.isDriver && this.occupants[i] != null);
+  }
+
+  findSeatIndex(name) {
+    return this.config.seats.findIndex((s) => s.name === name);
   }
 
   seatOccupant(seatIndex, occupant) {
@@ -3935,6 +4049,51 @@ export class BaseVehicle {
     yawError = Math.atan2(Math.sin(yawError), Math.cos(yawError));
     const gain = this.autopilot.steerGain ?? Math.PI / 3;
     c.steer = THREE.MathUtils.clamp(yawError / gain, -1, 1);
+    return c;
+  }
+
+  /**
+   * Highway convoy cruise: hold lane X and target longitudinal speed.
+   * No pursuit — only lane soft-steer + throttle/brake for FLOW_SPEED + dSpeed.
+   * Forward is world −Z (rotationY ≈ 0).
+   */
+  computeHighwayCruiseControls() {
+    const c = makeNeutralControls();
+    const cruise = this.highwayCruise;
+    if (!cruise || !this.group) return c;
+
+    const targetSpeed = Number.isFinite(cruise.targetSpeed) ? cruise.targetSpeed : 0;
+    const laneX = cruise.laneX;
+    const pos = this.group.position;
+
+    // Soft lane hold: small desired yaw toward lane centre, primary heading −Z.
+    if (Number.isFinite(laneX)) {
+      const dx = laneX - pos.x;
+      const desiredYaw = THREE.MathUtils.clamp(-dx * 0.12, -0.4, 0.4);
+      let yawError = desiredYaw - this.group.rotation.y;
+      yawError = Math.atan2(Math.sin(yawError), Math.cos(yawError));
+      c.steer = THREE.MathUtils.clamp(yawError / (Math.PI / 4), -1, 1);
+    }
+
+    // Longitudinal speed along highway forward (−Z). Prefer body-aligned speed.
+    const forwardSpeed = Number.isFinite(this.speed) ? this.speed : 0;
+    // Prefer −linvel.z when available (matches +s progress on the ribbon).
+    let alongHighway = forwardSpeed;
+    if (this.linearVelocity && Number.isFinite(this.linearVelocity.z)) {
+      alongHighway = -this.linearVelocity.z;
+    }
+    const err = targetSpeed - alongHighway;
+    if (err > 1.2) {
+      c.throttle = THREE.MathUtils.clamp(0.2 + err / 10, 0.15, 1);
+      c.brake = 0;
+    } else if (err < -2) {
+      c.throttle = 0;
+      c.brake = THREE.MathUtils.clamp((-err - 1) / 12, 0.05, 0.55);
+    } else {
+      // Maintain: light throttle around the cruise set-point.
+      c.throttle = THREE.MathUtils.clamp(0.22 + err * 0.06, 0.08, 0.55);
+      c.brake = 0;
+    }
     return c;
   }
 

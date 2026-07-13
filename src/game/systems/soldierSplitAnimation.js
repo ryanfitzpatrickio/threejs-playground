@@ -43,7 +43,7 @@ export function filterSoldierClipByBody(source, keepLower) {
 }
 
 export function isSoldierArmSplitLocomotion(enemy) {
-  if (enemy?.archetype !== 'soldier' || !enemy.limbLoss) {
+  if (enemy?.limbLossProfile !== 'mixamo-humanoid' || !enemy.limbLoss) {
     return false;
   }
 
@@ -95,7 +95,7 @@ export function isSoldierStationaryState(enemy) {
 // One-leg-lost (prone/lying state): drives the split system so the remaining
 // leg can idle (lower) while the leg-missing upper torso keeps playing.
 export function isSoldierSingleLegSplitLocomotion(enemy) {
-  if (enemy?.archetype !== 'soldier' || !enemy?.limbLoss) {
+  if (enemy?.limbLossProfile !== 'mixamo-humanoid' || !enemy?.limbLoss) {
     return false;
   }
 

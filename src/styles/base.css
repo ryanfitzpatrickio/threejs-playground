@@ -195,6 +195,78 @@ select {
   backdrop-filter: blur(10px);
 }
 
+/* Sit above the center speedometer so instructions stay readable. */
+.hud__roof-surf {
+  position: absolute;
+  left: 50%;
+  bottom: 108px;
+  transform: translateX(-50%);
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  max-width: min(92vw, 320px);
+  padding: 10px 18px;
+  border: 1px solid rgb(247 180 80 / 45%);
+  border-radius: 12px;
+  background: rgb(22 21 18 / 88%);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+  color: rgb(247 244 232 / 96%);
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  text-align: center;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+.hud__roof-surf-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #f0b24a;
+}
+
+.hud__roof-surf-hint {
+  opacity: 0.9;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  line-height: 1.35;
+}
+
+.hud__roof-surf-hint kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: rgb(247 244 232 / 90%);
+  color: rgb(22 21 18);
+  font-weight: 700;
+  font-size: 11px;
+}
+
+.hud__roof-surf-meter {
+  width: 120px;
+  height: 4px;
+  margin-top: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: rgb(255 255 255 / 12%);
+}
+
+.hud__roof-surf-meter-fill {
+  display: block;
+  height: 100%;
+  background: #f0b24a;
+}
+
+.hud__roof-surf-meter-fill--warn {
+  background: #ff6b4a;
+}
+
 .hud__speed-ring {
   position: absolute;
   inset: 4px;
@@ -838,6 +910,95 @@ select {
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Horde robot M0 visual-inspection viewer (?view=horde-robots) */
+.horde-viewer-panel {
+  width: min(420px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+}
+
+.horde-viewer-hint {
+  margin: 0;
+  color: rgb(247 244 232 / 62%);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.horde-viewer-section-label {
+  margin-top: 2px;
+  color: rgb(247 244 232 / 55%);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.horde-viewer-gate-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.horde-viewer-gate-grid .horde-gate-btn {
+  width: 100%;
+  justify-content: center;
+  font-size: 11px;
+}
+
+.horde-viewer-clip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-height: 120px;
+  overflow: auto;
+}
+
+.horde-clip-chip {
+  padding: 3px 7px;
+  border: 1px solid rgb(247 244 232 / 14%);
+  border-radius: 999px;
+  background: rgb(247 244 232 / 6%);
+  color: rgb(247 244 232 / 72%);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.horde-clip-chip:hover:not(:disabled) {
+  background: rgb(247 244 232 / 12%);
+}
+
+.horde-clip-chip.gate {
+  border-color: rgb(117 184 128 / 40%);
+  color: #b7e0bd;
+}
+
+.horde-clip-chip.active {
+  background: #3a5f3a;
+  border-color: #5a8a5a;
+  color: #f7f4e8;
+}
+
+.horde-clip-chip.missing,
+.horde-clip-chip:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.horde-viewer-error {
+  padding: 6px 8px;
+  border: 1px solid rgb(184 74 61 / 45%);
+  border-radius: 6px;
+  background: rgb(184 74 61 / 14%);
+  color: #ee9a8e;
+  font-size: 11px;
+}
+
+.cut-test-status.ready,
+.cut-test-status.booting,
+.cut-test-status.loading {
+  color: rgb(247 244 232 / 72%);
 }
 
 .map-builder-ui {

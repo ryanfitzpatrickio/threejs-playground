@@ -285,7 +285,17 @@ export class CombatSystem {
     }
   }
 
-  update({ delta, character, enemies, physicsSystem, enemySystem, propSystem, enemyCutSystem, input }) {
+  update({
+    delta,
+    character,
+    enemies,
+    physicsSystem,
+    enemySystem,
+    propSystem,
+    enemyCutSystem,
+    input,
+    resolveHordeTarget = null,
+  }) {
     const combat = character?.combat ?? this.combat;
     if (!combat) {
       return;
@@ -311,11 +321,29 @@ export class CombatSystem {
           enemySystem,
           propSystem,
           physicsSystem,
+          resolveHordeTarget,
         });
       } else if (attackEntry?.combat?.hitShape === 'body') {
-        this.castBody({ character, combat, enemies, enemySystem, enemyCutSystem, physicsSystem });
+        this.castBody({
+          character,
+          combat,
+          enemies,
+          enemySystem,
+          enemyCutSystem,
+          physicsSystem,
+          resolveHordeTarget,
+        });
       } else {
-        this.castBlade({ character, combat, enemies, physicsSystem, enemySystem, propSystem, enemyCutSystem });
+        this.castBlade({
+          character,
+          combat,
+          enemies,
+          physicsSystem,
+          enemySystem,
+          propSystem,
+          enemyCutSystem,
+          resolveHordeTarget,
+        });
       }
     }
 
@@ -536,7 +564,16 @@ export class CombatSystem {
   // Each frame during an attack: sample the blade base/tip in world space and
   // test the segment against nearby enemies' bounding spheres within the swing's
   // active window. First contact per enemy per swing registers a hit.
-  castBlade({ character, combat, enemies, physicsSystem, enemySystem, propSystem, enemyCutSystem }) {
+  castBlade({
+    character,
+    combat,
+    enemies,
+    physicsSystem,
+    enemySystem,
+    propSystem,
+    enemyCutSystem,
+    resolveHordeTarget = null,
+  }) {
     const attack = combat.attack;
     const sword = combat.sword;
     const controller = character?.animationController;
@@ -647,7 +684,19 @@ export class CombatSystem {
     }
 
     // Apply after iterating so removing a cut enemy can't perturb the loop.
-    for (const enemy of hits) {
+    for (const hitTarget of hits) {
+      let enemy = hitTarget;
+      if (resolveHordeTarget) {
+        // Horde: route every hit through the resolver (M3 suppression + tip
+        // knockback + proxy promote-before-CSG). Full actors return unchanged.
+        const resolved = resolveHordeTarget(enemy, { damage: LIGHT_DAMAGE });
+        if (enemy.isHordeProxy) {
+          if (!resolved) continue; // proxy took lightweight damage / no slot
+          enemy = resolved;
+          // Mark the full actor too so the same swing does not double-hit after promote.
+          attack.hitEnemies.add(enemy);
+        }
+      }
       this.applyHit({ enemy, attack, physicsSystem, enemySystem, propSystem, enemyCutSystem });
     }
 
@@ -819,7 +868,15 @@ export class CombatSystem {
   // Forward-arc hit cast for unarmed attacks (no blade). Within the manifest
   // hitWindow, enemies inside `reach` and `arc` (around the player's facing) are
   // hit once each; applyUnarmedHit resolves stagger / knockback / throw.
-  castBody({ character, combat, enemies, enemySystem, enemyCutSystem, physicsSystem }) {
+  castBody({
+    character,
+    combat,
+    enemies,
+    enemySystem,
+    enemyCutSystem,
+    physicsSystem,
+    resolveHordeTarget = null,
+  }) {
     const attack = combat.attack;
     if (!attack) {
       return;
@@ -863,7 +920,17 @@ export class CombatSystem {
       hits.push(enemy);
     }
 
-    for (const enemy of hits) {
+    for (const hitTarget of hits) {
+      let enemy = hitTarget;
+      if (enemy?.isHordeProxy) {
+        enemy = resolveHordeTarget?.(enemy, { damage: 12 }) ?? null;
+        if (!enemy) continue;
+        attack.hitEnemies.add(enemy);
+      } else if (resolveHordeTarget && enemy?.model?.position) {
+        // Full-actor unarmed hit: deposit M3 suppression, but let applyUnarmedHit
+        // own the knockback/stagger (which already pins the actor to the tier).
+        resolveHordeTarget(enemy, { damage: 12, point: enemy.model.position, suppressOnly: true });
+      }
       this.applyUnarmedHit({ enemy, attack, character, enemySystem, enemyCutSystem, physicsSystem });
     }
   }

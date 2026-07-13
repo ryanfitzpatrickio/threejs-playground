@@ -118,6 +118,16 @@ export const DEFAULT_VEHICLE_CONFIG = {
       facing: 0,
       isDriver: false,
     },
+    // M2 roof-surf / stunt position. isDriver so steering still routes while standing.
+    // Hips land on the roof; pose 'stand' selects idle (not seated riding).
+    {
+      name: 'roof',
+      offset: [0, 1.18, 0.1],
+      facing: 0,
+      isDriver: true,
+      pose: 'stand',
+      handIk: null,
+    },
   ],
 
   // Where the player is ejected on exit (local-space, projected to ground).

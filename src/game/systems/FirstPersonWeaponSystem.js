@@ -665,6 +665,18 @@ export class FirstPersonWeaponSystem {
   }
 
   /**
+   * Head/neck scale-down for on-foot first person when any weapon is drawn
+   * (firearm or sword). Guns already did this; sword must match so the head
+   * mesh does not fill the view.
+   */
+  _syncHeadHide(character, { fp, driving, weaponSystem, gunDrawn }) {
+    const swordDrawn = Boolean(weaponSystem?.isSwordDrawn?.());
+    const wantHide = Boolean(fp && !driving && (gunDrawn || swordDrawn));
+    if (wantHide) this._ensureHeadHidden(character);
+    else this._restoreHead(character);
+  }
+
+  /**
    * Called early in the frame (before traversal/combat) to gate input when FP armed.
    * Gun stance only when a firearm is the drawn loadout weapon (WeaponSystem).
    *
@@ -678,14 +690,14 @@ export class FirstPersonWeaponSystem {
       : (!this.holstered && Boolean(this.gunView));
     // The gun hold (equip / visibility / hand IK / weaponClass / firing) runs in
     // BOTH first and third person. `fp` only gates the FP-camera extras (head hide,
-    // FP body yaw, full-body animationOverride).
+    // FP body yaw, full-body animationOverride). Sword still needs the head hide.
     this.armed = Boolean(gunDrawn && !driving);
     this.fp = fp && this.armed;
     this.active = this.armed;
 
     if (!this.armed) {
       this._clearOverride(character);
-      this._restoreHead(character);
+      this._syncHeadHide(character, { fp, driving, weaponSystem, gunDrawn });
       this._setWeaponVisible(false);
       return input;
     }
@@ -766,7 +778,8 @@ export class FirstPersonWeaponSystem {
 
     if (!this.armed) {
       this._clearOverride(character);
-      this._restoreHead(character);
+      // Still hide head when the sword is drawn in on-foot FP (gun path is armed).
+      this._syncHeadHide(character, { fp, driving, weaponSystem, gunDrawn });
       this._setWeaponVisible(false);
       return;
     }
@@ -782,8 +795,7 @@ export class FirstPersonWeaponSystem {
     // Don't fight sword combat overrides mid-attack/draw.
     const combat = character.combat;
     if (combat?.attack || (combat?.weapon && combat.weapon !== 'sheathed' && combat.weapon !== 'armed')) {
-      if (this.fp) this._ensureHeadHidden(character);
-      else this._restoreHead(character);
+      this._syncHeadHide(character, { fp, driving, weaponSystem, gunDrawn });
       this._setWeaponVisible(false);
       return;
     }
@@ -891,8 +903,7 @@ export class FirstPersonWeaponSystem {
     // right on the grip). Keyed off the clip actually playing.
     this.handIkGate = resolveWeaponHandIk(this.playbackState);
 
-    if (this.fp) this._ensureHeadHidden(character);
-    else this._restoreHead(character);
+    this._syncHeadHide(character, { fp, driving, weaponSystem, gunDrawn });
     this._setWeaponVisible(true);
   }
 

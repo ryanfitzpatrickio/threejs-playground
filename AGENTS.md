@@ -19,6 +19,7 @@ This is an active prototype workspace, not a polished engine. Prefer focused, lo
 
 Useful targeted checks from `package.json`:
 
+- `npm run verify:game-runtime-boundary`
 - `npm run verify:fixed-step`
 - `npm run verify:determinism`
 - `npm run verify:clouds`
@@ -31,12 +32,27 @@ Useful targeted checks from `package.json`:
 
 Run the smallest relevant verification command for the subsystem you changed. Run `npm run build` when changing shared runtime, rendering, imports, asset loading, Vite config, or deployment behavior.
 
+## Adding a Runtime System
+
+`GameRuntime.js` is a closed facade. A new system must not edit it (`git diff -- src/game/core/GameRuntime.js` should stay empty). Checklist:
+
+1. Implement under `src/game/systems/` or a focused feature directory.
+2. Register construction in `src/game/runtime/createRuntimeServices.js` (or let a feature own it).
+3. Add startup/disposal hooks via lifecycle / owning feature / `RuntimeLoader`.
+4. Add a named frame step in `src/game/runtime/runtimeFramePlan.js` or the feature’s step list; implement the tick in `RuntimeFramePipeline` (or a feature phase).
+5. Register snapshot contributors in `RuntimeSnapshotStore` only if UI/probes need them.
+6. Add debug commands under `src/game/debug/runtime/*DebugCommands.js` only if necessary.
+7. Add a targeted `scripts/verify-*.mjs` for ordering/behavior.
+8. Confirm `npm run verify:game-runtime-boundary` still passes.
+
 ## Repository Map
 
 - `src/main.js`: application entry loader.
 - `src/bootstrap.jsx`: Solid app mount.
 - `src/ui/`: Solid app shell, HUD, editor, and canvas components.
-- `src/game/core/`: runtime orchestration, frame loop, stats, and render-rate limiting.
+- `src/game/core/`: public `GameRuntime` facade, frame loop, stats, and render-rate limiting.
+- `src/game/runtime/`: runtime kernel, services, lifecycle, loader, frame pipeline, snapshots, commands, features, and mode controllers. **New systems wire here, not into `GameRuntime.js`.**
+- `src/game/debug/runtime/`: `__DREAMFALL_DEBUG__` bridge host and domain command modules.
 - `src/game/systems/`: gameplay, rendering, physics, camera, animation, traversal, vehicle, combat, weather, and level systems.
 - `src/game/world/`: runtime level, terrain, road, river, city, and collider construction.
 - `src/game/characters/`: player and character model factories, animation controllers, cloth setup.

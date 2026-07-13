@@ -53,10 +53,25 @@ export class VehicleDamageSystem {
   }
 
   update({ delta, vehicles = [] } = {}) {
-    const liveVehicles = new Set(vehicles);
+    // Reuse membership set to avoid per-frame allocation (highway O1).
+    if (!this._liveVehicles) this._liveVehicles = new Set();
+    const liveVehicles = this._liveVehicles;
+    liveVehicles.clear();
     for (const vehicle of vehicles) {
+      if (!vehicle) continue;
+      // Skip dormant pool members with no pending work.
+      if (vehicle.activity === 'dormantPool') {
+        const pending = vehicle.pendingDamageImpacts;
+        if (!pending?.length) continue;
+      }
+      liveVehicles.add(vehicle);
+      const pending = vehicle.pendingDamageImpacts;
+      if (!pending?.length) {
+        // Still ensure damage state exists only when first needed for live cars.
+        continue;
+      }
       this.ensureDamageState(vehicle);
-      const impacts = vehicle.pendingDamageImpacts?.splice(0) ?? [];
+      const impacts = pending.splice(0);
       for (const impact of impacts) this.applyImpact(vehicle, impact);
     }
     this._updateDetachedBumpers(Math.max(0, delta || 0), liveVehicles);

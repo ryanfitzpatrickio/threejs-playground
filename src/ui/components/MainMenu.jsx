@@ -28,6 +28,12 @@ const EXPERIENCES = [
     blurb: '60s warehouse breach — hit hostiles, spare friendlies.',
     accent: true,
   },
+  {
+    id: 'horde',
+    label: 'Horde',
+    blurb: 'Robot wave arena — sword cuts and firearms.',
+    accent: true,
+  },
 ];
 
 /**

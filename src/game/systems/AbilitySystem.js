@@ -1,9 +1,9 @@
 /**
  * AbilitySystem — equip traversal powers like guns, activate with F.
  *
- * Scroll (when not FP-armed) cycles the loadout. The equipped ability remaps
- * F (and a few secondary inputs) onto the legacy hook / wingsuit flags so
- * HookSwingSystem and WingsuitFlightSystem stay unchanged.
+ * The equipped ability remaps F (and a few secondary inputs) onto the legacy
+ * hook / wingsuit flags so HookSwingSystem and WingsuitFlightSystem stay
+ * unchanged. Cycle abilities via equip()/cycle() (debug) or a future control.
  */
 
 import {
@@ -47,8 +47,8 @@ export class AbilitySystem {
    * Remap ability input onto hook/wingsuit flags. Call early in the frame,
    * before vehicle/mount/FP/traversal consume input.
    *
-   * Scroll is owned by the weapon loadout (sword + guns). Cycle abilities via
-   * equip()/cycle() (debug) or a future dedicated control.
+   * Scroll is reserved for camera zoom. Cycle abilities via equip()/cycle()
+   * (debug) or a future dedicated control.
    *
    * @param {{ input: object, firstPersonWeaponSystem?: object, weaponSystem?: object }} ctx
    * @returns {object} patched input

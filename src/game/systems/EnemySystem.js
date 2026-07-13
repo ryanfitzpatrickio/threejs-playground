@@ -4,7 +4,11 @@ import { disposeObject3D } from '../utils/disposeObject3D.js';
 import { shortestAngleDelta } from '../utils/angleUtils.js';
 import { flattenObjectForWebGPU } from '../geometry/prepareWebGPUGeometry.js';
 import { createGltfLoader } from '../utils/createGltfLoader.js';
+import { ENEMY_ARCHETYPES, getArchetype } from '../config/enemyArchetypes.js';
+import { hordeDebugState } from '../config/hordeDebugConfig.js';
+import { UniformSpatialGrid } from './UniformSpatialGrid.js';
 import {
+  countLostLimbs,
   createSoldierLimbState,
   isEnemyMovingBackward,
   isSoldierDisabilityClip,
@@ -38,33 +42,14 @@ const ENEMY_COUNT = 0;
 // sizes PLAYER_SLOT_SPACING below (kept at the human soldier's footprint).
 const ENEMY_GROUND_OFFSET = -0.05;
 const ENEMY_COLLISION_RADIUS = 0.42;
+/** Set each EnemySystem.update for helpers that only receive `level`. */
+let _snapPlatformsFrame = null;
 
-// Per-archetype model + scale config. `soldier` is the Tripo/Mixamo flesh enemy
-// (needs the upright orientation fix + opaque material patch and gets the
-// squishy skinned-ragdoll cut). `robot` is the original `creature`-rig metal
-// enemy (enemy1.glb) — rigid cut path, no orientation/material fixups.
-const ENEMY_ARCHETYPES = {
-  soldier: {
-    url: '/assets/models/soldier.glb',
-    boneScheme: 'mixamo',
-    targetHeight: 1.85,
-    groundOffset: -0.05,
-    collisionHeight: 1.7,
-    collisionRadius: 0.42,
-    orientationFixX: -Math.PI / 2,
-    fixMaterials: true,
-  },
-  robot: {
-    url: '/assets/models/enemy1.glb',
-    boneScheme: 'creature',
-    targetHeight: 4.2,
-    groundOffset: -0.28,
-    collisionHeight: 3.45,
-    collisionRadius: 1.05,
-    orientationFixX: 0,
-    fixMaterials: false,
-  },
-};
+// Per-archetype model + capability config lives in
+// src/game/config/enemyArchetypes.js (pure-data, importable from node). The
+// three capability profiles (rigProfile / cutProfile / limbLossProfile) replace
+// the old literal `archetype === 'soldier'` gates; `boneScheme` stays as the
+// low-level rig key for EnemyCutSystem.BONE_SCHEMES.
 
 // Which archetype spawns at each enemy index. Index 0 is a robot so the original
 // creature rig + rigid cut path stays exercised next to the soldiers.
@@ -82,6 +67,8 @@ const SOLDIER_DISABILITY_LOCOMOTION_FADE_SECONDS = 0.32;
 const SOLDIER_DISABILITY_CUT_REACT_FADE_SECONDS = 0.15;
 const ENEMY_ATTACK_RANGE = 3.35;
 const ENEMY_HOLD_RANGE = ENEMY_ATTACK_RANGE + 0.55;
+/** Max |Δy| for melee — ground bots must not bite a player on a train roof. */
+const ENEMY_ATTACK_HEIGHT_RANGE = 1.65;
 const ENEMY_CHASE_RANGE = 11;
 const ENEMY_ATTACK_COOLDOWN_SECONDS = 1.15;
 const ENEMY_BITE_DAMAGE = 8;
@@ -103,11 +90,19 @@ const MAX_SIMULTANEOUS_CLOSE_FULL_ANIM = 7;
 // Clipmap shadow passes multiply every caster submission. Keep nearby contact
 // shadows, but retire enemy casters before their screen-space benefit vanishes.
 const ENEMY_SHADOW_DISTANCE = 14;
+const ENEMY_SNAPSHOT_DETAIL_LIMIT = 64;
 const PLAYER_SLOT_RADIUS = 3.35;
 const PLAYER_SLOT_RELEASE_RANGE = ENEMY_CHASE_RANGE + 2.5;
 const PLAYER_SLOT_MIN_RADIUS = 2.35;
 const PLAYER_SLOT_CANDIDATES = 24;
 const PLAYER_SLOT_SPACING = ENEMY_COLLISION_RADIUS * 2 + ENEMY_SEPARATION_PADDING;
+/**
+ * Horde-only (M2): full-actor attack slots are restricted to a cone facing the
+ * incoming mob bearing instead of the 360° ring, so the tip attacks from the
+ * mob side. Non-horde encirclement is unchanged (this gate stays off unless
+ * GameRuntime calls setHordeFrontArc in horde mode).
+ */
+const HORDE_FRONT_ARC_HALF_ANGLE = (80 * Math.PI) / 180;
 const PATROL_POINT_REACHED_DISTANCE = 0.45;
 const SPAWN_OFFSETS = [
   // central intersection area (3)
@@ -155,6 +150,11 @@ export class EnemySystem {
     this.clipNames = [];
     this.lastPlayerPosition = null;
     this.sharedAssetRoot = null;
+    // Horde-only front-arc for attack-slot allocation (M2). Off by default so
+    // soldier / normal-mode encirclement keeps the full 360° ring.
+    this._hordeFrontArc = { enabled: false, bearing: 0, halfAngle: HORDE_FRONT_ARC_HALF_ANGLE };
+    this._hordeShadowCasterLimit = Infinity;
+    this._hordeShadowCasterIds = null;
     this.playerSlots = Array.from({ length: ENEMY_COUNT }, (_, index) => ({
       index,
       holderId: null,
@@ -162,12 +162,75 @@ export class EnemySystem {
       angle: null,
       radius: null,
     }));
+    // Per-archetype cached GLB scenes + clips, populated by preloadArchetypes.
+    this._assets = new Map();
+    // Monotonic instance counter; NOT reset by clearEnemies so ids stay unique
+    // across horde restarts (avoids collisions with lingering cut props whose
+    // labels embed the enemy id).
+    this._spawnCounter = 0;
+    // Idempotent defeat signal: set by markDefeated, cleared by clearEnemies.
+    this._defeatedIds = new Set();
+    // Nullable subscriber for defeat events (set by HordeSystem in M3). Stays
+    // null for non-horde levels — markDefeated still stamps the flag.
+    this.onEnemyDefeated = null;
+    // Horde playground modifiers (debug pane). Live-read each frame.
+    this.behaviorMods = hordeDebugState;
+    /**
+     * Max simultaneous full-actor attackers (M4 attack tokens). Infinity outside
+     * Horde; GameRuntime sets HORDE_ATTACK_TOKEN_LIMIT in horde mode.
+     */
+    this.attackTokenLimit = Infinity;
+    this._separationGrid = new UniformSpatialGrid(2);
+    this._separationStats = {
+      candidatePairs: 0,
+      separatedPairs: 0,
+      bruteForcePairsAvoided: 0,
+    };
+  }
+
+  /** Effective chase activation distance (debug-scaled). */
+  getChaseRange() {
+    const s = Number(this.behaviorMods?.chaseRangeScale);
+    return ENEMY_CHASE_RANGE * (Number.isFinite(s) ? Math.max(0.1, s) : 1);
+  }
+
+  getAttackRange() {
+    const s = Number(this.behaviorMods?.attackRangeScale);
+    return ENEMY_ATTACK_RANGE * (Number.isFinite(s) ? Math.max(0.15, s) : 1);
+  }
+
+  getHoldRange() {
+    return this.getAttackRange() + 0.55;
+  }
+
+  getAttackCooldown() {
+    const s = Number(this.behaviorMods?.attackCooldownScale);
+    return ENEMY_ATTACK_COOLDOWN_SECONDS * (Number.isFinite(s) ? Math.max(0.15, s) : 1);
+  }
+
+  getBiteDamage() {
+    const s = Number(this.behaviorMods?.damageScale);
+    return ENEMY_BITE_DAMAGE * (Number.isFinite(s) ? Math.max(0, s) : 1);
+  }
+
+  getSpeedScale() {
+    if (this.behaviorMods?.frozen) return 0;
+    const s = Number(this.behaviorMods?.speedScale);
+    return Number.isFinite(s) ? Math.max(0, s) : 1;
+  }
+
+  isPassive() {
+    return Boolean(this.behaviorMods?.passive || this.behaviorMods?.frozen);
+  }
+
+  isInvulnerable() {
+    return Boolean(this.behaviorMods?.invulnerable);
   }
 
   async load(scene, { playerPosition = new THREE.Vector3(), level } = {}) {
     this.status = 'loading';
     this.error = null;
-    scene.add(this.group);
+    if (scene && this.group.parent !== scene) scene.add(this.group);
 
     if (ENEMY_COUNT <= 0) {
       this.status = 'ready';
@@ -175,125 +238,24 @@ export class EnemySystem {
     }
 
     try {
-      const loader = createGltfLoader();
-      // Load each archetype model once (with its own animation clips), then
-      // clone per spawned enemy below.
-      const assets = new Map();
-      for (const key of new Set(ENEMY_SPAWN_PLAN)) {
-        const config = ENEMY_ARCHETYPES[key];
-        const gltf = await loader.loadAsync(config.url);
-        assets.set(key, {
-          scene: gltf.scene,
-          clips: prepareAnimationClips(gltf.animations),
-        });
-      }
-
-      const primaryAsset = assets.get(ENEMY_SPAWN_PLAN[0]) ?? assets.values().next().value;
-      this.sharedAssetRoot = primaryAsset?.scene ?? null;
-      this.clipNames = (primaryAsset?.clips ?? []).map((clip) => clip.name).filter(Boolean);
+      await this.preloadArchetypes(scene, { archetypes: [...new Set(ENEMY_SPAWN_PLAN)] });
 
       for (let index = 0; index < ENEMY_COUNT; index += 1) {
         const archetype = ENEMY_SPAWN_PLAN[index % ENEMY_SPAWN_PLAN.length];
-        const config = ENEMY_ARCHETYPES[archetype];
-        const asset = assets.get(archetype);
-
-        if (!asset) {
-          continue;
-        }
-
-        const inner = cloneSkeleton(asset.scene);
-        inner.name = `Enemy ${index + 1} Model`;
-
-        // Ensure matrices are ready right after clone (GLB skinned models need this
-        // before any bounding-box or bind-pose work).
-        inner.updateMatrixWorld(true);
-        inner.traverse((child) => {
-          if (child.isSkinnedMesh && child.skeleton) child.skeleton.update();
-        });
-
-        const renderObjects = prepareAsset(inner, { fixMaterials: config.fixMaterials });
-        // De-interleave + de-quantize attributes before normalize/bounding-box
-        // work so the WebGPU backend never sees the invalid `unorm32x4` format
-        // these Tripo GLBs otherwise produce. Idempotent across shared clones.
-        flattenObjectForWebGPU(inner);
-
-        // soldier.glb is a Tripo/Mixamo FBX->GLB conversion whose armature carries
-        // a residual +90deg X rotation (renders lying down) + cm->m scale; counter-
-        // rotate it upright BEFORE normalizing height, else the height probe measures
-        // body depth and scales it enormous. The robot rig needs no such fix
-        // (orientationFixX === 0). Facing yaw goes on the outer `model` group so it
-        // never composes with this orientation fix (mirrors Mara's loader).
-        if (config.orientationFixX) {
-          inner.rotation.x = config.orientationFixX;
-        }
-        normalizeToHeight(inner, config.targetHeight);
-
-        const model = new THREE.Group();
-        model.name = `Enemy ${index + 1}`;
-        model.add(inner);
-
+        const config = getArchetype(archetype);
         const spawnPosition = resolveEnemySpawnPosition({
           index,
           playerPosition,
           level,
           groundOffset: config.groundOffset,
         });
-        const mixer = new THREE.AnimationMixer(inner);
-        const splitMaps = archetype === 'soldier'
-          ? createSoldierSplitActionMaps(mixer, asset.clips)
-          : { actions: createActions(mixer, asset.clips), lowerActions: null, upperActions: null };
-        const enemy = {
-          id: `enemy-${index + 1}`,
-          archetype,
-          boneScheme: config.boneScheme,
-          model,
-          mixer,
-          actions: splitMaps.actions,
-          lowerActions: splitMaps.lowerActions,
-          upperActions: splitMaps.upperActions,
-          action: null,
-          lowerSplitAction: null,
-          upperSplitAction: null,
-          splitAnimationActive: false,
-          currentActionName: null,
-          home: spawnPosition.clone(),
-          patrolIndex: index % PATROL_OFFSETS.length,
-          state: 'idle',
+        const yaw = Math.atan2(-SPAWN_OFFSETS[index].x, -SPAWN_OFFSETS[index].z);
+        this.spawnEnemy(archetype, spawnPosition, {
+          yaw,
           attackCooldown: index * 0.2,
-          behaviorTree: createEnemyBehaviorTree(),
-          playerSlotIndex: null,
-          collisionHeight: config.collisionHeight,
-          baseCollisionHeight: config.collisionHeight,
-          collisionRadius: config.collisionRadius,
-          groundOffset: config.groundOffset,
-          baseOrientationFixX: config.orientationFixX ?? 0,
-          targetInnerRotationX: config.orientationFixX ?? 0,
-          postureOffsetY: 0,
-          targetPostureOffsetY: 0,
-          appliedPostureOffsetY: 0,
-          health: ENEMY_MAX_HEALTH,
-          maxHealth: ENEMY_MAX_HEALTH,
-          staggerTimer: 0,
-          renderObjects,
-          animationAccumulator: 0,
-          renderBudget: {
-            shadowCasting: true,
-            animationStep: 0,
-            animationHz: 0,
-            playerDistance: null,
-          },
-          limbLoss: archetype === 'soldier' ? createSoldierLimbState() : null,
-          cutCount: 0,
-          locomotionMode: 'normal',
-          headMissingClip: null,
-        };
-
-        model.position.copy(spawnPosition);
-        model.rotation.y = Math.atan2(-SPAWN_OFFSETS[index].x, -SPAWN_OFFSETS[index].z);
-        this.group.add(model);
-        this.playAnimation(enemy, 'Idle', { fadeSeconds: 0 });
-        mixer.update(0);
-        this.enemies.push(enemy);
+          patrolIndex: index % PATROL_OFFSETS.length,
+          id: `enemy-${index + 1}`,
+        });
       }
 
       this.status = 'ready';
@@ -305,13 +267,386 @@ export class EnemySystem {
     }
   }
 
-  update({ delta, player, level }) {
+  // Asset preload only: load each requested archetype's GLB once into the
+  // per-archetype cache. Idempotent per archetype. Does not create instances.
+  // Horde callers pass the archetype list explicitly; the legacy load() path
+  // derives it from ENEMY_SPAWN_PLAN.
+  async preloadArchetypes(scene, { archetypes } = {}) {
+    if (scene && this.group.parent !== scene) scene.add(this.group);
+    const keys = archetypes ?? [...new Set(ENEMY_SPAWN_PLAN)];
+    if (!this._loader) this._loader = createGltfLoader();
+    let primaryAsset = this._assets.values().next().value ?? null;
+    for (const key of keys) {
+      if (this._assets.has(key)) {
+        continue;
+      }
+      const config = getArchetype(key);
+      const gltf = await this._loader.loadAsync(config.url);
+      const asset = {
+        scene: gltf.scene,
+        clips: prepareAnimationClips(gltf.animations),
+      };
+      this._assets.set(key, asset);
+      if (!primaryAsset) primaryAsset = asset;
+    }
+    if (primaryAsset) {
+      this.sharedAssetRoot = primaryAsset.scene ?? this.sharedAssetRoot;
+      this.clipNames = (primaryAsset.clips ?? []).map((clip) => clip.name).filter(Boolean);
+    }
+    return this._assets;
+  }
+
+  getArchetypeAsset(archetype) {
+    return this._assets.get(archetype) ?? null;
+  }
+
+  // Create one enemy instance from a preloaded archetype at an explicit
+  // position/yaw. Does NOT register physics — the caller (HordeSystem) calls
+  // physicsSystem.addEnemyCollider so spawn timing stays decoupled from the
+  // physics step and spawnEnemy stays testable without physics. Returns the
+  // enemy record or null if the archetype wasn't preloaded.
+  spawnEnemy(archetype, position, {
+    yaw = 0,
+    attackCooldown = 0,
+    patrolIndex = 0,
+    id = null,
+    platformBody = null,
+    platformBodyHandle = null,
+  } = {}) {
+    const config = getArchetype(archetype);
+    const asset = this._assets.get(archetype);
+    if (!asset) {
+      console.warn(`[EnemySystem] spawnEnemy('${archetype}'): archetype not preloaded; call preloadArchetypes first.`);
+      return null;
+    }
+
+    const instanceId = id ?? `enemy-${++this._spawnCounter}`;
+    const inner = cloneSkeleton(asset.scene);
+    inner.name = `${instanceId} Model`;
+
+    // Ensure matrices are ready right after clone (GLB skinned models need this
+    // before any bounding-box or bind-pose work).
+    inner.updateMatrixWorld(true);
+    inner.traverse((child) => {
+      if (child.isSkinnedMesh && child.skeleton) child.skeleton.update();
+    });
+
+    const renderObjects = prepareAsset(inner, { fixMaterials: config.fixMaterials });
+    // De-interleave + de-quantize attributes before normalize/bounding-box
+    // work so the WebGPU backend never sees the invalid `unorm32x4` format
+    // these Tripo GLBs otherwise produce. Idempotent across shared clones.
+    flattenObjectForWebGPU(inner);
+
+    // soldier.glb is a Tripo/Mixamo FBX->GLB conversion whose armature carries
+    // a residual +90deg X rotation (renders lying down) + cm->m scale; counter-
+    // rotate it upright BEFORE normalizing height, else the height probe measures
+    // body depth and scales it enormous. The robot rig needs no such fix
+    // (orientationFixX === 0). Facing yaw goes on the outer `model` group so it
+    // never composes with this orientation fix (mirrors Mara's loader).
+    if (config.orientationFixX) {
+      inner.rotation.x = config.orientationFixX;
+    }
+    normalizeToHeight(inner, config.targetHeight);
+
+    const model = new THREE.Group();
+    model.name = instanceId;
+    model.add(inner);
+
+    const mixer = new THREE.AnimationMixer(inner);
+    const splitMaps = config.rigProfile === 'mixamo'
+      ? createSoldierSplitActionMaps(mixer, asset.clips)
+      : { actions: createActions(mixer, asset.clips), lowerActions: null, upperActions: null };
+    const enemy = {
+      id: instanceId,
+      archetype,
+      boneScheme: config.boneScheme,
+      rigProfile: config.rigProfile,
+      cutProfile: config.cutProfile,
+      limbLossProfile: config.limbLossProfile ?? null,
+      model,
+      mixer,
+      actions: splitMaps.actions,
+      lowerActions: splitMaps.lowerActions,
+      upperActions: splitMaps.upperActions,
+      action: null,
+      lowerSplitAction: null,
+      upperSplitAction: null,
+      splitAnimationActive: false,
+      currentActionName: null,
+      home: position.clone(),
+      patrolIndex,
+      state: 'idle',
+      attackCooldown,
+      behaviorTree: createEnemyBehaviorTree(),
+      playerSlotIndex: null,
+      collisionHeight: config.collisionHeight,
+      baseCollisionHeight: config.collisionHeight,
+      collisionRadius: config.collisionRadius,
+      groundOffset: config.groundOffset,
+      baseOrientationFixX: config.orientationFixX ?? 0,
+      targetInnerRotationX: config.orientationFixX ?? 0,
+      postureOffsetY: 0,
+      targetPostureOffsetY: 0,
+      appliedPostureOffsetY: 0,
+      health: config.maxHealth,
+      maxHealth: config.maxHealth,
+      staggerTimer: 0,
+      renderObjects,
+      animationAccumulator: 0,
+      renderBudget: {
+        shadowCasting: true,
+        animationStep: 0,
+        animationHz: 0,
+        playerDistance: null,
+      },
+      limbLoss: config.limbLossProfile === 'mixamo-humanoid' ? createSoldierLimbState() : null,
+      cutCount: 0,
+      locomotionMode: 'normal',
+      headMissingClip: null,
+      defeated: false,
+      defeatCause: null,
+      // Wall-clock ms when this full actor was spawned/promoted. Used by Horde
+      // demotion hysteresis so brand-new promotions are not immediately flipped back.
+      hordePromotedAt: performance.now(),
+      // M5: optional moving-platform support (trailer / test deck body handle).
+      platformBodyHandle: Number.isFinite(platformBodyHandle)
+        ? platformBodyHandle
+        : (Number.isFinite(platformBody?.handle) ? platformBody.handle : null),
+      platformBody: platformBody ?? null,
+      platformSupport: null,
+      platformVelocity: { x: 0, y: 0, z: 0 },
+    };
+
+    model.position.copy(position);
+    model.rotation.y = yaw;
+    this.group.add(model);
+    this.playAnimation(enemy, 'Idle', { fadeSeconds: 0 });
+    mixer.update(0);
+    this.enemies.push(enemy);
+    this.ensurePlayerSlotCapacity();
+    return enemy;
+  }
+
+  /**
+   * Horde-only (M2): restrict claimable attack slots to a cone facing the mob's
+   * approach bearing (radians, atan2(dz, dx) convention). Pass `enabled:false`
+   * (or omit) to restore the full 360° ring for soldier / normal modes. Call
+   * once per frame from GameRuntime while in horde mode.
+   */
+  setHordeFrontArc({ enabled = false, bearing = 0, halfAngle = HORDE_FRONT_ARC_HALF_ANGLE } = {}) {
+    this._hordeFrontArc.enabled = Boolean(enabled) && Number.isFinite(bearing);
+    this._hordeFrontArc.bearing = Number.isFinite(bearing) ? bearing : 0;
+    this._hordeFrontArc.halfAngle = Number.isFinite(halfAngle) ? halfAngle : HORDE_FRONT_ARC_HALF_ANGLE;
+  }
+
+  /**
+   * Horde has many nearby full actors, but every skinned shadow caster repeats
+   * its full geometry across the shadow passes. Keep the budget explicit and
+   * select attackers/slot holders before nearest idle actors.
+   */
+  setHordeShadowCasterLimit(limit = Infinity) {
+    this._hordeShadowCasterLimit = Number.isFinite(limit)
+      ? Math.max(0, Math.floor(limit))
+      : Infinity;
+  }
+
+  /**
+   * Whether a full Horde actor may be demoted back to an instanced proxy.
+   * Attackers, staggered, cut, ragdoll/corpse, and recent promotions stay full.
+   */
+  isSafeToDemoteHordeActor(enemy, {
+    now = performance.now(),
+    minResidenceMs = 750,
+    playerPosition = null,
+    demotionRadius = null,
+  } = {}) {
+    if (!enemy || enemy.defeated || enemy.pendingCorpse) return false;
+    if ((enemy.staggerTimer ?? 0) > 0) return false;
+    if (enemy.knockbackVelocity) return false;
+    if (enemy.state === 'attack') return false;
+    if ((enemy.cutCount ?? 0) > 0) return false;
+    if (enemy.splitAnimationActive) return false;
+    if (countLostLimbs(enemy.limbLoss) > 0) return false;
+    if (enemy.playerSlotIndex != null) return false;
+    const promotedAt = enemy.hordePromotedAt ?? 0;
+    if (now - promotedAt < minResidenceMs) return false;
+    if (playerPosition && Number.isFinite(demotionRadius)) {
+      const dx = enemy.model.position.x - playerPosition.x;
+      const dz = enemy.model.position.z - playerPosition.z;
+      if (dx * dx + dz * dz < demotionRadius * demotionRadius) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Extract a proxy descriptor from a full actor and despawn the clone/collider.
+   * Returns null if the actor is not safe to demote or despawn fails.
+   */
+  demoteHordeActorToDescriptor(enemy, {
+    physicsSystem = null,
+    now = performance.now(),
+    minResidenceMs = 750,
+    playerPosition = null,
+    demotionRadius = null,
+  } = {}) {
+    if (!this.isSafeToDemoteHordeActor(enemy, {
+      now,
+      minResidenceMs,
+      playerPosition,
+      demotionRadius,
+    })) {
+      return null;
+    }
+    const baseMax = enemy.baseMaxHealth ?? enemy.maxHealth ?? 100;
+    const healthScale = baseMax > 0 ? (enemy.maxHealth ?? baseMax) / baseMax : 1;
+    const descriptor = {
+      id: enemy.id,
+      archetype: enemy.archetype,
+      position: enemy.model.position.clone(),
+      yaw: enemy.model.rotation.y,
+      health: enemy.health,
+      maxHealth: enemy.maxHealth,
+      healthScale,
+      fromDemotion: true,
+    };
+    const removed = this.despawnEnemy(enemy, { physicsSystem });
+    return removed ? descriptor : null;
+  }
+
+  /**
+   * Furthest safe-to-demote full actor from the player, or null.
+   * Linear scan is fine while Tier A is capped at ~24.
+   */
+  findFurthestDemotableHordeActor(playerPosition, options = {}) {
+    if (!playerPosition || this.enemies.length === 0) return null;
+    let best = null;
+    let bestDistanceSq = -1;
+    for (const enemy of this.enemies) {
+      if (!this.isSafeToDemoteHordeActor(enemy, { ...options, playerPosition })) continue;
+      const dx = enemy.model.position.x - playerPosition.x;
+      const dz = enemy.model.position.z - playerPosition.z;
+      const distanceSq = dx * dx + dz * dz;
+      if (distanceSq > bestDistanceSq) {
+        bestDistanceSq = distanceSq;
+        best = enemy;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Rearmost safe-to-demote full actor by FLOW distance-to-goal (M2 front
+   * election) — the tail of the mob, respecting the same demote guards. The
+   * caller threads a `getFlowDistanceAt(position)` sampler (the proxy system's
+   * shared field) so EnemySystem never reaches into the flow-field internals.
+   * Full actors with unreachable/Infinity flow, or when no sampler is given,
+   * fall back to euclidean distance so the tail is always well-defined.
+   */
+  findRearmostDemotableHordeActor(playerPosition, options = {}) {
+    if (!playerPosition || this.enemies.length === 0) return null;
+    const getFlowDistanceAt = typeof options.getFlowDistanceAt === 'function'
+      ? options.getFlowDistanceAt
+      : null;
+    if (!getFlowDistanceAt) {
+      return this.findFurthestDemotableHordeActor(playerPosition, options);
+    }
+    let best = null;
+    let bestRank = -Infinity;
+    for (const enemy of this.enemies) {
+      if (!this.isSafeToDemoteHordeActor(enemy, { ...options, playerPosition })) continue;
+      const flow = getFlowDistanceAt(enemy.model.position);
+      let rank = flow;
+      if (!Number.isFinite(rank)) {
+        // Unreachable cell — rank by euclidean so it still orders behind
+        // reachable actors of smaller path distance but stays comparable.
+        const dx = enemy.model.position.x - playerPosition.x;
+        const dz = enemy.model.position.z - playerPosition.z;
+        rank = Math.hypot(dx, dz);
+      }
+      if (rank > bestRank) {
+        bestRank = rank;
+        best = enemy;
+      }
+    }
+    return best;
+  }
+
+  // Non-lethal single-enemy removal (wave reset / mode teardown). Does NOT
+  // call markDefeated. Optional physicsSystem removes the collider alongside.
+  despawnEnemy(enemy, { physicsSystem } = {}) {
+    if (!enemy) return false;
+    physicsSystem?.removeEnemyCollider?.(enemy);
+    return this.removeEnemy(enemy);
+  }
+
+  // Bulk non-lethal removal: despawn every enemy, release all player slots,
+  // purge deferred firearm ragdolls, and clear defeat tracking. Used by
+  // HordeSystem restart/teardown. Does not reset _spawnCounter (ids stay
+  // unique vs lingering cut props).
+  clearEnemies({ physicsSystem, weaponSystem } = {}) {
+    let removed = 0;
+    for (const enemy of [...this.enemies]) {
+      physicsSystem?.removeEnemyCollider?.(enemy);
+      this.releasePlayerSlot(enemy);
+      enemy.mixer?.stopAllAction();
+      this.group.remove(enemy.model);
+      disposeEnemyClone(enemy.model);
+      removed += 1;
+    }
+    this.enemies = [];
+    this.releaseAllPlayerSlots();
+    this._defeatedIds.clear();
+    weaponSystem?.clearPendingRagdolls?.();
+    return removed;
+  }
+
+  // Idempotent defeat signal. Stamps the enemy defeated, records the cause, and
+  // fires onEnemyDefeated exactly once — BEFORE the lethal path's own visual /
+  // collider cleanup so the listener reads valid state. Signal only: each lethal
+  // path keeps its own teardown (ragdoll spawn, corpse timer, collider removal).
+  // Partial (survivable) cuts must NOT call this.
+  markDefeated(enemy, cause) {
+    if (!enemy || enemy.defeated) return false;
+    enemy.defeated = true;
+    enemy.defeatCause = cause;
+    this._defeatedIds.add(enemy.id);
+    try {
+      this.onEnemyDefeated?.(enemy, cause);
+    } catch (err) {
+      console.warn('[EnemySystem] onEnemyDefeated listener threw', err);
+    }
+    return true;
+  }
+
+  // Grow the player-slot pool so a freshly spawned enemy can claim one. The
+  // array is sized from ENEMY_COUNT (0 for horde), so dynamic spawns need this
+  // or checkoutPlayerSlot finds no open slot and enemies never funnel into
+  // attack positions.
+  ensurePlayerSlotCapacity() {
+    while (this.playerSlots.length < this.enemies.length + 1) {
+      const index = this.playerSlots.length;
+      this.playerSlots.push({
+        index,
+        holderId: null,
+        position: new THREE.Vector3(),
+        angle: null,
+        radius: null,
+      });
+    }
+  }
+
+  update({ delta, player, level, platforms = null }) {
     if (this.status !== 'ready') {
       return;
     }
 
+    // Available to moveToward / separation helpers this frame (M5 platforms).
+    this.platformsThisFrame = platforms;
+    _snapPlatformsFrame = platforms;
+
     this.updatePlayerSlots(player);
     const playerPosition = player?.group?.position ?? null;
+    this._updateHordeShadowCasterBudget(playerPosition);
     // Reset per-frame cap counter for close full-rate animations.
     this._closeFullAnimThisFrame = 0;
 
@@ -328,10 +663,16 @@ export class EnemySystem {
         continue;
       }
 
-      // Apply + decay unarmed knockback on live enemies (survives the stagger skip).
-      this.applyEnemyKnockbackStep(enemy, delta, level);
+      // M5: ride moving platforms (trailer / highway test deck).
+      if (platforms && enemy.platformBodyHandle != null) {
+        this.syncEnemyPlatformSupport(enemy, platforms);
+        platforms.applyPendingCarry?.(enemy);
+      }
 
-      if (enemy.archetype === 'soldier') {
+      // Apply + decay unarmed knockback on live enemies (survives the stagger skip).
+      this.applyEnemyKnockbackStep(enemy, delta, level, platforms);
+
+      if (enemy.rigProfile === 'mixamo') {
         this.updateSoldierPostureBlend(enemy, delta, level);
       }
 
@@ -341,6 +682,22 @@ export class EnemySystem {
         enemy.staggerTimer = Math.max(0, enemy.staggerTimer - delta);
         this.updateEnemyRenderBudget({ enemy, playerPosition });
         this.updateEnemyAnimation({ enemy, playerPosition, delta });
+        snapEnemyToGround({ enemy, level, platforms });
+        continue;
+      }
+
+      // Debug: frozen / passive skips pursuit AI (still animate + shadows).
+      if (this.isPassive()) {
+        enemy.state = 'idle';
+        this.updateEnemyRenderBudget({ enemy, playerPosition });
+        this.updateEnemyAnimation({ enemy, playerPosition, delta });
+        if (this.behaviorMods?.frozen) {
+          // no movement / BT
+        } else {
+          // Passive: soft idle facing without chase.
+          playSoldierBehaviorAnimation(this, enemy, { fallback: 'Idle' });
+        }
+        snapEnemyToGround({ enemy, level, platforms });
         continue;
       }
 
@@ -353,11 +710,55 @@ export class EnemySystem {
         player,
         level,
         delta,
+        platforms,
       });
       this.updateEnemyAnimation({ enemy, playerPosition, delta });
+      snapEnemyToGround({ enemy, level, platforms });
     }
 
-    this.resolveEnemyOverlaps({ level });
+    this.resolveEnemyOverlaps({ level, platforms });
+  }
+
+  /**
+   * Keep platformSupport + cached platformVelocity in sync for M5 combat.
+   */
+  syncEnemyPlatformSupport(enemy, platforms) {
+    if (!enemy || !platforms || !Number.isFinite(enemy.platformBodyHandle)) return;
+    // O4: assigned enemies use handle-directed lookup (not full registry scan).
+    const hit = platforms.getPlatformByHandle?.(
+      enemy.platformBodyHandle,
+      enemy.model.position,
+      enemy.model.position.y,
+      { verticalTolerance: 1.2 },
+    ) ?? platforms.getPlatformAt?.(
+      enemy.model.position,
+      enemy.model.position.y,
+      { verticalTolerance: 1.2 },
+    );
+    if (hit && hit.bodyHandle === enemy.platformBodyHandle) {
+      platforms.attachSupport?.(enemy, hit);
+      enemy.platformVelocity = {
+        x: hit.pointVelocity.x,
+        y: hit.pointVelocity.y,
+        z: hit.pointVelocity.z,
+      };
+      return;
+    }
+    // Off the deck but still assigned — refresh velocity from body, keep handle.
+    if (platforms.getPointVelocity) {
+      const pv = platforms.getPointVelocity(
+        enemy.platformBodyHandle,
+        enemy.model.position,
+      );
+      enemy.platformVelocity = { x: pv.x, y: pv.y, z: pv.z };
+    }
+    if (!enemy.platformSupport) {
+      enemy.platformSupport = {
+        bodyHandle: enemy.platformBodyHandle,
+        localContact: { x: 0, y: 0, z: 0 },
+        lastPointVelocity: { ...enemy.platformVelocity },
+      };
+    }
   }
 
   // Unarmed knockback: a horizontal shove that staggers the enemy (so its behavior
@@ -376,7 +777,7 @@ export class EnemySystem {
     this.releasePlayerSlot(enemy);
   }
 
-  applyEnemyKnockbackStep(enemy, delta, level) {
+  applyEnemyKnockbackStep(enemy, delta, level, platforms = null) {
     const kb = enemy.knockbackVelocity;
     if (!kb) {
       return;
@@ -388,8 +789,8 @@ export class EnemySystem {
     kb.z *= decay;
     if (Math.hypot(kb.x, kb.z) < 0.05) {
       enemy.knockbackVelocity = null;
-    } else if (level) {
-      snapEnemyToGround({ enemy, level });
+    } else if (level || platforms) {
+      snapEnemyToGround({ enemy, level, platforms });
     }
   }
 
@@ -424,7 +825,7 @@ export class EnemySystem {
     enemy.action = action;
     enemy.currentActionName = action.getClip()?.name ?? name;
 
-    if (enemy.archetype === 'soldier') {
+    if (enemy.rigProfile === 'mixamo') {
       enemy._previousActionNameForPosture = previousClipName;
       enemy._pendingPostureBlendSeconds = fadeSeconds;
       this.updateSoldierPostureForClip(enemy, enemy.currentActionName);
@@ -549,7 +950,7 @@ export class EnemySystem {
   }
 
   updateSoldierPostureForClip(enemy, clipName) {
-    if (enemy?.archetype !== 'soldier') {
+    if (enemy?.rigProfile !== 'mixamo') {
       return;
     }
 
@@ -687,7 +1088,7 @@ export class EnemySystem {
   }
 
   applySoldierPartialCut(enemy, outcome, { fadeSeconds } = {}) {
-    if (!enemy || enemy.archetype !== 'soldier' || !outcome) {
+    if (!enemy || enemy.limbLossProfile !== 'mixamo-humanoid' || !outcome) {
       return;
     }
 
@@ -735,16 +1136,23 @@ export class EnemySystem {
 
     enemy.health = 0;
     enemy.pendingCorpse = true;
+    this.markDefeated(enemy, 'sword-head-sever');
     physicsSystem?.removeEnemyCollider?.(enemy);
     this.releasePlayerSlot(enemy);
   }
 
   snapshot() {
+    const detailedEnemies = this.enemies.slice(0, ENEMY_SNAPSHOT_DETAIL_LIMIT);
+    const detailedSlots = this.playerSlots.slice(0, ENEMY_SNAPSHOT_DETAIL_LIMIT);
     return {
       status: this.status,
       count: this.enemies.length,
       clips: this.clipNames,
-      enemies: this.enemies.map((enemy) => ({
+      detailLimit: ENEMY_SNAPSHOT_DETAIL_LIMIT,
+      truncatedEnemies: Math.max(0, this.enemies.length - detailedEnemies.length),
+      truncatedPlayerSlots: Math.max(0, this.playerSlots.length - detailedSlots.length),
+      spatial: this.spatialSnapshot(),
+      enemies: detailedEnemies.map((enemy) => ({
         id: enemy.id,
         archetype: enemy.archetype,
         state: enemy.state,
@@ -769,7 +1177,7 @@ export class EnemySystem {
         },
         position: vectorSnapshot(enemy.model.position),
       })),
-      playerSlots: this.playerSlots.map((slot) => ({
+      playerSlots: detailedSlots.map((slot) => ({
         index: slot.index,
         holderId: slot.holderId,
         angle: slot.angle == null ? null : Number(slot.angle.toFixed(3)),
@@ -779,16 +1187,34 @@ export class EnemySystem {
     };
   }
 
+  spatialSnapshot() {
+    return {
+      ...this._separationGrid.snapshot(),
+      ...this._separationStats,
+    };
+  }
+
   dispose() {
     for (const enemy of this.enemies) {
       enemy.mixer?.stopAllAction();
       disposeEnemyClone(enemy.model);
     }
 
-    disposeObject3D(this.sharedAssetRoot ?? this.group);
+    // Dispose shared (un-cloned) GLTF scenes loaded by preloadArchetypes.
+    // sharedAssetRoot is one of these, so it is covered by the loop.
+    for (const asset of this._assets.values()) {
+      if (asset?.scene) disposeObject3D(asset.scene);
+    }
+    this._assets.clear();
+    // If nothing was preloaded (e.g. ENEMY_COUNT=0), the group still owns
+    // whatever was added to it.
+    if (!this.sharedAssetRoot) {
+      disposeObject3D(this.group);
+    }
     this.group.removeFromParent();
     this.enemies = [];
     this.releaseAllPlayerSlots();
+    this._defeatedIds.clear();
     this.sharedAssetRoot = null;
     this.status = 'disposed';
   }
@@ -835,12 +1261,13 @@ export class EnemySystem {
   updateEnemySlotClaim({ enemy, player }) {
     const playerDistance = distanceToPlayer(enemy, player);
 
-    if (enemy.playerSlotIndex != null && playerDistance > PLAYER_SLOT_RELEASE_RANGE) {
+    const releaseRange = this.getChaseRange() + 2.5;
+    if (enemy.playerSlotIndex != null && playerDistance > releaseRange) {
       this.releasePlayerSlot(enemy);
       return;
     }
 
-    if (playerDistance <= ENEMY_CHASE_RANGE && enemy.playerSlotIndex == null) {
+    if (playerDistance <= this.getChaseRange() && enemy.playerSlotIndex == null) {
       this.checkoutPlayerSlot(enemy);
     }
   }
@@ -931,6 +1358,7 @@ export class EnemySystem {
       enemy,
       slots: this.playerSlots,
       playerPosition,
+      frontArc: this._hordeFrontArc,
     });
 
     if (!candidate) {
@@ -956,29 +1384,80 @@ export class EnemySystem {
     return slot?.holderId === enemy.id ? slot : null;
   }
 
-  resolveEnemyOverlaps({ level }) {
-    for (let a = 0; a < this.enemies.length; a += 1) {
-      for (let b = a + 1; b < this.enemies.length; b += 1) {
-        separateEnemies({
-          first: this.enemies[a],
-          second: this.enemies[b],
-          level,
-        });
-      }
+  resolveEnemyOverlaps({ level, platforms = null }) {
+    const count = this.enemies.length;
+    if (count < 2) {
+      this._separationStats.candidatePairs = 0;
+      this._separationStats.separatedPairs = 0;
+      this._separationStats.bruteForcePairsAvoided = 0;
+      return;
     }
+
+    let maxRadius = 0.5;
+    for (const enemy of this.enemies) {
+      maxRadius = Math.max(maxRadius, enemy.collisionRadius ?? 0.5);
+    }
+    const cellSize = maxRadius * 2 + ENEMY_SEPARATION_PADDING;
+    this._separationGrid.rebuild(
+      this.enemies,
+      (enemy) => enemy.model?.position,
+      cellSize,
+    );
+
+    let separatedPairs = 0;
+    const candidatePairs = this._separationGrid.forEachCandidatePair((first, second) => {
+      if (separateEnemies({ first, second, level, platforms })) {
+        separatedPairs += 1;
+      }
+    });
+    const bruteForcePairs = count * (count - 1) * 0.5;
+    this._separationStats.candidatePairs = candidatePairs;
+    this._separationStats.separatedPairs = separatedPairs;
+    this._separationStats.bruteForcePairsAvoided = Math.max(0, bruteForcePairs - candidatePairs);
   }
 
   updateEnemyRenderBudget({ enemy, playerPosition }) {
     const distance = playerPosition
       ? horizontalDistance(enemy.model.position, playerPosition)
       : 0;
-    const shadowCasting = !playerPosition
+    const inHordeShadowBudget = !this._hordeShadowCasterIds
+      || this._hordeShadowCasterIds.has(enemy.id);
+    const shadowCasting = inHordeShadowBudget && (!playerPosition
       || distance <= ENEMY_SHADOW_DISTANCE
       || enemy.state === 'attack'
-      || enemy.state === 'hold';
+      || enemy.state === 'hold');
 
     enemy.renderBudget.playerDistance = Number.isFinite(distance) ? distance : null;
     setEnemyShadowCasting(enemy, shadowCasting);
+  }
+
+  _updateHordeShadowCasterBudget(playerPosition) {
+    if (!Number.isFinite(this._hordeShadowCasterLimit)) {
+      this._hordeShadowCasterIds = null;
+      return;
+    }
+    if (!playerPosition || this._hordeShadowCasterLimit <= 0) {
+      this._hordeShadowCasterIds = new Set();
+      return;
+    }
+
+    const ranked = this.enemies
+      .filter((enemy) => !enemy.pendingCorpse && !enemy.defeated && enemy.model)
+      .sort((left, right) => {
+        const priority = (enemy) => (
+          (enemy.state === 'attack' ? 1000 : 0)
+          + (enemy.state === 'hold' ? 800 : 0)
+          + (enemy.staggerTimer > 0 ? 600 : 0)
+          + (enemy.playerSlotIndex != null ? 400 : 0)
+        );
+        const priorityDelta = priority(right) - priority(left);
+        if (priorityDelta !== 0) return priorityDelta;
+        return horizontalDistance(left.model.position, playerPosition)
+          - horizontalDistance(right.model.position, playerPosition);
+      });
+    this._hordeShadowCasterIds = new Set(
+      ranked.slice(0, this._hordeShadowCasterLimit).map((enemy) => enemy.id),
+    );
   }
 
   updateEnemyAnimation({ enemy, playerPosition, delta }) {
@@ -1031,7 +1510,7 @@ function createEnemyBehaviorTree() {
       action((context) => holdAttackPosition(context)),
     ]),
     sequence([
-      condition(({ system, enemy, player }) => distanceToPlayer(enemy, player) <= ENEMY_CHASE_RANGE && system.getPlayerSlot(enemy) != null),
+      condition(({ system, enemy, player }) => distanceToPlayer(enemy, player) <= system.getChaseRange() && system.getPlayerSlot(enemy) != null),
       action((context) => chasePlayer(context)),
     ]),
     action((context) => patrol(context)),
@@ -1160,10 +1639,29 @@ function playEnemyLocomotionAnimation(system, enemy, clipName, options = {}) {
 }
 
 function attackPlayer({ system, enemy, player, delta }) {
+  // M4 attack tokens: only N full actors may be in attack state at once.
+  // Others hold at the ring edge so the crowd stays readable and melee damage
+  // does not spike with the full Tier A set.
+  const tokenLimit = system.attackTokenLimit;
+  if (Number.isFinite(tokenLimit) && tokenLimit >= 0 && enemy.state !== 'attack') {
+    let attackers = 0;
+    for (const other of system.enemies) {
+      if (other !== enemy && other.state === 'attack' && !other.defeated && !other.pendingCorpse) {
+        attackers += 1;
+        if (attackers >= tokenLimit) break;
+      }
+    }
+    if (attackers >= tokenLimit) {
+      holdAttackPosition({ system, enemy, player, delta });
+      return;
+    }
+  }
+
   enemy.state = 'attack';
   const newSwing = enemy.attackCooldown <= 0;
+  const attackCd = system.getAttackCooldown?.() ?? ENEMY_ATTACK_COOLDOWN_SECONDS;
   enemy.attackCooldown = newSwing
-    ? ENEMY_ATTACK_COOLDOWN_SECONDS
+    ? attackCd
     : enemy.attackCooldown;
   if (newSwing) {
     enemy.hasDamagedPlayerThisSwing = false;
@@ -1175,13 +1673,23 @@ function attackPlayer({ system, enemy, player, delta }) {
   // With no fullBodyClip, playSoldierBehaviorAnimation falls through to resolve...
 
   const biting = !isSoldierLowerLimbLossPosture(enemy)
-    && enemy.attackCooldown > ENEMY_ATTACK_COOLDOWN_SECONDS - 0.2;
+    && enemy.attackCooldown > attackCd - 0.2;
   // Deal player damage once per swing, during the bite window. The funnel applies
   // i-frames, knockback, and picks the hit-reaction (AnimationStateSystem reads it).
-  if (biting && !enemy.hasDamagedPlayerThisSwing) {
+  // Re-check 3D melee reach at the bite frame so a roof/ledge hop mid-swing
+  // cannot still land a hit (horizontal-only range used to ignore height).
+  if (
+    biting
+    && !enemy.hasDamagedPlayerThisSwing
+    && isInMeleeRange(
+      enemy.model.position,
+      player?.group?.position,
+      system.getAttackRange?.() ?? ENEMY_ATTACK_RANGE,
+    )
+  ) {
     enemy.hasDamagedPlayerThisSwing = true;
     system.playerDamageSystem?.dealPlayerDamage?.(player, {
-      amount: ENEMY_BITE_DAMAGE,
+      amount: system.getBiteDamage?.() ?? ENEMY_BITE_DAMAGE,
       kind: 'light',
       sourcePosition: enemy.model.position,
     });
@@ -1203,7 +1711,7 @@ function chasePlayer({ system, enemy, player, level, delta }) {
   const playerPosition = player?.group?.position ?? null;
   faceTarget({ enemy, target: playerPosition, delta });
 
-  if (enemyIsCloseEnoughToStopChasing(enemy, player)) {
+  if (enemyIsCloseEnoughToStopChasing(enemy, player, system)) {
     playSoldierBehaviorAnimation(system, enemy, { fallback: 'Idle Alert' });
     return;
   }
@@ -1214,10 +1722,11 @@ function chasePlayer({ system, enemy, player, level, delta }) {
     movingBackward,
     fallback: 'Run',
   });
+  const speedScale = system.getSpeedScale?.() ?? 1;
   moveToward({
     enemy,
     target,
-    speed: resolveSoldierLocomotionSpeed(enemy, ENEMY_RUN_SPEED),
+    speed: resolveSoldierLocomotionSpeed(enemy, ENEMY_RUN_SPEED) * speedScale,
     level,
     delta,
   });
@@ -1230,8 +1739,8 @@ function enemyIsInClaimedPlayerSlot({ system, enemy }) {
     return false;
   }
 
-  const inAttackRange = horizontalDistance(enemy.model.position, system.lastPlayerPosition) <= ENEMY_ATTACK_RANGE;
-  if (!inAttackRange) {
+  const attackRange = system.getAttackRange?.() ?? ENEMY_ATTACK_RANGE;
+  if (!isInMeleeRange(enemy.model.position, system.lastPlayerPosition, attackRange)) {
     return false;
   }
 
@@ -1252,7 +1761,11 @@ function enemyIsInClaimedPlayerSlot({ system, enemy }) {
 }
 
 function closeEnoughToHold({ system, enemy, player }) {
-  if (distanceToPlayer(enemy, player) > ENEMY_HOLD_RANGE) {
+  const holdRange = system.getHoldRange?.() ?? ENEMY_HOLD_RANGE;
+  const playerPos = player?.group?.position;
+  if (!playerPos) return false;
+  // Hold uses the same height gate as attack so bots don't idle-bite under a roof.
+  if (!isInMeleeRange(enemy.model.position, playerPos, holdRange)) {
     return false;
   }
 
@@ -1263,23 +1776,36 @@ function closeEnoughToHold({ system, enemy, player }) {
   return isSoldierArmSplitLocomotion(enemy);
 }
 
-function enemyIsCloseEnoughToStopChasing(enemy, player) {
-  return distanceToPlayer(enemy, player) <= ENEMY_HOLD_RANGE;
+function enemyIsCloseEnoughToStopChasing(enemy, player, system = null) {
+  const holdRange = system?.getHoldRange?.() ?? ENEMY_HOLD_RANGE;
+  return distanceToPlayer(enemy, player) <= holdRange;
 }
 
-function findBestSlotCandidate({ enemy, slots, playerPosition }) {
+function findBestSlotCandidate({ enemy, slots, playerPosition, frontArc = null }) {
   let bestCandidate = null;
   let bestScore = Infinity;
 
   playerSlotApproachDirection.subVectors(enemy.model.position, playerPosition);
   playerSlotApproachDirection.y = 0;
-  const preferredAngle = playerSlotApproachDirection.lengthSq() > 0.000001
+  const ownBearing = playerSlotApproachDirection.lengthSq() > 0.000001
     ? Math.atan2(playerSlotApproachDirection.z, playerSlotApproachDirection.x)
     : enemy.model.rotation.y;
+
+  // Horde front-arc (M2): center the candidate ring on the MOB approach bearing
+  // and clamp claimable angles to the cone, so the tip attacks from the mob
+  // side. Non-horde modes leave frontArc disabled → full 360° around the
+  // enemy's own bearing, exactly as before.
+  const arcEnabled = Boolean(frontArc?.enabled) && Number.isFinite(frontArc?.bearing);
+  const centerAngle = arcEnabled ? frontArc.bearing : ownBearing;
+  const arcHalfAngle = arcEnabled ? frontArc.halfAngle : Infinity;
   const candidateRadius = preferredSlotRadius({ enemy, playerPosition });
 
   for (let index = 0; index < PLAYER_SLOT_CANDIDATES; index += 1) {
-    const angle = preferredAngle + (index === 0 ? 0 : alternatingRingOffset(index) * (Math.PI * 2 / PLAYER_SLOT_CANDIDATES));
+    const angle = centerAngle + (index === 0 ? 0 : alternatingRingOffset(index) * (Math.PI * 2 / PLAYER_SLOT_CANDIDATES));
+    // Reject candidates outside the front cone (horde only).
+    if (arcEnabled && Math.abs(shortestAngleDelta(angle, centerAngle)) > arcHalfAngle) {
+      continue;
+    }
     setPositionFromPolar({
       target: playerSlotCandidatePosition,
       center: playerPosition,
@@ -1292,7 +1818,7 @@ function findBestSlotCandidate({ enemy, slots, playerPosition }) {
     }
 
     const distance = horizontalDistance(enemy.model.position, playerSlotCandidatePosition);
-    const angularCost = Math.abs(shortestAngleDelta(angle, preferredAngle)) * 0.18;
+    const angularCost = Math.abs(shortestAngleDelta(angle, centerAngle)) * 0.18;
     const score = distance + angularCost;
 
     if (score < bestScore) {
@@ -1408,10 +1934,11 @@ function patrol({ system, enemy, level, delta }) {
     fallback: clip,
     timeScale: clip === 'Walk' ? 0.9 : 1,
   });
+  const speedScale = system?.getSpeedScale?.() ?? 1;
   moveToward({
     enemy,
     target: enemyTargetPosition,
-    speed: resolveSoldierLocomotionSpeed(enemy, ENEMY_WALK_SPEED),
+    speed: resolveSoldierLocomotionSpeed(enemy, ENEMY_WALK_SPEED) * speedScale,
     level,
     delta,
   });
@@ -1433,7 +1960,7 @@ function moveToward({ enemy, target, speed, level, delta }) {
   enemyMoveDirection.multiplyScalar(1 / distance);
   faceDirection({ enemy, direction: enemyMoveDirection, delta });
   enemy.model.position.addScaledVector(enemyMoveDirection, Math.min(distance, speed * delta));
-  snapEnemyToGround({ enemy, level });
+  snapEnemyToGround({ enemy, level, platforms: _snapPlatformsFrame });
 }
 
 function faceTarget({ enemy, target, delta }) {
@@ -1456,7 +1983,28 @@ function faceDirection({ enemy, direction, delta }) {
   enemy.model.rotation.y = lerpAngle(enemy.model.rotation.y, targetYaw, turnAlpha);
 }
 
-function snapEnemyToGround({ enemy, level }) {
+function snapEnemyToGround({ enemy, level, platforms = null }) {
+  // Prefer assigned moving platform surface (M5 trailer / highway deck).
+  if (platforms && Number.isFinite(enemy.platformBodyHandle)) {
+    const hit = platforms.getPlatformAt?.(
+      enemy.model.position,
+      enemy.model.position.y,
+      { verticalTolerance: 1.4 },
+    );
+    if (hit && hit.bodyHandle === enemy.platformBodyHandle) {
+      enemy.model.position.y = hit.worldSurfacePoint.y
+        + (enemy.groundOffset ?? ENEMY_GROUND_OFFSET)
+        + (enemy.postureOffsetY ?? 0);
+      enemy.appliedPostureOffsetY = enemy.postureOffsetY ?? 0;
+      enemy.platformVelocity = {
+        x: hit.pointVelocity.x,
+        y: hit.pointVelocity.y,
+        z: hit.pointVelocity.z,
+      };
+      return;
+    }
+  }
+
   const ground = level?.getGroundHeightAt?.(enemy.model.position, 0.5);
 
   if (Number.isFinite(ground)) {
@@ -1489,7 +2037,18 @@ function horizontalDistance(first, second) {
   return Math.hypot(first.x - second.x, first.z - second.z);
 }
 
-function separateEnemies({ first, second, level }) {
+/**
+ * Melee reach in plan view + height. Horizontal alone let ground enemies hit a
+ * player standing on train cars / ledges several metres above them.
+ */
+function isInMeleeRange(enemyPos, playerPos, range, heightRange = ENEMY_ATTACK_HEIGHT_RANGE) {
+  if (!enemyPos || !playerPos) return false;
+  if (horizontalDistance(enemyPos, playerPos) > range) return false;
+  const dy = Math.abs((enemyPos.y ?? 0) - (playerPos.y ?? 0));
+  return dy <= heightRange;
+}
+
+function separateEnemies({ first, second, level, platforms = null }) {
   enemySeparationDelta.subVectors(second.model.position, first.model.position);
   enemySeparationDelta.y = 0;
   const distance = enemySeparationDelta.length();
@@ -1499,7 +2058,7 @@ function separateEnemies({ first, second, level }) {
     ENEMY_SEPARATION_PADDING;
 
   if (distance >= minimumDistance) {
-    return;
+    return false;
   }
 
   if (distance <= 0.0001) {
@@ -1511,8 +2070,10 @@ function separateEnemies({ first, second, level }) {
   const push = (minimumDistance - Math.max(distance, 0.0001)) * 0.5;
   first.model.position.addScaledVector(enemySeparationDelta, -push);
   second.model.position.addScaledVector(enemySeparationDelta, push);
-  snapEnemyToGround({ enemy: first, level });
-  snapEnemyToGround({ enemy: second, level });
+  const plats = platforms ?? _snapPlatformsFrame;
+  snapEnemyToGround({ enemy: first, level, platforms: plats });
+  snapEnemyToGround({ enemy: second, level, platforms: plats });
+  return true;
 }
 
 function resolveEnemySpawnPosition({ index, playerPosition, level, groundOffset = ENEMY_GROUND_OFFSET }) {
@@ -1768,6 +2329,14 @@ function setEnemyShadowCasting(enemy, enabled) {
 
 function disposeEnemyClone(root) {
   root?.traverse?.((child) => {
+    // Partial sever paths replace shared GLB geometry with an instance-owned
+    // subset. Release those buffers when the live enemy is removed; untouched
+    // clone geometry remains shared with the archetype asset and must not be
+    // disposed here.
+    if (child.userData?.geometryOwned) {
+      child.geometry?.dispose?.();
+      child.userData.geometryOwned = false;
+    }
     child.skeleton?.dispose?.();
   });
 }

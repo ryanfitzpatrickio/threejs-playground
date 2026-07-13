@@ -1,10 +1,28 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const tempPosition = new THREE.Vector3();
 const tempBox = new THREE.Box3();
 const tempSize = new THREE.Vector3();
 
-export function bakeSkinnedModelGeometry(root) {
+/**
+ * Bake a posed skinned model into a static BufferGeometry.
+ *
+ * @param {THREE.Object3D} root
+ * @param {{ topology?: 'expanded' | 'indexed' }} [options]
+ *   - `expanded` (default): one vertex per triangle corner. Required for CSG/cut paths.
+ *   - `indexed`: preserve unique verts + index buffer. Use for crowd/proxy instancing so
+ *     a 13k-vert proxy mesh does not inflate to ~35k after de-index.
+ */
+export function bakeSkinnedModelGeometry(root, options = {}) {
+  const topology = options.topology === 'indexed' ? 'indexed' : 'expanded';
+  if (topology === 'indexed') {
+    return bakeSkinnedModelGeometryIndexed(root);
+  }
+  return bakeSkinnedModelGeometryExpanded(root);
+}
+
+function bakeSkinnedModelGeometryExpanded(root) {
   root.updateMatrixWorld(true);
 
   const positions = [];
@@ -101,6 +119,99 @@ export function bakeSkinnedModelGeometry(root) {
     geometry.setAttribute('skinWeight', new THREE.Float32BufferAttribute(skinWeights, 4));
   }
   geometry.computeVertexNormals();
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
+
+  return {
+    geometry,
+    meshCount,
+    skinnedMeshCount,
+    vertexCount: geometry.getAttribute('position').count,
+    bounds: getBoundsSnapshot(geometry),
+    material,
+    hasTexture: Boolean(material?.map),
+    boneNames,
+  };
+}
+
+/**
+ * Indexed bake: one transformed position per unique vertex, index buffer retained.
+ * Keeps GPU vertex cost at the source mesh density for InstancedMesh proxies.
+ */
+function bakeSkinnedModelGeometryIndexed(root) {
+  root.updateMatrixWorld(true);
+
+  const parts = [];
+  let meshCount = 0;
+  let skinnedMeshCount = 0;
+  let material = null;
+  let boneNames = [];
+
+  root.traverse((child) => {
+    if ((!child.isMesh && !child.isSkinnedMesh) || !child.geometry) {
+      return;
+    }
+
+    const geometry = child.geometry;
+    const positionAttribute = geometry.getAttribute('position');
+    const uvAttribute = geometry.getAttribute('uv');
+    const indexAttribute = geometry.index;
+    if (!positionAttribute) return;
+
+    meshCount += 1;
+    material ??= getPrimaryMaterial(child.material);
+
+    if (child.isSkinnedMesh) {
+      skinnedMeshCount += 1;
+      child.skeleton?.update?.();
+      if (child.skeleton?.bones?.length && boneNames.length === 0) {
+        boneNames = child.skeleton.bones.map((bone) => bone.name);
+      }
+    }
+
+    const vertexCount = positionAttribute.count;
+    const positions = new Float32Array(vertexCount * 3);
+    const uvs = new Float32Array(vertexCount * 2);
+
+    for (let vertexIndex = 0; vertexIndex < vertexCount; vertexIndex += 1) {
+      tempPosition.fromBufferAttribute(positionAttribute, vertexIndex);
+      if (child.isSkinnedMesh && typeof child.applyBoneTransform === 'function') {
+        child.applyBoneTransform(vertexIndex, tempPosition);
+      }
+      tempPosition.applyMatrix4(child.matrixWorld);
+      positions[vertexIndex * 3] = tempPosition.x;
+      positions[vertexIndex * 3 + 1] = tempPosition.y;
+      positions[vertexIndex * 3 + 2] = tempPosition.z;
+      if (uvAttribute) {
+        uvs[vertexIndex * 2] = uvAttribute.getX(vertexIndex);
+        uvs[vertexIndex * 2 + 1] = uvAttribute.getY(vertexIndex);
+      }
+    }
+
+    const part = new THREE.BufferGeometry();
+    part.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    part.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    if (indexAttribute) {
+      // Clone so the source mesh can be disposed without invalidating the pose.
+      const src = indexAttribute.array;
+      const IndexArray = src.constructor;
+      part.setIndex(new THREE.BufferAttribute(new IndexArray(src), 1));
+    }
+    part.computeVertexNormals();
+    parts.push(part);
+  });
+
+  if (parts.length === 0) return null;
+
+  let geometry;
+  if (parts.length === 1) {
+    geometry = parts[0];
+  } else {
+    geometry = mergeGeometries(parts, false);
+    for (const part of parts) part.dispose();
+    if (!geometry) return null;
+  }
+
   geometry.computeBoundingBox();
   geometry.computeBoundingSphere();
 

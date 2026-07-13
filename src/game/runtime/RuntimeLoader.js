@@ -1,0 +1,613 @@
+import * as THREE from 'three';
+import { rainWind } from '../systems/weatherUniforms.js';
+import { syncTerrainViewDistance, syncTerrainAtmosphereFromSky } from '../systems/terrainAerialUniforms.js';
+import { syncCloudReach } from '../render/cloud/cloudReachUniforms.js';
+import { resolveJacketMode } from '../characters/mara/jacketConfig.js';
+import { defaultGunIdFromQuery } from '../weapons/loadGunView.js';
+import { BaseVehicle } from '../vehicles/BaseVehicle.js';
+import { QuadBikeVehicle } from '../vehicles/QuadBikeVehicle.js';
+import { spawnVehicleOptions } from '../vehicles/garageBuilds.js';
+import { getActiveWorldMapSync } from '../../world/worldMap/worldMapScenes.js';
+import { sanitizeWebGPUVertexBuffers } from '../geometry/prepareWebGPUGeometry.js';
+import { installRangeEnvironment } from '../world/installRangeEnvironment.js';
+import { registerBuiltinShaderDebug } from 'virtual:dreamfall-shader-debug';
+import {
+  getOnFootFirstPerson,
+  setOnFootFirstPerson,
+  getCameraFeel,
+  getComfortEnabled,
+} from '../config/cameraComfort.js';
+import {
+  horseSpawnPosition,
+  horseGroundHeight,
+  carSpawnPosition,
+  isCollisionTestMap,
+  spawnCollisionTestVehicles,
+} from './runtimeHelpers.js';
+
+/**
+ * Ordered async initialization and background asset streaming.
+ */
+export class RuntimeLoader {
+  constructor(host) {
+    this._host = host;
+  }
+
+  async start() {
+    return startRuntime.call(this._host);
+  }
+
+  async streamAssetsInBackground() {
+    return streamAssetsInBackground.call(this._host);
+  }
+}
+
+async function startRuntime() {
+  if (this.disposed) {
+    return;
+  }
+
+  this.stage = 'loading';
+  // Do not emitSnapshot yet — camera/renderer are not initialized (snapshot
+  // reads camera.aspect). Progress is seeded here; first emit is after camera init.
+  this.loadProgress = {
+    phase: 'level',
+    label: 'Starting…',
+    fraction: 0,
+    detail: {},
+    ready: false,
+  };
+  this.installDebugBridge();
+  this.sceneSystem.initialize(this.qualityPreset);
+  // Register after sky/provider init so uniform defaults match the live preset.
+  // Dev-only via virtual:dreamfall-shader-debug (prod = inert stub).
+  try {
+    registerBuiltinShaderDebug(this);
+  } catch (err) {
+    console.warn('[shader-debug] registerBuiltinShaderDebug failed', err);
+  }
+  await this.rendererSystem.initialize();
+  if (this.disposed) {
+    return;
+  }
+  // Animated rally spectators bake flipbook frames whose per-frame instance
+  // count varies every tick; WebGPU captures that count into the instance
+  // binding at pipeline-build time. Weather/env changes (and resize) call
+  // invalidatePipeline, rebuilding those bindings at a stale small count so
+  // the crowd flickers. Re-prime the current level's crowd on each invalidate
+  // (looked up dynamically so it survives level swaps). The bare scene-fog
+  // toggle path is covered separately in the debug bridge.
+  this.rendererSystem.onPipelineInvalidated = () => {
+    this.levelSystem.level?.spectatorCrowd?.markPipelinesDirty?.();
+    this.hordeProxySystem?.markPipelinesDirty?.();
+  };
+  // Rally starts at midday under rain. Bake sky + IBL with the overcast
+  // profile before the first environment capture so startup matches the live
+  // weather (setWeather below still wires rain VFX/audio).
+  // Range: clear morning sky so the open-roof warehouse gets strong env-map IBL.
+  if (this.levelMode === 'rally' && !this.photorealismPresetId) {
+    this.sceneSystem.skySystem?.setTimeOfDay?.(0.5);
+    this.sceneSystem.skySystem?.setWeather?.('rain');
+    this.sceneSystem.setWeather?.('rain');
+    this.sceneSystem.setSceneFogEnabled?.(true);
+    this.rendererSystem.setWeather?.('rain');
+  } else if (this.levelMode === 'range') {
+    this.sceneSystem.skySystem?.setTimeOfDay?.(0.42);
+    this.sceneSystem.skySystem?.setWeather?.('clear');
+    this.sceneSystem.setWeather?.('clear');
+    this.sceneSystem.setSceneFogEnabled?.(false);
+    this.rendererSystem.setWeather?.('clear');
+    // One shadow volume over the whole warehouse (not a 32 m player bubble).
+    // Aligns sun with sky so far walls cast and god rays match time of day.
+    this.sceneSystem.configureRangeShadows?.({
+      center: new THREE.Vector3(0, 1.5, 50),
+      halfExtent: 72,
+      far: 220,
+      sunDistance: 100,
+      mapSize: this.qualityPreset.shadowMapSize ?? 2048,
+    });
+    // Official TSL godrays march the sun shadow map — bind the scene sun so
+    // shafts track time-of-day direction + intensity automatically.
+    this.rendererSystem.setGodRaysLight?.(this.sceneSystem.sun ?? null);
+  } else if (this.levelMode === 'horde') {
+    // Outdoor foundry yard: clear late-morning sky, normal third-person combat.
+    // Do not force FP / gun / range godrays — weapons stay switchable.
+    // Fog is applied lightly via applyHordeSpectaclePreset (M6); keep off until then.
+    this.sceneSystem.skySystem?.setTimeOfDay?.(0.38);
+    this.sceneSystem.skySystem?.setWeather?.('clear');
+    this.sceneSystem.setWeather?.('clear');
+    this.sceneSystem.setSceneFogEnabled?.(false);
+    this.rendererSystem.setWeather?.('clear');
+    // Compact yard — no clipmap cascade tax; modest follow shadow only.
+    this.sceneSystem.configureRangeShadows?.({
+      center: new THREE.Vector3(0, 2, 0),
+      halfExtent: this.qualityPreset.shadowFrustumHalf ?? 28,
+      far: this.qualityPreset.shadowFar ?? 64,
+      sunDistance: 80,
+      mapSize: this.qualityPreset.shadowMapSize ?? 1024,
+    });
+  } else if (this.levelMode === 'highway') {
+    // Elevated daylight freeway — distance fog hides visual segment recycle.
+    this.sceneSystem.skySystem?.setTimeOfDay?.(0.46);
+    this.sceneSystem.skySystem?.setWeather?.('clear');
+    this.sceneSystem.setWeather?.('clear');
+    this.sceneSystem.setSceneFogEnabled?.(true);
+    this.rendererSystem.setWeather?.('clear');
+  } else if (this.photorealismPresetId) {
+    this.sceneSystem.skySystem?.setWeather?.('clear');
+    this.sceneSystem.setWeather?.('clear');
+    this.sceneSystem.setSceneFogEnabled?.(false);
+    this.rendererSystem.setWeather?.('clear');
+  }
+  this.rendererSystem.installEnvironment(this.sceneSystem.scene, this.sceneSystem.skySystem);
+  if (this.levelMode === 'range' && this.sceneSystem.scene) {
+    // Stronger sky PMREM so timber materials read outdoors light through open roof.
+    this.sceneSystem.scene.environmentIntensity = 0.95;
+  }
+  // Hand the volumetric sky/cloud provider (if active) to the renderer so its
+  // cloud composite can be inserted into the post pipeline.
+  this.rendererSystem.cloudSkyProvider = this.sceneSystem.skySystem?.provider ?? null;
+  this.weatherSystem.initialize({
+    rendererSystem: this.rendererSystem,
+    sceneSystem: this.sceneSystem,
+    levelSystem: this.levelSystem,
+    qualityPreset: this.qualityPreset,
+  });
+  if (this.photorealismPresetId || this.levelMode === 'range' || this.levelMode === 'horde' || this.levelMode === 'highway') {
+    this.weatherSystem.setWeather('clear');
+  } else if (this.levelMode === 'rally') {
+    this.weatherSystem.setWeather('rain');
+  }
+  // setWeather resets environmentIntensity from the quality preset — restore
+  // the open-roof IBL boost after clear weather is applied.
+  if (this.levelMode === 'range' && this.sceneSystem.scene) {
+    this.sceneSystem.scene.environmentIntensity = 0.95;
+    // Re-apply after weather may have touched the sun; keep range shadow volume.
+    this.sceneSystem.configureRangeShadows?.({
+      center: new THREE.Vector3(0, 1.5, 50),
+      halfExtent: 72,
+      far: 220,
+      sunDistance: 100,
+      mapSize: this.qualityPreset.shadowMapSize ?? 2048,
+    });
+    this.rendererSystem.setGodRaysLight?.(this.sceneSystem.sun ?? null);
+  }
+
+  this.cameraSystem.initialize(this.sceneSystem.scene, this.qualityPreset);
+  this.cameraSystem.setComfortOptions({
+    enabled: getComfortEnabled(),
+    feel: getCameraFeel(),
+  });
+  this.cameraSystem.setOnFootFirstPerson(getOnFootFirstPerson());
+  this.sceneSystem.skySystem?.attachToCamera?.(this.cameraSystem.camera);
+  this.sceneSystem.setShadowCamera(this.cameraSystem.camera);
+  this.enemyCutSystem.initialize(this.sceneSystem.scene, this.qualityPreset);
+  this.combatSystem.initialize(this.sceneSystem.scene);
+  this.cameraSystem.resize(this.rendererSystem.getViewport());
+  this.inputSystem.connect();
+  document.addEventListener('visibilitychange', this._onVisibilityChange);
+  this.emitSnapshot();
+
+  // Launch the animation loop immediately so the page feels instant.
+  // Update() will no-op gracefully until core assets are ready.
+  this.lastFrameAt = performance.now();
+  await this.rendererSystem.setAnimationLoop((timeMs) => this.update(timeMs));
+  if (this.disposed) {
+    return;
+  }
+
+  // Stream in heavy assets in the background. The loop is already running.
+  this._streamAssetsInBackground().catch((err) => {
+    console.error('Asset streaming failed', err);
+  });
+}
+
+async function streamAssetsInBackground() {
+  const gen = this._loadGeneration;
+  this._setLoadProgress({ phase: 'level', label: 'Loading world…', sub: { level: 0.05 } });
+
+  await this.levelSystem.loadBaseLevel(this.sceneSystem.scene, this.qualityPreset, this.levelMode, this.rendererSystem.renderer);
+  if (this._aborted(gen)) {
+    return;
+  }
+  this._setLoadProgress({ phase: 'level', label: 'World loaded', sub: { level: 1 } });
+
+  const levelViewDistance = this.levelSystem.level?.viewDistance;
+  if (Number.isFinite(levelViewDistance) && levelViewDistance > 0) {
+    this.cameraSystem.camera.far = levelViewDistance;
+    this.cameraSystem.camera.updateProjectionMatrix();
+    this.sceneSystem.setViewDistance?.(levelViewDistance);
+    syncTerrainViewDistance(
+      levelViewDistance,
+      {
+        ...(this.qualityPreset.environment ?? {}),
+        terrainReach: this.levelSystem.level?.terrainReach,
+      },
+    );
+    syncTerrainAtmosphereFromSky(
+      this.sceneSystem.skySystem,
+      this.qualityPreset.environment ?? {},
+    );
+    this.rendererSystem.setViewDistance?.(levelViewDistance);
+    if (this.rendererSystem.cloudSkyProvider) {
+      syncCloudReach({
+        viewDistance: levelViewDistance,
+        fogMaxDistance: this.rendererSystem.fogMaxDistance,
+        environmentPreset: this.qualityPreset.environment ?? {},
+      });
+    }
+  }
+
+  this._setLoadProgress({ phase: 'character', label: 'Loading character…', sub: { character: 0.1 } });
+  await this.characterSystem.loadMara(this.sceneSystem.scene);
+  if (this._aborted(gen) || !this.characterSystem.character) {
+    return;
+  }
+
+  // Jacket cloth (three-simplecloth on WebGPU). Skipped when jacketExperiments is off
+  // (see gameConfig); ?jacket=cloth still forces it on for one-off tuning.
+  if (resolveJacketMode() !== 'off') {
+    await this.characterSystem.attachJacketCloth(this.rendererSystem.renderer);
+  }
+  if (this._aborted(gen)) return;
+
+  this._setLoadProgress({ phase: 'character', label: 'Character ready', sub: { character: 1 } });
+  this.coreSceneReady = true;
+  // Unlock stream + full render path. Never wait on near-field under 'loading'.
+  this.stage = 'prewarming';
+  this._prewarmingStarted = true;
+  this.inputEnabled = false;
+  this.simEnabled = false;
+  this.emitSnapshot(performance.now(), { force: true });
+
+  // Prewarm needs live rAF renders (pipeline batches); start under prewarming.
+  const prewarmPromise = this._runPrewarm(gen);
+  // Near-field wait yields so update() can pump city streaming.
+  const nearFieldPromise = this._waitNearFieldReady({ generation: gen, timeoutMs: 20_000 })
+    .then((ok) => {
+      if (this._aborted(gen)) return;
+      this._nearFieldReady = ok !== false;
+      this._tryEnterRunning();
+    });
+
+  // Snap character to the actual ground height of the (possibly edited) terrain.
+  // This prevents spawning inside or below the heightfield surface, which causes "stuck" behavior.
+  // We do it before physics body creation so the Rapier capsule starts above the surface.
+  const character = this.characterSystem.character;
+  if (character && this.levelSystem.level?.spawnPoint) {
+    character.group.position.copy(this.levelSystem.level.spawnPoint);
+    if (character.velocity) character.velocity.set(0, 0, 0);
+    character.verticalVelocity = 0;
+  }
+
+  if (character && typeof this.levelSystem.getGroundHeightAt === 'function') {
+    const p = character.group.position;
+    const ground = this.levelSystem.getGroundHeightAt(p, 0.5);
+    if (Number.isFinite(ground)) {
+      character.group.position.y = ground;
+      if (character.velocity) character.velocity.set(0, 0, 0);
+      character.verticalVelocity = 0;
+      character.grounded = true;
+      // clear any traversal states so it doesn't think it's stuck in a wall/ledge
+      character.hang = null;
+      character.mount = null;
+      character.wallRun = null;
+      character.wallClimb = null;
+      character.vault = null;
+      character.hookSwing = null;
+      character.vehicle = null;
+    }
+  }
+
+  this._setLoadProgress({ phase: 'systems', label: 'Loading systems…', sub: { systems: 0.05 } });
+
+  // Rally / range / horde / highway are purpose-built scenes — skip open-world ambient systems.
+  if (this.levelMode !== 'rally' && this.levelMode !== 'range' && this.levelMode !== 'horde' && this.levelMode !== 'highway') {
+    await this.horseSystem.load(this.sceneSystem.scene, {
+      position: horseSpawnPosition(character?.group.position, this.levelSystem),
+      getGroundHeightAt: (position) => horseGroundHeight(this.levelSystem, position),
+    });
+    if (this._aborted(gen)) return;
+
+    await this.enemySystem.load(this.sceneSystem.scene, {
+      playerPosition: character?.group.position,
+      level: this.levelSystem,
+    });
+    if (this._aborted(gen)) return;
+
+    await this.crowdSystem.load(this.sceneSystem.scene, {
+      level: this.levelSystem,
+      playerPosition: character?.group.position ?? new THREE.Vector3(),
+    });
+    if (this._aborted(gen)) return;
+
+    await this.propSystem.load(this.sceneSystem.scene, {
+      playerPosition: character?.group.position,
+      level: this.levelSystem,
+    });
+    if (this._aborted(gen)) return;
+  }
+
+  // Horde M2: start GLB preload while physics boots (spawn happens after).
+  const hordePreloadPromise = this.levelMode === 'horde'
+    ? this.enemySystem.preloadArchetypes(this.sceneSystem.scene, {
+      archetypes: ['cyclop', 'tessy', 'faceless'],
+    })
+    : null;
+
+  // Highway combat: preload only when debug/encounter content is requested (O6).
+  this._highwayDebug = this._resolveHighwayDebugFlag();
+  const highwayCombatPreloadPromise = this.levelMode === 'highway' && this._highwayDebug
+    ? this.enemySystem.preloadArchetypes(this.sceneSystem.scene, {
+      archetypes: ['highwayGangMember', 'soldier'],
+    })
+    : null;
+
+  this._setLoadProgress({ phase: 'systems', label: 'Initializing physics…', sub: { systems: 0.45 } });
+
+  await this.physicsSystem.initialize({
+    level: this.levelSystem.level,
+    character: this.characterSystem.character,
+    enemies: [...this.enemySystem.enemies, ...this.propSystem.props],
+  });
+  if (this._aborted(gen)) {
+    return;
+  }
+
+  if (hordePreloadPromise) {
+    this._setLoadProgress({ phase: 'systems', label: 'Loading horde robots…', sub: { systems: 0.55 } });
+    await hordePreloadPromise;
+    if (this._aborted(gen)) return;
+    this._setLoadProgress({ phase: 'systems', label: 'Baking horde crowd proxies…', sub: { systems: 0.62 } });
+    await this.hordeProxySystem.load(this.sceneSystem.scene, {
+      enemySystem: this.enemySystem,
+      colliders: this.levelSystem.level?.colliders ?? null,
+      getGroundHeightAt: this.levelSystem.level?.getGroundHeightAt
+        ? (position, radius, options) => this.levelSystem.level.getGroundHeightAt(position, radius, options)
+        : null,
+    });
+    if (this._aborted(gen)) return;
+    // Post-init dynamic spawn path (same seam M3 HordeSystem will use).
+    // Mark ready so EnemySystem.update drives AI/animation (load() is skipped
+    // for arena modes and is what normally flips status idle → ready).
+    this.enemySystem.status = 'ready';
+    this._hordePlaygroundReady = true;
+    // M6: default density/readability preset (flock + fog). Does not spawn.
+    this.applyHordeSpectaclePreset('default');
+    this._spawnHordeSmokeBots();
+  }
+
+  if (highwayCombatPreloadPromise) {
+    this._setLoadProgress({ phase: 'systems', label: 'Loading highway combat…', sub: { systems: 0.58 } });
+    await highwayCombatPreloadPromise;
+    if (this._aborted(gen)) return;
+    this.enemySystem.status = 'ready';
+  }
+
+  this.animationStateSystem.start({
+    character: this.characterSystem.character,
+  });
+
+  this.vehicleSystem.initialize({
+    physics: this.physicsSystem,
+    scene: this.sceneSystem.scene,
+    level: this.levelSystem,
+    weatherSystem: this.weatherSystem,
+    vehicleDamageSystem: this.vehicleDamageSystem,
+    cameraSystem: this.cameraSystem,
+  });
+  this.platformRidingSystem.initialize({
+    physics: this.physicsSystem,
+    scene: this.sceneSystem.scene,
+  });
+  this.carLeapSystem.initialize({ scene: this.sceneSystem.scene });
+  // Fixed-step hooks: platform capture/carry + vehicle pose capture/integration.
+  // afterTick accumulates platform deltas for MovementSystem to consume.
+  this.physicsSystem.stepHooks = {
+    beforeTick: () => {
+      // Kinematic semi trailers follow cab hitch before platform capture samples them.
+      this.highwayTrafficSystem?.stepTrailers?.(this.physicsSystem.stepDt);
+      this.platformRidingSystem?.captureBeforeTick?.(this.physicsSystem.stepDt);
+      this.vehicleSystem?.capturePrevPoses();
+    },
+    integrate: (dt, tick) => this.vehicleSystem?.integrateStep(dt, tick),
+    afterTick: () => {
+      this.platformRidingSystem?.accumulateAfterTick?.();
+    },
+  };
+  this.vehicleDamageSystem.initialize({
+    physics: this.physicsSystem,
+    scene: this.sceneSystem.scene,
+  });
+
+  this._setLoadProgress({ phase: 'systems', label: 'Spawning vehicles…', sub: { systems: 0.7 } });
+
+  // One garage build beside the player on every map except the collision test
+  // track, which spawns two autopilot chassis cars from opposite directions.
+  // Indoor range and horde arena have no vehicles. Highway spawns a dedicated
+  // player car plus a bounded parked-traffic pool (not open-world garage logic).
+  if (this.levelMode === 'highway') {
+    await this._initializeHighwayVehicles(character);
+    // O6: test platforms + combat deck only when ?highwayDebug=1 (or local flag).
+    if (this._highwayDebug) {
+      this._spawnHighwayTestPlatform();
+      this._spawnHighwayCombatDeck();
+    }
+  } else if (this.levelMode !== 'range' && this.levelMode !== 'horde') {
+    const worldMap = getActiveWorldMapSync();
+    if (isCollisionTestMap(worldMap)) {
+      await spawnCollisionTestVehicles(this.vehicleSystem);
+    } else {
+      const carPosition = this.levelMode === 'rally'
+        ? new THREE.Vector3(-129, 0, 136)
+        : carSpawnPosition(this.horseSystem, character?.group.position);
+      const carYaw = this.levelMode === 'rally'
+        ? -Math.PI / 4
+        : (this.horseSystem.group?.rotation.y ?? 0);
+      const garageVehicleOptions = spawnVehicleOptions(this.levelMode);
+      const VehicleConstructor = garageVehicleOptions.vehicleKind === 'quad'
+        ? QuadBikeVehicle
+        : BaseVehicle;
+      const spawnCar = await this.vehicleSystem.spawnVehicle({
+        vehicle: new VehicleConstructor({
+          ...garageVehicleOptions,
+          name: 'Spawn Car',
+          position: carPosition,
+          rotationY: carYaw,
+        }),
+      });
+      if (this.levelMode === 'rally' && character && spawnCar) {
+        await this.vehicleSystem.enterVehicle(character, spawnCar, { warmup: true });
+      }
+      if (this.levelMode === 'rally') {
+        const quadSpawns = [
+          { name: 'Rally Quad 1', position: new THREE.Vector3(-124.5, 0, 132.5), rotationY: -Math.PI / 4 },
+          { name: 'Rally Quad 2', position: new THREE.Vector3(-121.5, 0, 136), rotationY: -Math.PI / 4 },
+        ];
+        const parkedQuadSpawns = garageVehicleOptions.vehicleKind === 'quad'
+          ? quadSpawns.slice(1)
+          : quadSpawns;
+        for (const spec of parkedQuadSpawns) {
+          await this.vehicleSystem.spawnVehicle({ vehicle: new QuadBikeVehicle(spec) });
+        }
+      }
+    }
+  }
+  if (this._aborted(gen)) {
+    return;
+  }
+
+  this.hookSwingSystem.initialize(this.sceneSystem.scene);
+
+  this.combatSystem.start({
+    character: this.characterSystem.character,
+  });
+  this.firstPersonWeaponSystem.start({
+    character: this.characterSystem.character,
+  });
+  this.weaponSystem.initialize(this.sceneSystem.scene);
+
+  // Shooting range: force first-person + equip a gun for the session (training focus).
+  if (this.levelMode === 'range') {
+    this.cameraSystem.setOnFootFirstPerson(true);
+    this.weaponSystem.equipAndDraw(defaultGunIdFromQuery(), {
+      character: this.characterSystem.character,
+      combatSystem: this.combatSystem,
+      firstPersonWeaponSystem: this.firstPersonWeaponSystem,
+    });
+    this.shootingRangeSystem.start(this.sceneSystem.scene, {
+      spawns: this.levelSystem.level?.rangeTargets ?? [],
+      doors: this.levelSystem.level?.rangeDoors ?? [],
+      level: this.levelSystem.level,
+    });
+    const spawnYaw = this.levelSystem.level?.spawnYaw;
+    if (Number.isFinite(spawnYaw) && this.characterSystem.character) {
+      this.characterSystem.character.yaw = spawnYaw;
+      this.cameraSystem.yaw = spawnYaw;
+    }
+    // Clear outdoor sky for open roof + warehouse HDR as scene.environment IBL.
+    const rangeEnv = this.levelSystem.level?.rangeEnvironment ?? {};
+    if (Number.isFinite(rangeEnv.timeOfDay)) {
+      this.sceneSystem.skySystem?.setTimeOfDay?.(rangeEnv.timeOfDay);
+    }
+    this.sceneSystem.skySystem?.setWeather?.(rangeEnv.weather ?? 'clear');
+    this.sceneSystem.setWeather?.(rangeEnv.weather ?? 'clear');
+    this.sceneSystem.setSceneFogEnabled?.(rangeEnv.fogEnabled === true);
+    this.rendererSystem.setWeather?.(rangeEnv.weather ?? 'clear');
+    try {
+      await installRangeEnvironment(
+        this.sceneSystem.scene,
+        this.rendererSystem.renderer,
+        {
+          intensity: rangeEnv.intensity ?? 1.05,
+          rotationY: rangeEnv.environmentRotationY ?? 0.35,
+          asBackground: rangeEnv.asBackground === true,
+        },
+      );
+    } catch (err) {
+      console.warn('[GameRuntime] warehouse environment failed; keeping sky PMREM', err);
+      this.rendererSystem.installEnvironment(this.sceneSystem.scene, this.sceneSystem.skySystem);
+      if (Number.isFinite(rangeEnv.intensity)) {
+        this.sceneSystem.scene.environmentIntensity = rangeEnv.intensity;
+      }
+    }
+  }
+
+  // Horde: third-person combat with normal weapon switching. Apply spawn yaw
+  // and level environment (no forced FP / gun / range systems).
+  if (this.levelMode === 'horde') {
+    const spawnYaw = this.levelSystem.level?.spawnYaw;
+    if (Number.isFinite(spawnYaw) && this.characterSystem.character) {
+      this.characterSystem.character.yaw = spawnYaw;
+      this.cameraSystem.yaw = spawnYaw;
+    }
+    const hordeEnv = this.levelSystem.level?.hordeEnvironment ?? {};
+    if (Number.isFinite(hordeEnv.timeOfDay)) {
+      this.sceneSystem.skySystem?.setTimeOfDay?.(hordeEnv.timeOfDay);
+    }
+    this.sceneSystem.skySystem?.setWeather?.(hordeEnv.weather ?? 'clear');
+    this.sceneSystem.setWeather?.(hordeEnv.weather ?? 'clear');
+    this.sceneSystem.setSceneFogEnabled?.(hordeEnv.fogEnabled === true);
+    this.rendererSystem.setWeather?.(hordeEnv.weather ?? 'clear');
+    // Initial M6 haze from level environment (preset may override later).
+    if (hordeEnv.fogEnabled && this.sceneSystem?._sceneFog) {
+      const density = Number.isFinite(hordeEnv.fogDensity) ? hordeEnv.fogDensity : 0.0065;
+      const far = Math.min(160, Math.max(55, 0.55 / Math.max(0.003, density)));
+      this.sceneSystem._sceneFog.near = far * 0.32;
+      this.sceneSystem._sceneFog.far = far;
+      if (Number.isFinite(hordeEnv.fogColor)) {
+        this.sceneSystem._sceneFog.color?.setHex?.(hordeEnv.fogColor);
+      }
+    }
+  }
+
+  // Highway: daylight elevated freeway + distance fog for visual recycle horizon.
+  if (this.levelMode === 'highway') {
+    const spawnYaw = this.levelSystem.level?.spawnYaw;
+    if (Number.isFinite(spawnYaw) && this.characterSystem.character) {
+      this.characterSystem.character.yaw = spawnYaw;
+      this.cameraSystem.yaw = spawnYaw;
+    }
+    const hwyEnv = this.levelSystem.level?.highwayEnvironment ?? {};
+    if (Number.isFinite(hwyEnv.timeOfDay)) {
+      this.sceneSystem.skySystem?.setTimeOfDay?.(hwyEnv.timeOfDay);
+    }
+    this.sceneSystem.skySystem?.setWeather?.(hwyEnv.weather ?? 'clear');
+    this.sceneSystem.setWeather?.(hwyEnv.weather ?? 'clear');
+    this.sceneSystem.setSceneFogEnabled?.(hwyEnv.fogEnabled !== false);
+    this.rendererSystem.setWeather?.(hwyEnv.weather ?? 'clear');
+    if (this.sceneSystem?._sceneFog) {
+      const near = Number.isFinite(hwyEnv.fogNear) ? hwyEnv.fogNear : 80;
+      const far = Number.isFinite(hwyEnv.fogFar) ? hwyEnv.fogFar : 280;
+      this.sceneSystem._sceneFog.near = near;
+      this.sceneSystem._sceneFog.far = far;
+      if (Number.isFinite(hwyEnv.fogColor)) {
+        this.sceneSystem._sceneFog.color?.setHex?.(hwyEnv.fogColor);
+      }
+    }
+  }
+
+  // ?fp=1 forces on-foot first person for M3 checks / playground.
+  try {
+    if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('fp') === '1') {
+      setOnFootFirstPerson(true);
+      this.cameraSystem.setOnFootFirstPerson(true);
+    }
+  } catch {
+    // ignore
+  }
+
+  this._systemsReady = true;
+  this._setLoadProgress({ phase: 'systems', label: 'Systems ready', sub: { systems: 1 } });
+  this._tryEnterRunning();
+
+  await prewarmPromise;
+  if (this._aborted(gen)) return;
+  this._tryEnterRunning();
+
+  await nearFieldPromise;
+  if (this._aborted(gen)) return;
+  this._tryEnterRunning();
+}
+
+export { startRuntime, streamAssetsInBackground };

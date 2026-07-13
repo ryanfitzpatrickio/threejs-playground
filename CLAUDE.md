@@ -36,7 +36,7 @@ Three.js is aliased to the **WebGPU build** (`three.webgpu.js`) and TSL in `vite
 
 ### Game runtime
 
-`src/game/core/GameRuntime.js` constructs ~35 systems (`src/game/systems/`) and drives them from a single `update(timeMs)` with **explicit, order-dependent** calls. Ordering contracts that matter:
+`src/game/core/GameRuntime.js` is a thin facade over `src/game/runtime/createRuntimeKernel.js`, which constructs ~35 systems (`src/game/systems/`) and drives them via `RuntimeFramePipeline` with **explicit, order-dependent** calls. New systems wire through `createRuntimeServices`, lifecycle/loader, `runtimeFramePlan`, features, and debug command modules — not the facade (`npm run verify:game-runtime-boundary`). Ordering contracts that matter:
 
 - **Fixed 1/60 timestep physics** (`PhysicsSystem`): `beginFrame` plans steps → per-step forces run via `stepHooks` → `stepPlanned` → interpolated visual poses. Rendering is decoupled from step cadence; slow-mo scales sim time, not cadence. Guarded by `npm run verify:fixed-step`.
 - **VehicleSystem before MountSystem/MovementSystem** (chassis pose must be current before mounting/movement reads it).

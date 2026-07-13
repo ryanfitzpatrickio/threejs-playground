@@ -4,6 +4,7 @@ import { Hud } from './components/Hud.jsx';
 import { StatsPanel } from './components/StatsPanel.jsx';
 import { ControlsGuide } from './components/ControlsGuide.jsx';
 import { CutTestCanvas } from './components/CutTestCanvas.jsx';
+import { HordeRobotViewerCanvas } from './components/HordeRobotViewerCanvas.jsx';
 import { Minimap } from './components/Minimap.jsx';
 import { PhotoModeControls } from './components/PhotoModeControls.jsx';
 import { GarageScene } from './components/GarageScene.jsx';
@@ -39,7 +40,7 @@ import { createDevTools, BodyshopScene, GunsmithScene } from 'virtual:dreamfall-
 import { mountShaderDebugPane } from 'virtual:dreamfall-shader-debug';
 import { loadGarageChassisOptions } from '../game/vehicles/bodyshopChassisRegistry.js';
 
-const LEVELS = new Set(['city', 'world', 'wilds', 'rally', 'range']);
+const LEVELS = new Set(['city', 'world', 'wilds', 'rally', 'range', 'horde', 'highway']);
 
 /** Resolve experience id from a remount key like `range:3` or `world:id:rev:1`. */
 function levelModeFromGameKey(key) {
@@ -63,17 +64,43 @@ function isTruthyParam(v) {
   return v === '1' || v === 'true' || v === 'yes';
 }
 
+function resolveBootView(params) {
+  const view = params.get('view');
+  if (view === 'horde-robots' || view === 'hordeRobots') return 'hordeRobots';
+  if (view === 'cut-test' || view === 'cutTest') return 'cutTest';
+  return null;
+}
+
 function resolveBootIntent() {
   const params = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
+  const bootView = resolveBootView(params);
   const levelParam = params.get('level');
   const level = LEVELS.has(levelParam) ? levelParam : null;
   const menuEnabled = GAME_CONFIG.boot?.mainMenuEnabled !== false;
+
+  // Query-string level wins over a stale last-played preference (e.g. range).
+  // Persist so Continue / skip-menu boots honor ?level= after the first load.
+  if (level) {
+    try {
+      localStorage.setItem('dreamfall:level', level);
+    } catch { /* ignore */ }
+  }
 
   let skipLocal = false;
   try {
     skipLocal = localStorage.getItem('dreamfall:skip-menu') === '1';
   } catch {
     skipLocal = false;
+  }
+
+  // Debug viewers own the full shell; do not also force a game experience.
+  if (bootView) {
+    return {
+      skipMenu: true,
+      forcedLevel: null,
+      preferredLevel: level ?? readStoredLevel(),
+      bootView,
+    };
   }
 
   const skipMenu = !menuEnabled
@@ -84,16 +111,20 @@ function resolveBootIntent() {
     skipMenu,
     forcedLevel: skipMenu ? (level ?? readStoredLevel()) : null,
     preferredLevel: level ?? readStoredLevel(),
+    bootView: null,
   };
 }
 
 export function App() {
   const bootIntent = resolveBootIntent();
   const initialLevel = bootIntent.forcedLevel ?? bootIntent.preferredLevel;
+  const initialView = bootIntent.bootView ?? 'game';
 
-  const [viewMode, setViewMode] = createSignal('game'); // 'game' | 'garage' | 'bodyshop' | 'gunsmith' | dev-tool views
+  const [viewMode, setViewMode] = createSignal(initialView); // 'game' | 'garage' | 'bodyshop' | 'gunsmith' | 'hordeRobots' | 'cutTest' | dev-tool views
   const [appPhase, setAppPhase] = createSignal(
-    bootIntent.skipMenu ? 'loading_experience' : 'booting',
+    bootIntent.bootView
+      ? 'menu'
+      : (bootIntent.skipMenu ? 'loading_experience' : 'booting'),
   );
   const [sharedProgress, setSharedProgress] = createSignal({
     phase: 'shared',
@@ -222,6 +253,7 @@ export function App() {
   const isBodyshop = () => viewMode() === 'bodyshop';
   const isGunsmith = () => viewMode() === 'gunsmith';
   const isCutTest = () => viewMode() === 'cutTest';
+  const isHordeRobots = () => viewMode() === 'hordeRobots';
 
   const gameKey = createMemo(() => {
     const mode = levelMode();
@@ -291,7 +323,7 @@ export function App() {
 
   /**
    * Sole entry that mounts/remounts a playable experience.
-   * @param {'city'|'world'|'wilds'|'rally'|'range'} mode
+   * @param {'city'|'world'|'wilds'|'rally'|'range'|'horde'|'highway'} mode
    * @param {{ sceneId?: string|null }} [opts]
    */
   const enterExperience = (mode, opts = {}) => {
@@ -464,9 +496,9 @@ export function App() {
       <Show when={showMenu()}>
         <MainMenu
           preferredLevel={bootIntent.preferredLevel}
-          lastLevel={readStoredLevel()}
+          lastLevel={bootIntent.preferredLevel}
           onSelectExperience={(id) => enterExperience(id)}
-          onContinue={() => enterExperience(readStoredLevel())}
+          onContinue={() => enterExperience(bootIntent.preferredLevel)}
         />
       </Show>
 
@@ -526,6 +558,7 @@ export function App() {
       </Show>
 
       {isCutTest() && <CutTestCanvas />}
+      {isHordeRobots() && <HordeRobotViewerCanvas />}
 
       {isGarage() && (
         <GarageScene

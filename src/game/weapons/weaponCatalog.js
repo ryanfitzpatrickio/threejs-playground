@@ -1,6 +1,6 @@
 /**
  * Unified weapon loadout: great sword + gun catalog.
- * Scroll cycles this list; Z holsters / draws the equipped entry.
+ * Number keys equip guns; Z holsters / draws the equipped entry.
  */
 
 import { GUN_CATALOG } from './gunProfile.js';

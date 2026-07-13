@@ -22,11 +22,12 @@ const MUD_FOOTSTEP_HALF_WIDTH = 0.2;
 const MUD_FOOTSTEP_DEPTH = 0.065;
 
 export class MovementSystem {
-  update({ delta, input, character, level, physics, cameraBasis }) {
+  update({ delta, input, character, level, physics, cameraBasis, platforms = null }) {
     character.traversalRecoveryTimer = Math.max(0, (character.traversalRecoveryTimer ?? 0) - delta);
     character.forceFreeFallTimer = Math.max(0, (character.forceFreeFallTimer ?? 0) - delta);
     character.airMomentumLockTimer = Math.max(0, (character.airMomentumLockTimer ?? 0) - delta);
     character.groundSnapBlockTimer = Math.max(0, (character.groundSnapBlockTimer ?? 0) - delta);
+    platforms?.updateCharacterTimers?.(character, delta);
 
     if (character.ledgeTraversal?.active && !character.ledgeStandSupport) {
       character.ledgeTraversal = null;
@@ -34,7 +35,28 @@ export class MovementSystem {
 
     const ledgeTraversalActive = Boolean(character.ledgeTraversal?.active && character.ledgeStandSupport);
 
+    if (character.carLeap?.active) {
+      // CarLeapSystem owns pose while leaping.
+      return {
+        moving: false,
+        wantsMove: false,
+        speed: Math.hypot(character.velocity?.x ?? 0, character.velocity?.z ?? 0),
+        direction: forward.clone(),
+        grounded: false,
+        airborne: true,
+        carLeaping: true,
+        carLeapState: character.carLeap?.state ?? 'leap',
+        justJumped: false,
+        justLanded: false,
+        groundHeight: character.group.position.y,
+        height: character.group.position.y,
+        verticalVelocity: character.verticalVelocity ?? 0,
+      };
+    }
+
     if (character.vehicle?.active || character.mount?.active || character.hang?.active || character.wallRun?.active || character.wallClimb?.active || character.rope?.active || character.hookSwing?.active || character.vault?.active || character.slide?.active || character.wingsuit?.active || ledgeTraversalActive) {
+      // Seated / traversal modes own the transform — do not platform-carry (would double-move).
+      platforms?.clearSupport?.(character);
       return {
         moving: false,
         wantsMove: false,
@@ -70,6 +92,9 @@ export class MovementSystem {
         verticalVelocity: 0,
       };
     }
+
+    // Carry the character with any supported platform from fixed steps since last move.
+    platforms?.applyPendingCarry?.(character);
 
     // River water detection for the swim domain. When the character's feet drop
     // below the river's water surface they swim: buoyancy replaces gravity, motion
@@ -149,6 +174,10 @@ export class MovementSystem {
         : GAME_CONFIG.character.jumpSpeed;
       character.jumpBig = big;
       character.grounded = false;
+      // Inherit platform point velocity once on detach (convoy / moving deck).
+      if (character.platformSupport) {
+        platforms?.inheritDetachVelocity?.(character);
+      }
     }
 
     // Paddle up toward the surface while swimming (jump input).
@@ -243,6 +272,11 @@ export class MovementSystem {
     let groundedAfterMove = !groundSnapBlocked && physicsMovement.grounded && !justJumped && character.verticalVelocity <= 0;
 
     character.group.position.add(physicsMovement.movement);
+    // Mid-frame stepPlanned (inside moveCharacter) may have advanced platforms —
+    // apply any new carry so the feet stay glued this frame.
+    if (!justJumped) {
+      platforms?.applyPendingCarry?.(character);
+    }
     const physicsSnapDrop = previousGroundedY - character.group.position.y;
 
     const preGroundSnapY = character.group.position.y;
@@ -269,7 +303,21 @@ export class MovementSystem {
       maxStepUp: GAME_CONFIG.character.groundSnapHeight + 0.08,
       maxSnapDown: movingSnapDownLimit,
     });
-    const analyticGroundHeight = Math.max(levelGroundHeight, ledgeSupportHeight ?? -Infinity);
+    // Moving platforms: query registry alongside level/ledge analytic ground.
+    const platformResnapBlocked = (character.platformResnapBlockTimer ?? 0) > 0;
+    const platformHit = (!groundSnapBlocked && !platformResnapBlocked && platforms?.getPlatformAt)
+      ? platforms.getPlatformAt(
+        character.group.position,
+        character.group.position.y,
+        { verticalTolerance: GAME_CONFIG.character.groundSnapDownHeight + 0.2 },
+      )
+      : null;
+    const platformSurfaceY = platformHit?.worldSurfacePoint?.y;
+    const analyticGroundHeight = Math.max(
+      levelGroundHeight,
+      ledgeSupportHeight ?? -Infinity,
+      Number.isFinite(platformSurfaceY) ? platformSurfaceY : -Infinity,
+    );
     const analyticStepUpLimit = GAME_CONFIG.character.groundSnapHeight + 0.08;
     const analyticSupportDelta = analyticGroundHeight - preGroundSnapY;
     const hasAnalyticSupport = !groundSnapBlocked &&
@@ -355,11 +403,24 @@ export class MovementSystem {
       character.group.position.y = groundHeight;
       character.verticalVelocity = 0;
       character.grounded = true;
+      // Prefer platform support when the snapped surface is the platform deck.
+      if (
+        platformHit
+        && Number.isFinite(platformSurfaceY)
+        && Math.abs(groundHeight - platformSurfaceY) <= 0.08
+      ) {
+        platforms?.attachSupport?.(character, platformHit);
+      } else if (!platformHit || Math.abs(groundHeight - platformSurfaceY) > 0.08) {
+        platforms?.clearSupport?.(character);
+      }
     } else {
       // A transient controller miss is not proof that support was lost. Only the
       // explicit walk-off path above arms forced free fall; jumps and traversal
       // launches remain governed by their existing snap blockers/vertical speed.
       character.grounded = false;
+      if (walkedOffSupport || justJumped) {
+        platforms?.clearSupport?.(character);
+      }
     }
 
     const justLanded = !isGrounded && character.grounded;

@@ -100,51 +100,103 @@ export function prepareBakedCrowdPoses(root, clips = [], options = {}) {
   const poses = [];
 
   for (const sampleTime of sampleTimes) {
-    const posedRoot = cloneSkeleton(root);
-    posedRoot.updateMatrixWorld(true);
-
-    // Match EnemySystem clone sequence exactly for attribute safety + pose parity.
-    posedRoot.traverse((child) => {
-      if (child.isSkinnedMesh && child.skeleton) child.skeleton.update();
+    const pose = bakeSingleCrowdPose(root, chosen, {
+      sampleTime,
+      targetHeight,
+      orientationFixX,
     });
-    flattenObjectForWebGPU(posedRoot);
-
-    // Soldier orientation fix (matches EnemySystem exactly for visual parity).
-    if (orientationFixX) {
-      posedRoot.rotation.x = orientationFixX;
-    }
-
-    normalizeToHeightForCrowd(posedRoot, targetHeight);
-
-    // Pose via temp mixer at sample time (direct, matches Enemy create+mixer usage).
-    const mixer = new THREE.AnimationMixer(posedRoot);
-    const action = mixer.clipAction(chosen);
-    action.reset();
-    action.enabled = true;
-    action.setEffectiveWeight(1);
-    action.play();
-    const safeTime = Math.max(0, Math.min(sampleTime || 0, chosen.duration || 0));
-    action.time = safeTime;
-    mixer.update(0);
-    posedRoot.updateMatrixWorld(true);
-
-    // Bake applies bone transforms for current pose + world matrices.
-    const baked = bakeSkinnedModelGeometry(posedRoot);
-    if (baked?.geometry) {
-      const g = baked.geometry;
-      // Strip skinning data: crowd InstancedMesh uses static posed geom + skinning=false material.
-      if (g.hasAttribute('skinIndex')) g.deleteAttribute('skinIndex');
-      if (g.hasAttribute('skinWeight')) g.deleteAttribute('skinWeight');
-      g.computeBoundingBox();
-      g.computeBoundingSphere();
-      poses.push({
-        geometry: g,
-        duration: chosen.duration || 1,
-        sampleTime: safeTime,
-        name: chosen.name,
-      });
-    }
+    if (pose) poses.push(pose);
   }
 
   return poses;
+}
+
+/**
+ * Bake a catalog of named poses (multiple clips / sample times) for Horde
+ * proxy InstancedMesh buckets. Returns `{ key, anim, geometry, ... }` entries.
+ */
+export function prepareBakedCrowdPoseCatalog(root, clips = [], options = {}) {
+  const {
+    entries = [],
+    targetHeight = 1.85,
+    orientationFixX = -Math.PI / 2,
+  } = options;
+  if (!root || !entries.length) return [];
+
+  const preparedClips = prepareAnimationClipsForCrowd(clips);
+  const results = [];
+  for (const entry of entries) {
+    const chosen = findClip(preparedClips, entry.clipName)
+      || findClip(preparedClips, 'Idle Alert')
+      || findClip(preparedClips, 'Idle')
+      || preparedClips[0];
+    if (!chosen) continue;
+    const pose = bakeSingleCrowdPose(root, chosen, {
+      sampleTime: entry.sampleTime ?? 0,
+      targetHeight,
+      orientationFixX,
+    });
+    if (!pose) continue;
+    results.push({
+      ...pose,
+      key: entry.key,
+      anim: entry.anim ?? 'idle',
+      clipName: entry.clipName ?? chosen.name,
+    });
+  }
+  return results;
+}
+
+function bakeSingleCrowdPose(root, chosen, { sampleTime, targetHeight, orientationFixX }) {
+  const posedRoot = cloneSkeleton(root);
+  posedRoot.updateMatrixWorld(true);
+
+  // Match EnemySystem clone sequence exactly for attribute safety + pose parity.
+  posedRoot.traverse((child) => {
+    if (child.isSkinnedMesh && child.skeleton) child.skeleton.update();
+  });
+  flattenObjectForWebGPU(posedRoot);
+
+  // Soldier orientation fix (matches EnemySystem exactly for visual parity).
+  if (orientationFixX) {
+    posedRoot.rotation.x = orientationFixX;
+  }
+
+  normalizeToHeightForCrowd(posedRoot, targetHeight);
+
+  // Pose via temp mixer at sample time (direct, matches Enemy create+mixer usage).
+  const mixer = new THREE.AnimationMixer(posedRoot);
+  const action = mixer.clipAction(chosen);
+  action.reset();
+  action.enabled = true;
+  action.setEffectiveWeight(1);
+  action.play();
+  const safeTime = Math.max(0, Math.min(sampleTime || 0, chosen.duration || 0));
+  action.time = safeTime;
+  mixer.update(0);
+  posedRoot.updateMatrixWorld(true);
+
+  // Indexed bake keeps unique verts (~proxy GLB density). The default expanded
+  // bake de-indexes triangles and can turn a 13k mesh into 35k+ verts, which
+  // then fails HORDE_PROXY_VERTEX_LIMIT and falls back to block men.
+  const baked = bakeSkinnedModelGeometry(posedRoot, { topology: 'indexed' });
+  // Temp clone is not retained; drop graphs after bake to free skeleton copies.
+  posedRoot.traverse((child) => {
+    if (child.isSkinnedMesh) child.skeleton = null;
+  });
+
+  if (!baked?.geometry) return null;
+  const g = baked.geometry;
+  // Strip skinning data: crowd InstancedMesh uses static posed geom + skinning=false material.
+  if (g.hasAttribute('skinIndex')) g.deleteAttribute('skinIndex');
+  if (g.hasAttribute('skinWeight')) g.deleteAttribute('skinWeight');
+  g.computeBoundingBox();
+  g.computeBoundingSphere();
+  return {
+    geometry: g,
+    duration: chosen.duration || 1,
+    sampleTime: safeTime,
+    name: chosen.name,
+    vertexCount: baked.vertexCount,
+  };
 }

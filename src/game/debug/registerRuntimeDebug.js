@@ -30,6 +30,12 @@ import {
   reloadDebugSocket,
   resetReloadDebugSocket,
 } from '../weapons/reloadDebugSocket.js';
+import {
+  HORDE_ARCHETYPES,
+  hordeDebugState,
+  snapshotHordeDebug,
+} from '../config/hordeDebugConfig.js';
+import { HORDE_MAX_ENEMY_COUNT } from '../config/hordePerformanceConfig.js';
 
 /** Local overlay state (not always in snapshot). */
 const overlayState = {
@@ -102,6 +108,9 @@ export function registerRuntimeDebug(runtime = null) {
   registerShaderDebugFolder('Cloud Mode', { expanded: false });
   registerShaderDebugFolder('Rally', { expanded: false });
   registerShaderDebugFolder('Overlays', { expanded: false });
+  registerShaderDebugFolder('Horde', { expanded: true });
+
+  registerHordeDebug(runtime);
 
   // --- Runtime lighting / fog / shadows ---
   registerShaderDebugParam({
@@ -1752,6 +1761,464 @@ function formatTimeOfDay(timeOfDay) {
 
 function gameRuntime() {
   return globalThis.__DREAMFALL_SHADER_DEBUG_RUNTIME__ ?? null;
+}
+
+/**
+ * Horde playground: freeform spawn + behavior mods (no wave loop).
+ * Works on every level type — first spawn lazy-loads robot GLBs + proxy renderer.
+ */
+function registerHordeDebug(runtime) {
+  const rt = () => gameRuntime() ?? runtime;
+  const b = () => bridge();
+
+  /**
+   * Lazy-load robot GLBs + proxy renderer, then run a spawn/fill/blast action.
+   * Prefer the full GameRuntime instance (characterSystem, applyHordeExplosion);
+   * fall back to __DREAMFALL_DEBUG__ bridge when the shader-debug handle is missing.
+   */
+  const withHordeReady = async (label, fn) => {
+    const runtimeInst = rt();
+    const debugBridge = b();
+    const runtimeApi = runtimeInst ?? debugBridge;
+    if (!runtimeApi) {
+      console.warn(`[horde-debug] ${label}: no runtime`);
+      return null;
+    }
+    try {
+      const ensure = runtimeApi.ensureHordePlaygroundReady
+        ?? debugBridge?.ensureHordePlaygroundReady;
+      if (ensure) {
+        const ready = await ensure.call(runtimeInst ?? debugBridge);
+        if (ready && ready.ok === false) {
+          console.warn(`[horde-debug] ${label}: assets not ready`, ready);
+          return ready;
+        }
+      }
+      const result = await fn(runtimeApi);
+      const levelMode = runtimeInst?.levelMode
+        ?? debugBridge?.getHordeDebug?.()?.levelMode
+        ?? debugBridge?.getLevelHandles?.()?.levelMode
+        ?? '?';
+      console.info(`[horde-debug] ${label}`, result, snapshotHordeDebug({
+        levelMode,
+        playgroundReady: runtimeInst?.isHordePlaygroundActive?.()
+          ?? debugBridge?.isHordePlaygroundActive?.()
+          ?? debugBridge?.getHordeDebug?.()?.playgroundReady
+          ?? false,
+      }));
+      return result;
+    } catch (err) {
+      console.warn(`[horde-debug] ${label} failed`, err);
+      return { ok: false, error: String(err?.message ?? err) };
+    }
+  };
+
+  registerShaderDebugParam({
+    id: 'horde.monitor',
+    label: 'Alive / mode',
+    folder: 'Horde',
+    type: 'monitor',
+    pinPolicy: 'monitor',
+    get: () => {
+      const scale = rt()?.hordeScaleSnapshot?.()
+        ?? b()?.hordeScaleSnapshot?.()
+        ?? b()?.getHordeDebug?.()
+        ?? b()?.snapshot?.()?.hordeScale
+        ?? null;
+      const n = scale?.alive
+        ?? rt()?.enemySystem?.enemies?.length
+        ?? b()?.snapshot?.()?.enemies?.count
+        ?? 0;
+      const queued = scale?.queued ?? 0;
+      const mode = rt()?.levelMode
+        ?? b()?.getHordeDebug?.()?.levelMode
+        ?? b()?.getLevelHandles?.()?.levelMode
+        ?? '?';
+      const ready = (
+        rt()?.isHordePlaygroundActive?.()
+        || b()?.isHordePlaygroundActive?.()
+        || b()?.getHordeDebug?.()?.playgroundReady
+      ) ? 'ready' : 'lazy';
+      return `${n} bots${queued > 0 ? ` + ${queued} queued` : ''} · ${mode} · ${ready}`;
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'horde.spawnCount',
+    label: 'Spawn count',
+    folder: 'Horde',
+    type: 'int',
+    min: 1,
+    max: HORDE_MAX_ENEMY_COUNT,
+    step: 1,
+    pinPolicy: 'allow',
+    help: 'How many bots the Spawn button creates (cap includes spectacle/debug ceilings).',
+    get: () => hordeDebugState.spawnCount,
+    set: (v) => {
+      const n = Math.max(1, Math.min(HORDE_MAX_ENEMY_COUNT, Math.floor(Number(v) || 1)));
+      hordeDebugState.spawnCount = n;
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'horde.archetype',
+    label: 'Archetype',
+    folder: 'Horde',
+    type: 'enum',
+    options: {
+      Mixed: 'mixed',
+      Faceless: 'faceless',
+      Tessy: 'tessy',
+      Cyclop: 'cyclop',
+    },
+    pinPolicy: 'allow',
+    get: () => hordeDebugState.archetype,
+    set: (v) => {
+      if (HORDE_ARCHETYPES.includes(v)) hordeDebugState.archetype = v;
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'horde.spectaclePreset',
+    label: 'Spectacle preset',
+    folder: 'Horde',
+    type: 'enum',
+    options: {
+      'Default 250': 'default',
+      'Stretch 750': 'stretch',
+      'Spectacle 1000': 'spectacle',
+      'Heavy 1500': 'heavy',
+      'Extreme 2000': 'extreme',
+    },
+    pinPolicy: 'allow',
+    help: 'M6 density preset. Fill applies flock + fog + attack tokens, then spawns to count.',
+    get: () => hordeDebugState.spectaclePreset,
+    set: (v) => {
+      hordeDebugState.spectaclePreset = v || 'default';
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'horde.fillPreset',
+    label: 'Fill to preset',
+    folder: 'Horde',
+    type: 'action',
+    pinPolicy: 'allow',
+    help: 'Lazy-load assets if needed, clear, apply spectacle preset, spawn to that count. Works on every level.',
+    action: () => {
+      void withHordeReady('fillPreset', (api) => api.fillHordeToPreset?.(
+        hordeDebugState.spectaclePreset,
+        { archetype: hordeDebugState.archetype },
+      ));
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'horde.spawn',
+    label: 'Spawn bots',
+    folder: 'Horde',
+    type: 'action',
+    pinPolicy: 'allow',
+    help: 'Spawn using count + archetype. First use on non-horde maps loads robot GLBs + proxies.',
+    action: () => {
+      void withHordeReady('spawn', (api) => api.spawnHordeEnemies?.({
+        count: hordeDebugState.spawnCount,
+        archetype: hordeDebugState.archetype,
+      }));
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'horde.spawn1',
+    label: 'Spawn 1',
+    folder: 'Horde',
+    type: 'action',
+    pinPolicy: 'allow',
+    action: () => {
+      void withHordeReady('spawn1', (api) => api.spawnHordeEnemies?.({
+        count: 1,
+        archetype: hordeDebugState.archetype,
+      }));
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'horde.spawn6',
+    label: 'Spawn 6',
+    folder: 'Horde',
+    type: 'action',
+    pinPolicy: 'allow',
+    action: () => {
+      void withHordeReady('spawn6', (api) => api.spawnHordeEnemies?.({
+        count: 6,
+        archetype: hordeDebugState.archetype,
+      }));
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'horde.spawn250',
+    label: 'Spawn 250 (default gate)',
+    folder: 'Horde',
+    type: 'action',
+    pinPolicy: 'allow',
+    action: () => {
+      void withHordeReady('spawn250', (api) => api.fillHordeToPreset?.('default', {
+        archetype: hordeDebugState.archetype,
+      }));
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'horde.spawn750',
+    label: 'Spawn 750 (stretch)',
+    folder: 'Horde',
+    type: 'action',
+    pinPolicy: 'allow',
+    action: () => {
+      void withHordeReady('spawn750', (api) => api.fillHordeToPreset?.('stretch', {
+        archetype: hordeDebugState.archetype,
+      }));
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'horde.spawn1000',
+    label: 'Spawn 1000 (spectacle)',
+    folder: 'Horde',
+    type: 'action',
+    pinPolicy: 'allow',
+    action: () => {
+      void withHordeReady('spawn1000', (api) => api.fillHordeToPreset?.('spectacle', {
+        archetype: hordeDebugState.archetype,
+      }));
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'horde.spawn1500',
+    label: 'Spawn 1500 (heavy)',
+    folder: 'Horde',
+    type: 'action',
+    pinPolicy: 'allow',
+    action: () => {
+      void withHordeReady('spawn1500', (api) => api.fillHordeToPreset?.('heavy', {
+        archetype: hordeDebugState.archetype,
+      }));
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'horde.explosion',
+    label: 'Blast at player',
+    folder: 'Horde',
+    type: 'action',
+    pinPolicy: 'allow',
+    help: 'M4 mass-kill: damage proxies + full actors in a radius; only a few get detailed ragdolls.',
+    action: () => {
+      void withHordeReady('explosion', (api) => {
+        const point = api.characterSystem?.character?.group?.position
+          ?? api.getCharacter?.()?.group?.position
+          ?? api.enemySystem?.lastPlayerPosition
+          ?? null;
+        if (!point) return { ok: false, error: 'no player position' };
+        return api.applyHordeExplosion?.({
+          point,
+          radius: 7,
+          damage: 250,
+        }) ?? { ok: false, error: 'applyHordeExplosion missing' };
+      });
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'horde.spawn18',
+    label: 'Spawn 18',
+    folder: 'Horde',
+    type: 'action',
+    pinPolicy: 'allow',
+    action: () => {
+      void withHordeReady('spawn18', (api) => api.spawnHordeEnemies?.({
+        count: 18,
+        archetype: hordeDebugState.archetype,
+      }));
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'horde.clear',
+    label: 'Clear all bots',
+    folder: 'Horde',
+    type: 'action',
+    pinPolicy: 'allow',
+    help: 'clearEnemies + cut props. Safe to re-spawn after.',
+    action: () => {
+      const result = rt()?.clearHordeEnemies?.() ?? b()?.clearHordeEnemies?.();
+      console.info('[horde-debug] clear', result, snapshotHordeDebug());
+    },
+  });
+
+  // --- Behavior modifiers ---
+  registerShaderDebugParam({
+    id: 'horde.speedScale',
+    label: 'Speed ×',
+    folder: 'Horde',
+    type: 'float',
+    min: 0,
+    max: 3,
+    step: 0.05,
+    pinPolicy: 'allow',
+    help: 'Walk/run speed. 0 ≈ frozen feet (use Frozen for full lock).',
+    get: () => hordeDebugState.speedScale,
+    set: (v) => {
+      hordeDebugState.speedScale = Math.max(0, Number(v) || 0);
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'horde.damageScale',
+    label: 'Damage ×',
+    folder: 'Horde',
+    type: 'float',
+    min: 0,
+    max: 5,
+    step: 0.1,
+    pinPolicy: 'allow',
+    get: () => hordeDebugState.damageScale,
+    set: (v) => {
+      hordeDebugState.damageScale = Math.max(0, Number(v) || 0);
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'horde.healthScale',
+    label: 'Health ×',
+    folder: 'Horde',
+    type: 'float',
+    min: 0.1,
+    max: 10,
+    step: 0.1,
+    pinPolicy: 'allow',
+    help: 'Applied at spawn. Use “Apply health to live” for existing bots.',
+    get: () => hordeDebugState.healthScale,
+    set: (v) => {
+      hordeDebugState.healthScale = Math.max(0.1, Number(v) || 1);
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'horde.applyHealth',
+    label: 'Apply health to live',
+    folder: 'Horde',
+    type: 'action',
+    pinPolicy: 'allow',
+    action: () => {
+      const result = rt()?.applyHordeHealthScale?.() ?? b()?.applyHordeHealthScale?.();
+      console.info('[horde-debug] health', result);
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'horde.chaseRangeScale',
+    label: 'Chase range ×',
+    folder: 'Horde',
+    type: 'float',
+    min: 0.2,
+    max: 4,
+    step: 0.1,
+    pinPolicy: 'allow',
+    get: () => hordeDebugState.chaseRangeScale,
+    set: (v) => {
+      hordeDebugState.chaseRangeScale = Math.max(0.2, Number(v) || 1);
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'horde.attackRangeScale',
+    label: 'Attack range ×',
+    folder: 'Horde',
+    type: 'float',
+    min: 0.2,
+    max: 4,
+    step: 0.1,
+    pinPolicy: 'allow',
+    get: () => hordeDebugState.attackRangeScale,
+    set: (v) => {
+      hordeDebugState.attackRangeScale = Math.max(0.2, Number(v) || 1);
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'horde.attackCooldownScale',
+    label: 'Attack cooldown ×',
+    folder: 'Horde',
+    type: 'float',
+    min: 0.15,
+    max: 4,
+    step: 0.05,
+    pinPolicy: 'allow',
+    help: 'Lower = attack more often.',
+    get: () => hordeDebugState.attackCooldownScale,
+    set: (v) => {
+      hordeDebugState.attackCooldownScale = Math.max(0.15, Number(v) || 1);
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'horde.passive',
+    label: 'Passive (no chase)',
+    folder: 'Horde',
+    type: 'bool',
+    pinPolicy: 'allow',
+    help: 'Bots idle — good for cut / gun sever practice.',
+    get: () => hordeDebugState.passive,
+    set: (v) => {
+      hordeDebugState.passive = Boolean(v);
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'horde.frozen',
+    label: 'Frozen',
+    folder: 'Horde',
+    type: 'bool',
+    pinPolicy: 'allow',
+    help: 'No AI movement at all.',
+    get: () => hordeDebugState.frozen,
+    set: (v) => {
+      hordeDebugState.frozen = Boolean(v);
+    },
+  });
+
+  registerShaderDebugParam({
+    id: 'horde.invulnerable',
+    label: 'Invulnerable',
+    folder: 'Horde',
+    type: 'bool',
+    pinPolicy: 'allow',
+    help: 'No HP kill; arm/leg severs still work for posture testing.',
+    get: () => hordeDebugState.invulnerable,
+    set: (v) => {
+      hordeDebugState.invulnerable = Boolean(v);
+    },
+  });
+
+  // Quick sever probes (M4 combat acceptance helpers)
+  for (const region of ['armL', 'armR', 'legL', 'legR', 'head']) {
+    registerShaderDebugParam({
+      id: `horde.sever.${region}`,
+      label: `Sever nearest · ${region}`,
+      folder: 'Horde',
+      type: 'action',
+      pinPolicy: 'allow',
+      help: 'Force gun-style limb sever on nearest mixamo bot.',
+      action: () => {
+        const result = b()?.gunSeverNearest?.({ region });
+        console.info('[horde-debug] sever', region, result);
+      },
+    });
+  }
+
 }
 
 /**

@@ -1,0 +1,85 @@
+{
+  "generatedAt": "2026-07-12T17:01:48.789Z",
+  "model": "/assets/models/climber.glb",
+  "outputDir": "/assets/animations-retargeted",
+  "fps": 30,
+  "animations": [
+    {
+      "name": "Crouch Idle (1)",
+      "sourceUrl": "/assets/animations/Crouch%20Idle%20(1).fbx",
+      "clipUrl": "/assets/animations-retargeted/crouch-idle-1.json",
+      "duration": 1.6667,
+      "tracks": 47
+    },
+    {
+      "name": "Fast Run (2)",
+      "sourceUrl": "/assets/animations/Fast%20Run%20(2).fbx",
+      "clipUrl": "/assets/animations-retargeted/fast-run-2.json",
+      "duration": 0.5333,
+      "tracks": 35
+    },
+    {
+      "name": "Grab And Slam (1)",
+      "sourceUrl": "/assets/animations/Grab%20And%20Slam%20(1).fbx",
+      "clipUrl": "/assets/animations-retargeted/grab-and-slam-1.json",
+      "duration": 4.2667,
+      "tracks": 35
+    },
+    {
+      "name": "Low Crawl",
+      "sourceUrl": "/assets/animations/Low%20Crawl.fbx",
+      "clipUrl": "/assets/animations-retargeted/low-crawl.json",
+      "duration": 2.3333,
+      "tracks": 35
+    },
+    {
+      "name": "Punching (2)",
+      "sourceUrl": "/assets/animations/Punching%20(2).fbx",
+      "clipUrl": "/assets/animations-retargeted/punching-2.json",
+      "duration": 1.2667,
+      "tracks": 35
+    },
+    {
+      "name": "Running Crawl",
+      "sourceUrl": "/assets/animations/Running%20Crawl.fbx",
+      "clipUrl": "/assets/animations-retargeted/running-crawl.json",
+      "duration": 0.6667,
+      "tracks": 35
+    },
+    {
+      "name": "Standing W_Briefcase Idle",
+      "sourceUrl": "/assets/animations/Standing%20W_Briefcase%20Idle.fbx",
+      "clipUrl": "/assets/animations-retargeted/standing-w-briefcase-idle.json",
+      "duration": 13.9333,
+      "tracks": 35
+    },
+    {
+      "name": "Stealth Assassination",
+      "sourceUrl": "/assets/animations/Stealth%20Assassination.fbx",
+      "clipUrl": "/assets/animations-retargeted/stealth-assassination.json",
+      "duration": 7,
+      "tracks": 35
+    },
+    {
+      "name": "Superhuman Choke Lift",
+      "sourceUrl": "/assets/animations/Superhuman%20Choke%20Lift.fbx",
+      "clipUrl": "/assets/animations-retargeted/superhuman-choke-lift.json",
+      "duration": 6.3667,
+      "tracks": 35
+    },
+    {
+      "name": "Taken Hostage - Villain",
+      "sourceUrl": "/assets/animations/Taken%20Hostage%20-%20Villain.fbx",
+      "clipUrl": "/assets/animations-retargeted/taken-hostage-villain.json",
+      "duration": 2.1667,
+      "tracks": 35
+    },
+    {
+      "name": "Walking (3)",
+      "sourceUrl": "/assets/animations/Walking%20(3).fbx",
+      "clipUrl": "/assets/animations-retargeted/walking-3.json",
+      "duration": 1.0333,
+      "tracks": 35
+    }
+  ]
+}

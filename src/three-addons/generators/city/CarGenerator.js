@@ -186,9 +186,67 @@ const BODY_SPECS = {
 		seams: [ 0.68, - 0.25, - 1.05 ], handles: [ - 0.1, - 0.88 ], handleY: 1.02,
 		mirror: [ 1.1, 0.56 ], lampY: 0.78, tailLampY: 0.88, bumperY: 0.54,
 		sign: false, rails: true
-	}
+	},
+
+	/**
+	 * Highway semi cab (tractor only). Trailer is a separate shell + dynamic body.
+	 */
+	semiCab: {
+		sectionShape: 'boxy',
+		stations: [
+			[ 2.25, 1.00, 0.96, 0.55, 0.94, 1.04 ], // broad, nearly vertical grille
+			[ 2.10, 1.12, 1.04, 0.48, 1.08, 1.18 ], // squared hood leading edge
+			[ 1.80, 1.18, 1.08, 0.72, 1.12, 1.20 ], // front wheel arch
+			[ 1.35, 1.18, 1.08, 0.45, 1.16, 1.22 ],
+			[ 0.78, 1.18, 1.08, 0.42, 1.22, 1.28 ], // flat hood / cowl
+			[ 0.42, 1.18, 1.05, 0.40, 1.28, 2.24 ], // upright windshield
+			[ 0.18, 1.18, 1.05, 0.40, 1.28, 2.34 ], // cab roof front
+			[ - 1.52, 1.18, 1.05, 0.48, 1.28, 2.34 ], // straight sleeper walls
+			[ - 1.68, 1.18, 1.05, 0.52, 1.28, 2.34 ] // flat rear cab wall
+		],
+		nose: 2.25, tail: - 1.68,
+		wheelRadius: 0.52, wheelZ: 1.35, wheelX: 0.98, hubRadius: 0.30,
+		wheelZs: [ 1.45, - 1.15 ],
+		glassY: 1.42, roofCapY: 2.26, cabin: [ - 1.5, 0.4 ], screens: [ 0.2, - 1.42 ],
+		pillars: [[ 0.1, 0.2 ], [ - 0.58, - 0.48 ], [ - 1.44, - 1.34 ]],
+		seams: [ 0.38, - 0.5, - 1.5 ], handles: [ - 0.08, - 0.78 ], handleY: 1.40,
+		mirror: [ 1.55, 0.95 ], lampY: 1.05, tailLampY: 1.15, bumperY: 0.62,
+		sign: false,
+		bumperWidth: 2.15, grilleWidth: 0.9, lampWidth: 0.42,
+		tractorDeck: { size: [ 2.05, 0.14, 0.9 ], position: [ 0, 0.78, - 1.82 ] }
+	},
+
+	/**
+	 * Highway semi trailer box (cargo volume). Hitch nose is +Z toward the cab
+	 * when both face −Z (cab ahead at more negative world Z).
+	 */
+	semiTrailer: {
+		sectionShape: 'boxy',
+		stations: [
+			[ 5.90, 1.22, 1.18, 0.72, 1.55, 2.60 ], // planar front wall
+			[ 5.72, 1.22, 1.18, 0.72, 1.55, 2.60 ],
+			[ 2.50, 1.22, 1.18, 0.70, 1.55, 2.60 ],
+			[ - 2.50, 1.22, 1.18, 0.70, 1.55, 2.60 ],
+			[ - 5.72, 1.22, 1.18, 0.72, 1.55, 2.60 ],
+			[ - 5.90, 1.22, 1.18, 0.72, 1.55, 2.60 ] // square rear doors
+		],
+		nose: 5.90, tail: - 5.90,
+		wheelRadius: 0.52, wheelZ: 4.5, wheelX: 0.98, hubRadius: 0.30,
+		wheelZs: [ - 3.9, - 4.7, - 5.4 ],
+		glassY: 3.0, roofCapY: 2.55, cabin: [ 9, 9 ], screens: [ 9, 9 ], // no glass
+		pillars: [], seams: [ 2.0, - 1.0, - 3.5 ], handles: [ 0, 0 ], handleY: 1.5,
+		mirror: [ 2.0, 0 ], lampY: 1.2, tailLampY: 1.35, bumperY: 0.75,
+		sign: false,
+		bumperWidth: 2.35, grilleWidth: 0.5, lampWidth: 0.45
+	},
+
+	/** @deprecated full rigid unit — prefer semiCab + semiTrailer */
+	semi: null
 
 };
+
+// alias full "semi" to cab for any leftover callers
+BODY_SPECS.semi = BODY_SPECS.semiCab;
 
 // the taxi is the sedan shell plus a lit roof sign
 BODY_SPECS.taxi = Object.assign( {}, BODY_SPECS.sedan, { sign: true } );
@@ -232,9 +290,41 @@ function carSection( z, bodyHalfW, roofHalfW, yLow, yBelt, yRoof ) {
 
 }
 
+// Truck shells keep the same 16-vertex ring contract as carSection, but use
+// vertical sides and an almost entirely flat roof. Tiny lower/upper bevels catch
+// highlights without turning a cab or cargo box back into a rounded car body.
+function boxySection( z, bodyHalfW, roofHalfW, yLow, yBelt, yRoof ) {
+
+	const roofW = Math.min( bodyHalfW, roofHalfW );
+	const lowerBevel = Math.min( 0.08, Math.max( 0.025, ( yBelt - yLow ) * 0.16 ) );
+	const upperBevel = Math.min( 0.07, Math.max( 0.025, ( yRoof - yBelt ) * 0.08 ) );
+	const right = [
+		new Vector3( bodyHalfW * 0.90, yLow, z ),
+		new Vector3( bodyHalfW, yLow + lowerBevel, z ),
+		new Vector3( bodyHalfW, yBelt, z ),
+		new Vector3( bodyHalfW, yRoof - upperBevel, z ),
+		new Vector3( roofW, yRoof, z ),
+		new Vector3( roofW * 0.72, yRoof, z ),
+		new Vector3( roofW * 0.38, yRoof, z ),
+		new Vector3( roofW * 0.04, yRoof, z )
+	];
+
+	const section = right.slice();
+	for ( let i = right.length - 1; i >= 0; i -- ) {
+
+		const p = right[ i ];
+		section.push( new Vector3( - p.x, p.y, p.z ) );
+
+	}
+
+	return section.reverse();
+
+}
+
 function buildCarGeometry( spec ) {
 
-	const sections = spec.stations.map( s => carSection( ...s ) );
+	const sectionBuilder = spec.sectionShape === 'boxy' ? boxySection : carSection;
+	const sections = spec.stations.map( s => sectionBuilder( ...s ) );
 	const body = new LoftGeometry( sections, { closed: true, capStart: true, capEnd: true } );
 
 	// each wheel is one lathed profile: tread with rounded shoulders, a bulged
@@ -257,10 +347,13 @@ function buildCarGeometry( spec ) {
 	];
 
 	const wheels = [];
+	const wheelZList = Array.isArray( spec.wheelZs ) && spec.wheelZs.length
+		? spec.wheelZs
+		: [ - spec.wheelZ, spec.wheelZ ];
 	for ( const x of [ - spec.wheelX, spec.wheelX ] ) {
 
 		const side = Math.sign( x );
-		for ( const z of [ - spec.wheelZ, spec.wheelZ ] ) {
+		for ( const z of wheelZList ) {
 
 			wheels.push( new LatheGeometry( wheelProfile, 14 ).rotateZ( - side * Math.PI / 2 ).translate( x, r, z ) );
 
@@ -270,18 +363,22 @@ function buildCarGeometry( spec ) {
 
 	// slim chrome bumpers wrap each end, a matte grille fills the nose between the
 	// lamps, and each lamp pod is sunk into the fascia so only its face shows
-	const frontBumper = new BoxGeometry( 1.52, 0.16, 0.18 ).translate( 0, spec.bumperY, spec.nose - 0.06 );
-	const rearBumper = new BoxGeometry( 1.52, 0.16, 0.18 ).translate( 0, spec.bumperY, spec.tail + 0.06 );
-	const grille = new BoxGeometry( 0.64, 0.16, 0.08 ).translate( 0, spec.lampY - 0.02, spec.nose + 0.01 );
+	const bumperW = spec.bumperWidth ?? 1.52;
+	const grilleW = spec.grilleWidth ?? 0.64;
+	const lampW = spec.lampWidth ?? 0.34;
+	const lampSpread = Math.min( 0.72, bumperW * 0.32 );
+	const frontBumper = new BoxGeometry( bumperW, 0.16, 0.18 ).translate( 0, spec.bumperY, spec.nose - 0.06 );
+	const rearBumper = new BoxGeometry( bumperW, 0.16, 0.18 ).translate( 0, spec.bumperY, spec.tail + 0.06 );
+	const grille = new BoxGeometry( grilleW, 0.16, 0.08 ).translate( 0, spec.lampY - 0.02, spec.nose + 0.01 );
 
 	const headlights = mergeGeometries( [
-		new BoxGeometry( 0.34, 0.12, 0.08 ).translate( - 0.48, spec.lampY, spec.nose ),
-		new BoxGeometry( 0.34, 0.12, 0.08 ).translate( 0.48, spec.lampY, spec.nose )
+		new BoxGeometry( lampW, 0.12, 0.08 ).translate( - lampSpread, spec.lampY, spec.nose ),
+		new BoxGeometry( lampW, 0.12, 0.08 ).translate( lampSpread, spec.lampY, spec.nose )
 	] );
 
 	const taillights = mergeGeometries( [
-		new BoxGeometry( 0.36, 0.13, 0.08 ).translate( - 0.46, spec.tailLampY, spec.tail ),
-		new BoxGeometry( 0.36, 0.13, 0.08 ).translate( 0.46, spec.tailLampY, spec.tail )
+		new BoxGeometry( lampW + 0.02, 0.13, 0.08 ).translate( - lampSpread, spec.tailLampY, spec.tail ),
+		new BoxGeometry( lampW + 0.02, 0.13, 0.08 ).translate( lampSpread, spec.tailLampY, spec.tail )
 	] );
 
 	// wing mirrors at the base of the A-pillars, angled slightly into the wind
@@ -310,8 +407,16 @@ function buildCarGeometry( spec ) {
 
 	}
 
+	const bodyParts = [ body, mirrors ];
+	if ( spec.tractorDeck ) {
+
+		const deck = spec.tractorDeck;
+		bodyParts.push( new BoxGeometry( ...deck.size ).translate( ...deck.position ) );
+
+	}
+
 	const parts = [
-		part( mergeGeometries( [ body, mirrors ] ), BODY ),
+		part( mergeGeometries( bodyParts ), BODY ),
 		part( mergeGeometries( darkParts ), WHEEL ),
 		part( mergeGeometries( [ frontBumper, rearBumper ] ), TRIM ),
 		part( headlights, HEADLIGHT ),
@@ -484,4 +589,12 @@ function createCarMaterialForType( paint, type = 'sedan' ) {
 
 }
 
-export { CarGenerator, createCarMaterialForType };
+/** Build (or return cached-ready) geometry for a body type (sedan, suv, taxi, semi). */
+function buildCarGeometryForType( type = 'sedan' ) {
+
+	const spec = BODY_SPECS[ type ] ?? BODY_SPECS.sedan;
+	return buildCarGeometry( spec );
+
+}
+
+export { CarGenerator, createCarMaterialForType, buildCarGeometryForType, BODY_SPECS };

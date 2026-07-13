@@ -585,7 +585,12 @@ export function sanitizeGarageBuild(value = {}) {
 }
 
 function createTwoSeatLayout() {
-  return DEFAULT_VEHICLE_CONFIG.seats.slice(0, 2).map((seat) => ({
+  // Cabin pair + roof stunt seat (M2/M3 highway) so garage "hide back seats"
+  // builds still support roof-surf and car leap.
+  const cabin = DEFAULT_VEHICLE_CONFIG.seats.slice(0, 2);
+  const roof = DEFAULT_VEHICLE_CONFIG.seats.find((s) => s.name === 'roof');
+  const seats = roof ? [...cabin, roof] : cabin;
+  return seats.map((seat) => ({
     ...seat,
     offset: [...seat.offset],
     ...(seat.handGrip

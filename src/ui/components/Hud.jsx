@@ -100,7 +100,7 @@ export function Hud(props) {
             <div class="hud__range-banner hud__range-banner--countdown">
               <span class="hud__range-title">Breach course</span>
               <span class="hud__range-big">{Math.ceil(range().countdownLeft || 0) || 'GO'}</span>
-              <span class="hud__range-hint">Red = hostile · Blue = friendly · Scroll to switch guns</span>
+              <span class="hud__range-hint">Red = hostile · Blue = friendly · 1–0 to switch guns</span>
             </div>
           </Show>
           <Show when={range().phase === 'running'}>
@@ -165,6 +165,67 @@ export function Hud(props) {
               </span>
               <span class="hud__range-restart">Space or E to run again</span>
             </div>
+          </Show>
+        </div>
+      </Show>
+
+      <Show when={snapshot().vehicles?.hijackPrompt}>
+        <div class="hud__roof-surf" role="status" aria-label="Hijack available">
+          <span class="hud__roof-surf-title">Hijack</span>
+          <span class="hud__roof-surf-hint">
+            <kbd>F</kbd>
+            {' '}take the driver seat
+          </span>
+        </div>
+      </Show>
+
+      <Show when={!snapshot().vehicles?.hijackPrompt && (snapshot().vehicles?.roofSurfing || snapshot().carLeap?.aiming)}>
+        <div class="hud__roof-surf" role="status" aria-label="Roof surf mode">
+          <span class="hud__roof-surf-title">
+            {snapshot().carLeap?.aiming
+              ? (snapshot().carLeap?.hasTarget ? 'Leap ready' : 'Aiming leap…')
+              : 'Roof-surf'}
+          </span>
+          <span class="hud__roof-surf-hint">
+            {snapshot().carLeap?.aiming ? (
+              <>
+                <kbd>Space</kbd>
+                {' '}release to leap
+                {snapshot().carLeap?.hasTarget ? ' · target locked' : ' · no target'}
+              </>
+            ) : (
+              <>
+                <kbd>H</kbd>
+                {' '}seat ·
+                {' '}
+                <kbd>Space</kbd>
+                {' '}hold leap · hard turns can throw you
+              </>
+            )}
+          </span>
+          <Show when={(snapshot().vehicles?.roofStability ?? 0) > 0.25 && !snapshot().carLeap?.aiming}>
+            <span class="hud__roof-surf-meter">
+              <span
+                class="hud__roof-surf-meter-fill"
+                classList={{
+                  'hud__roof-surf-meter-fill--warn': (snapshot().vehicles?.roofStability ?? 0) > 0.75,
+                }}
+                style={{
+                  width: `${Math.min(100, Math.round((snapshot().vehicles?.roofStability ?? 0) * 100))}%`,
+                }}
+              />
+            </span>
+          </Show>
+          <Show when={snapshot().carLeap}>
+            <span class="hud__roof-surf-meter" title="Bullet time">
+              <span
+                class="hud__roof-surf-meter-fill"
+                style={{
+                  width: `${Math.min(100, Math.round((snapshot().carLeap?.bulletTime ?? 0) * 100))}%`,
+                  background: '#7ec8ff',
+                }}
+              />
+            </span>
           </Show>
         </div>
       </Show>

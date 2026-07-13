@@ -4,6 +4,8 @@ import { createStreamingTerrainLevel } from '../world/createStreamingTerrainLeve
 import { createComposedWorldLevel } from '../world/createComposedWorldLevel.js';
 import { createWildsLevel } from '../world/createWildsLevel.js';
 import { createShootingRangeLevel } from '../world/createShootingRangeLevel.js';
+import { createHordeModeLevel } from '../world/createHordeModeLevel.js';
+import { createMatrixHighwayLevel } from '../world/createMatrixHighwayLevel.js';
 import { getActiveWorldMap, getRallyWorldMap } from '../../world/worldMap/worldMapScenes.js';
 
 const ledgeNormal = new THREE.Vector3();
@@ -95,11 +97,15 @@ export class LevelSystem {
 
   async loadBaseLevel(scene, qualityPreset = {}, mode = 'city', renderer = null) {
     this.status = 'loading';
-    this.mode = ['world', 'wilds', 'rally', 'range'].includes(mode) ? mode : 'city';
+    this.mode = ['world', 'wilds', 'rally', 'range', 'horde', 'highway'].includes(mode) ? mode : 'city';
     if (this.mode === 'wilds') {
       this.level = createWildsLevel(qualityPreset);
     } else if (this.mode === 'range') {
       this.level = createShootingRangeLevel(qualityPreset);
+    } else if (this.mode === 'horde') {
+      this.level = createHordeModeLevel(qualityPreset);
+    } else if (this.mode === 'highway') {
+      this.level = createMatrixHighwayLevel(qualityPreset);
     } else if (this.mode === 'world' || this.mode === 'rally') {
       const worldMap = this.mode === 'rally' ? await getRallyWorldMap() : await getActiveWorldMap();
       const hasCity = (worldMap?.zones ?? []).some((zone) => zone.type === 'city');
@@ -132,6 +138,7 @@ export class LevelSystem {
       ropes: this.level?.ropes?.length ?? 0,
       bvhMeshes: this.level?.geometryIndex?.entries.length ?? 0,
       city: this.level?.snapshot?.() ?? null,
+      hordeGates: this.level?.hordeSpawnPoints?.length ?? 0,
       collisionDebug,
       traversalDebug,
     };

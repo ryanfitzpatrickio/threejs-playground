@@ -427,6 +427,16 @@ export class AnimationStateSystem {
       return movement.vaultState ?? 'runVault';
     }
 
+    // M3 car-to-car leap — reuse vault takeoff / freeFall until dedicated clips land.
+    if (movement.carLeaping) {
+      this.airborneElapsed = 0;
+      this.landingTimer = 0;
+      this.landingArmed = false;
+      this.jumpBigTimer = 0;
+      this.landRollTimer = 0;
+      return movement.carLeapState === 'land' ? 'land' : 'runVault';
+    }
+
     if (movement.sliding) {
       this.airborneElapsed = 0;
       this.landingTimer = 0;

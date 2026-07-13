@@ -4,7 +4,9 @@ const WALL_CLIMB_SPEED = 1.35;
 const WALL_BRACED_SPEED = 0.72;
 const WALL_ROOT_MOTION_MIN_DELTA = 0.00004;
 const WALL_HAND_REACH_FALLBACK = 0.76;
-const WALL_TOP_LEDGE_REACH_MARGIN = 0.22;
+// How early a climbing character can latch the roof ledge (hand Y vs ledge Y).
+// Larger = snappier handoff before the animation fully peaks at the rim.
+const WALL_TOP_LEDGE_REACH_MARGIN = 0.55;
 const WALL_HAND_TARGET_SPACING = 0.26;
 const WALL_HAND_TARGET_Y_OFFSET = -0.01;
 const WALL_HAND_TARGET_NORMAL_OFFSET = 0.18;
@@ -130,7 +132,10 @@ export class WallClimbSystem {
     const forcedVertical = !settling && (climb.forceClimbUpTimer ?? 0) > 0 ? 1 : 0;
     const vertical = forcedVertical || (!settling && Math.abs(input.moveZ) > WALL_INPUT_THRESHOLD ? -input.moveZ : 0);
     const moving = horizontal !== 0 || vertical !== 0;
-    const speed = input.brace ? WALL_BRACED_SPEED : WALL_CLIMB_SPEED;
+    const speedScale = Number.isFinite(climb.surface?.climbSpeedScale)
+      ? Math.max(0.25, climb.surface.climbSpeedScale)
+      : 1;
+    const speed = (input.brace ? WALL_BRACED_SPEED : WALL_CLIMB_SPEED) * speedScale;
 
     climb.animationState = resolveWallClimbAnimationState({ input, horizontal, vertical, moving });
     this.advanceSurfaceCoordinates({ character, climb, horizontal, vertical, speed, delta });
@@ -214,20 +219,26 @@ export class WallClimbSystem {
       delta,
     });
 
+    const speedScale = Number.isFinite(climb.surface?.climbSpeedScale)
+      ? Math.max(0.25, climb.surface.climbSpeedScale)
+      : 1;
+
     if (rootMotion) {
+      const du = rootMotion.u * speedScale;
+      const dv = rootMotion.v * speedScale;
       climb.u = THREE.MathUtils.clamp(
-        climb.u + rootMotion.u,
+        climb.u + du,
         climb.surface.minU,
         climb.surface.maxU,
       );
       climb.v = THREE.MathUtils.clamp(
-        climb.v + rootMotion.v,
+        climb.v + dv,
         climb.surface.minV,
         climb.surface.maxV,
       );
       character.lastRootMotion = rootMotionSnapshot({
         rootMotion: rootMotion.source,
-        applied: rootMotionMovement.set(rootMotion.u, rootMotion.v, 0),
+        applied: rootMotionMovement.set(du, dv, 0),
         mode: 'wall-surface',
       });
       return;
@@ -284,10 +295,17 @@ export class WallClimbSystem {
       return false;
     }
 
+    // Still holding climb-up: skip the hang pause and go straight into a fast
+    // mantle (train ladders / first-person feel much less sticky).
+    const autoClimb = vertical > 0;
     ledgeHangSystem.snapToLedgeHang({
       character,
       ledge,
       mode: resolveHangModeForLedge(ledge),
+      autoClimb,
+      level,
+      climbDuration: autoClimb ? 0.38 : null,
+      climbRecoverySeconds: autoClimb ? 0.06 : null,
     });
     return true;
   }

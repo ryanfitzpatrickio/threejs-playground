@@ -10,9 +10,12 @@ const CONTROL_SECTIONS = [
     items: [
       ['W / S', 'Accelerate / reverse'],
       ['A / D', 'Steer'],
-      ['Space', 'Brake'],
+      ['Space', 'Brake in seat · hold leap on roof'],
       ['Shift', 'Handbrake / kick the tail out'],
       ['E', 'Enter / exit vehicle'],
+      ['H', 'Roof-surf (stand on roof / drop to seat)'],
+      ['Space (on roof)', 'Hold aim leap · release to jump'],
+      ['F (on car roof)', 'Hijack — take the driver seat'],
       ['R (stuck)', 'Flip / recover onto the road'],
       ['Q (hold)', 'Rear view'],
       ['Mouse', 'Look around (chase camera)'],
@@ -34,9 +37,8 @@ const CONTROL_SECTIONS = [
   },
   {
     title: 'Combat & Weapons',
-    intro: 'Scroll cycles the weapon loadout (great sword first, then guns). Number keys 1–0 jump straight to each catalog gun and draw it. Z holsters or draws whatever is equipped. Sword starts out. Unarmed specials need a nearby target when holstered.',
+    intro: 'Number keys 1–0 jump straight to each catalog gun and draw it. Z holsters or draws whatever is equipped. Sword starts out. Unarmed specials need a nearby target when holstered.',
     items: [
-      ['Scroll wheel', 'Cycle weapons (sword → guns)'],
       ['1–0', 'Equip & draw catalog guns (10 slots)'],
       ['Z', 'Holster / draw equipped weapon'],
       ['X', 'Inspect gun (hold, while firearm is out)'],

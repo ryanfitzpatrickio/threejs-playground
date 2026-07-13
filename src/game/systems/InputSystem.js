@@ -14,7 +14,7 @@ const KEY_BINDINGS = {
   Space: 'jump',
   // C: crouch (weapon stance / low profile). Slide moved to Ctrl.
   KeyC: 'crouch',
-  // F activates the equipped ability (swing / wingsuit — equip like a gun via scroll).
+  // F activates the equipped ability (swing / wingsuit).
   KeyF: 'ability',
   KeyT: 'telekinesis',
   KeyG: 'grabSlam',
@@ -24,6 +24,10 @@ const KEY_BINDINGS = {
   KeyZ: 'drawSheathe',
   // E: enter/exit vehicle, horse, doors, and other use/interact actions.
   KeyE: 'mount',
+  // H: roof-surf seat swap while driving (cabin ↔ roof stunt position).
+  KeyH: 'roofSurf',
+  // Optional alias for car leap (primary is Space while roof-surfing).
+  KeyL: 'carLeap',
   // 1–0: equip catalog guns (index 0–9). Elevators re-read 1–9 when at a cab.
   Digit1: 'gunSlot1',
   Digit2: 'gunSlot2',
@@ -119,6 +123,9 @@ export class InputSystem {
     const slidePressed = this.pressedActions.has('slide');
     const collisionDebugPressed = this.pressedActions.has('collisionDebug');
     const mountPressed = this.pressedActions.has('mount');
+    const roofSurfPressed = this.pressedActions.has('roofSurf');
+    const carLeapPressed = this.pressedActions.has('carLeap');
+    const carLeapReleased = this.releasedActions.has('carLeap');
     const abilityPressed = this.pressedActions.has('ability');
     const abilityDoubleTapped = this.abilityDoubleTapPending;
     const drawSheathePressed = this.pressedActions.has('drawSheathe');
@@ -163,6 +170,8 @@ export class InputSystem {
     this.pressedActions.delete('slide');
     this.pressedActions.delete('collisionDebug');
     this.pressedActions.delete('mount');
+    this.pressedActions.delete('roofSurf');
+    this.pressedActions.delete('carLeap');
     this.pressedActions.delete('ability');
     this.pressedActions.delete('drawSheathe');
     this.pressedActions.delete('grabSlam');
@@ -178,6 +187,7 @@ export class InputSystem {
     this.dodgeDirectionPending = null;
     this.jumpDoubleTapPending = false;
     this.releasedActions.delete('jump');
+    this.releasedActions.delete('carLeap');
     this.releasedActions.delete('cutMode');
     this.releasedActions.delete('telekinesis');
     const lookX = this.lookDelta.x;
@@ -215,6 +225,10 @@ export class InputSystem {
       slide: this.actions.has('slide'),
       collisionDebugPressed,
       mountPressed,
+      roofSurfPressed,
+      carLeapPressed,
+      carLeapHeld: this.actions.has('carLeap'),
+      carLeapReleased,
       abilityPressed,
       abilityHeld: this.actions.has('ability'),
       abilityDoubleTapped,
@@ -303,7 +317,7 @@ export class InputSystem {
     }
 
     if (
-      (action === 'jump' || action === 'left' || action === 'right' || action === 'brace' || action === 'slide' || action === 'collisionDebug' || action === 'mount' || action === 'ability' || action === 'drawSheathe' || action === 'grabSlam' || action === 'reload' || action === 'shoulderThrow' || action === 'cutMode' || action === 'photoMode' || action === 'cutCommit' || action === 'cutCancel' || action === 'telekinesis'
+      (action === 'jump' || action === 'left' || action === 'right' || action === 'brace' || action === 'slide' || action === 'collisionDebug' || action === 'mount' || action === 'roofSurf' || action === 'carLeap' || action === 'ability' || action === 'drawSheathe' || action === 'grabSlam' || action === 'reload' || action === 'shoulderThrow' || action === 'cutMode' || action === 'photoMode' || action === 'cutCommit' || action === 'cutCancel' || action === 'telekinesis'
         || action === 'gunSlot0' || action === 'gunSlot1' || action === 'gunSlot2' || action === 'gunSlot3'
         || action === 'gunSlot4' || action === 'gunSlot5' || action === 'gunSlot6' || action === 'gunSlot7'
         || action === 'gunSlot8' || action === 'gunSlot9') &&
@@ -353,7 +367,14 @@ export class InputSystem {
       return;
     }
 
-    if ((action === 'jump' || action === 'cutMode' || action === 'telekinesis') && this.actions.has(action)) {
+    // Edge-triggered releases used by hold-to-commit actions (jump, cut, leap…).
+    if (
+      (action === 'jump'
+        || action === 'cutMode'
+        || action === 'telekinesis'
+        || action === 'carLeap')
+      && this.actions.has(action)
+    ) {
       this.releasedActions.add(action);
     }
 

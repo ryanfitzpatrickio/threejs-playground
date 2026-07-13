@@ -538,7 +538,15 @@ export class LedgeHangSystem {
     });
   }
 
-  snapToLedgeHang({ character, ledge, mode = null }) {
+  snapToLedgeHang({
+    character,
+    ledge,
+    mode = null,
+    autoClimb = false,
+    level = null,
+    climbDuration = null,
+    climbRecoverySeconds = null,
+  }) {
     const resolvedMode = mode ?? preferredHangModeForLedge(ledge);
 
     character.hang = {
@@ -555,8 +563,9 @@ export class LedgeHangSystem {
         left: new THREE.Vector3(),
         right: new THREE.Vector3(),
       },
-      inputLockTimer: HANG_ENTRY_INPUT_LOCK_SECONDS,
-      climbReleaseRequired: true,
+      // Auto-mantle from a wall ladder: no input lock / re-press required.
+      inputLockTimer: autoClimb ? 0 : HANG_ENTRY_INPUT_LOCK_SECONDS,
+      climbReleaseRequired: !autoClimb,
       idleCycle: createHangIdleCycle(resolvedMode),
     };
 
@@ -573,10 +582,18 @@ export class LedgeHangSystem {
     this.actionSnapshot = null;
     this.lastAffordance = {
       state: 'accepted',
-      reason: 'wall-climb-hands',
+      reason: autoClimb ? 'wall-climb-auto-mantle' : 'wall-climb-hands',
       ledge: ledge.name,
       mode: resolvedMode,
     };
+
+    if (autoClimb) {
+      this.startClimb(character, level, {
+        duration: climbDuration ?? 0.38,
+        recoverySeconds: climbRecoverySeconds ?? 0.06,
+        exitProgress: 0.92,
+      });
+    }
   }
 
   startAirborneAttach({
@@ -862,7 +879,11 @@ export class LedgeHangSystem {
     this.actionSnapshot = this.traversalActionSystem.snapshot(character);
   }
 
-  startClimb(character, level) {
+  startClimb(character, level, {
+    duration = null,
+    recoverySeconds = null,
+    exitProgress = null,
+  } = {}) {
     const hang = character.hang;
     const clearance = probeStandClearance({ level, ledge: hang?.ledge, along: hang?.along });
 
@@ -885,10 +906,15 @@ export class LedgeHangSystem {
       type: 'ledgeClimb',
       animationState,
       targetPosition: this.calculateClimbTopPosition(hang),
+      duration: duration ?? undefined,
+      exitProgress: exitProgress ?? undefined,
       context: {
         ledge: hang.ledge,
       },
     });
+    if (Number.isFinite(recoverySeconds)) {
+      action.recoverySeconds = recoverySeconds;
+    }
 
     hang.transition = 'climb';
     hang.timer = action.duration;

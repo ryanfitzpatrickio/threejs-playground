@@ -187,12 +187,21 @@ export const GAME_CONFIG = {
         lookHeight: 1.0,
         pitch: 0.14,
       },
+      // M2 roof-surf: higher chase looking further down the road to read platforms.
+      roof: {
+        followDistance: 9.5,
+        followHeight: 3.4,
+        lookAhead: 11,
+        lookHeight: 1.15,
+        pitch: 0.08,
+      },
       firstPerson: {
         // Chassis-local offset from the driver seat anchor (x, y, z). -Z is forward.
         eyeOffset: [0, 0.68, -0.14],
         fov: 60,
       },
     },
+    // 'roof' is entered via H seat-swap, not the eye-cycle order.
     vehicleCameraModeOrder: ['close', 'medium', 'far', 'firstPerson'],
   },
   character: {

@@ -65,10 +65,13 @@ export async function mountShaderDebugPane(opts = {}) {
     root,
     pane,
     folders: new Map(),
+    /** @type {Map<string, { title: string, haystack: string }>} */
+    folderIndex: new Map(),
     bindings: new Map(),
     unsub: () => {},
     monitorTimer: null,
     visible: opts.visible !== false,
+    filterQuery: '',
   };
 
   setVisible(state.visible);
@@ -132,17 +135,17 @@ function isolatePointerEvents(el) {
   // Bubble-phase only — do not capture. Stopping on the root after children
   // handle the event keeps the game canvas from zooming/looking, without
   // interfering with Tweakpane's own pointer handling.
+  //
+  // Wheel: stopPropagation only — never preventDefault. The pane uses
+  // overflow:auto; preventDefault blocked its own scrollbar/trackpad scroll
+  // while the Horde folder (and other long folders) grew past max-height.
   const stop = (e) => {
     e.stopPropagation();
-  };
-  const stopWheel = (e) => {
-    e.stopPropagation();
-    e.preventDefault();
   };
   el.addEventListener('pointerdown', stop);
   el.addEventListener('pointermove', stop);
   el.addEventListener('pointerup', stop);
-  el.addEventListener('wheel', stopWheel, { passive: false });
+  el.addEventListener('wheel', stop, { passive: true });
   el.addEventListener('keydown', stop);
 }
 
@@ -188,6 +191,7 @@ function rebuildPane() {
   if (!state) return;
 
   const expandedSnapshot = snapshotFolderExpanded();
+  const preservedQuery = state.filterQuery ?? '';
 
   // Clear previous blades (keep pane shell)
   try {
@@ -203,7 +207,11 @@ function rebuildPane() {
     /* ignore */
   }
   state.folders.clear();
+  state.folderIndex.clear();
   state.bindings.clear();
+
+  // Search always sits at the top (re-added after every rebuild).
+  addFolderSearchBlade(preservedQuery);
 
   const params = listShaderDebugParams();
   if (params.length === 0) {
@@ -222,6 +230,7 @@ function rebuildPane() {
   const folderPriority = {
     Session: 0,
     Runtime: 1,
+    Horde: 1.5,
     Look: 2,
     'Weather Control': 3,
     'Cloud Mode': 4,
@@ -241,12 +250,77 @@ function rebuildPane() {
   for (const folderName of order) {
     const defaultExpanded = folderName === 'Session'
       || folderName === 'Runtime'
+      || folderName === 'Horde'
       || folderName === 'Weather Control'
       || folderName === 'Clouds Shape';
     const folderApi = ensureFolder(folderName, defaultExpanded, expandedSnapshot);
     const list = byFolder.get(folderName);
     for (const param of list) {
       bindParam(folderApi, param);
+    }
+
+    // Index folder title only (not control labels/help — searching "gun"
+    // should not surface Horde via "gun-style sever" help text).
+    const meta = listShaderDebugFolders().find((f) => f.name === folderName);
+    const title = meta?.title ?? folderName;
+    state.folderIndex.set(folderName, {
+      title,
+      haystack: `${folderName} ${title}`.toLowerCase(),
+    });
+  }
+
+  applyFolderFilter();
+}
+
+/**
+ * Search box at the top of the pane. Filters folders by folder title/name only.
+ * @param {string} [initial]
+ */
+function addFolderSearchBlade(initial = '') {
+  if (!state) return;
+  state.filterQuery = String(initial ?? '');
+  const holder = { query: state.filterQuery };
+  const blade = state.pane.addBinding(holder, 'query', {
+    label: 'Search folders',
+  });
+  blade.on('change', (ev) => {
+    if (!state) return;
+    // Prefer last event so we don't fight intermediate commits.
+    if (ev?.last === false) {
+      // Still update live while typing when Tweakpane emits continuous changes.
+    }
+    state.filterQuery = String(ev?.value ?? holder.query ?? '');
+    applyFolderFilter();
+  });
+  // Keep a handle so softRefresh never treats this as a registry param.
+  state.searchHolder = holder;
+  state.searchBlade = blade;
+}
+
+/**
+ * Show/hide folders by search string. Empty query shows everything.
+ * Matching folders auto-expand so hits are visible.
+ */
+function applyFolderFilter() {
+  if (!state) return;
+  const q = String(state.filterQuery ?? '').trim().toLowerCase();
+  for (const [name, folder] of state.folders) {
+    const index = state.folderIndex.get(name);
+    const haystack = index?.haystack ?? name.toLowerCase();
+    const match = !q || haystack.includes(q);
+    try {
+      folder.hidden = !match;
+      if (match && q) {
+        folder.expanded = true;
+      }
+    } catch {
+      // Fallback if FolderApi.hidden is unavailable.
+      try {
+        const el = folder.controller_?.view?.element ?? folder.element;
+        if (el?.style) el.style.display = match ? '' : 'none';
+      } catch {
+        /* ignore */
+      }
     }
   }
 }

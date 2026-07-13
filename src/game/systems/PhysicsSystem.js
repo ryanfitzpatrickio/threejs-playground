@@ -63,6 +63,7 @@ export class PhysicsSystem {
     // Optional per-step callbacks wired by GameRuntime:
     //   beforeTick()  — once per fixed step, before integration (pose capture)
     //   integrate(dt, tick) — before each world.step (vehicle forces/impulses)
+    //   afterTick()   — once per fixed step, after world.step (platform carry)
     this.stepHooks = null;
     this.status = 'idle';
   }
@@ -153,6 +154,7 @@ export class PhysicsSystem {
       this.world.timestep = this.stepDt;
       hooks?.integrate?.(this.stepDt, this.tickCount);
       this.world.step();
+      hooks?.afterTick?.();
       this.tickCount += 1;
       this.simTime += this.stepDt;
       this.stepsLastFrame += 1;
@@ -673,6 +675,27 @@ export class PhysicsSystem {
     return this.staticBodiesByOwner.has(ownerKey);
   }
 
+  /**
+   * Move every fixed body under an owner key (highway sliding ribbon).
+   * Only components present on `translation` are written; others keep current values.
+   * @param {string} ownerKey
+   * @param {{ x?: number, y?: number, z?: number }} translation
+   */
+  setStaticOwnerTranslation(ownerKey, translation = {}) {
+    if (!this.world || ownerKey == null) return false;
+    const bodies = this.staticBodiesByOwner.get(ownerKey);
+    if (!bodies || bodies.size === 0) return false;
+    for (const body of bodies) {
+      const t = body.translation();
+      body.setTranslation({
+        x: Number.isFinite(translation.x) ? translation.x : t.x,
+        y: Number.isFinite(translation.y) ? translation.y : t.y,
+        z: Number.isFinite(translation.z) ? translation.z : t.z,
+      }, true);
+    }
+    return true;
+  }
+
   registerStaticBody(body, ownerKey) {
     this.staticBodies.push(body);
 
@@ -961,34 +984,51 @@ export class PhysicsSystem {
     this.characterController.setApplyImpulsesToDynamicBodies(false);
   }
 
+  // Register one enemy's kinematic capsule collider. Idempotent: a no-op (returns
+  // true) if the enemy already has a body, so it is safe to call for enemies
+  // created post-initialization (horde spawns) as well as from createEnemyColliders.
+  // syncEnemyColliders' `enemyBodies.length === 0` early-out is safe because this
+  // populates enemyBodies before the next sync call.
+  addEnemyCollider(enemy) {
+    if (!this.RAPIER || !this.world || !enemy) {
+      return false;
+    }
+    if (enemy.physicsBody) {
+      return true;
+    }
+
+    const radius = enemy.collisionRadius ?? 0.5;
+    const height = enemy.collisionHeight ?? 1.8;
+    const halfHeight = Math.max(0.05, (height - radius * 2) * 0.5);
+    const body = this.world.createRigidBody(
+      this.RAPIER.RigidBodyDesc.kinematicPositionBased()
+        .setTranslation(
+          enemy.model.position.x,
+          enemy.model.position.y + radius + halfHeight,
+          enemy.model.position.z,
+        ),
+    );
+    const collider = this.world.createCollider(
+      this.RAPIER.ColliderDesc.capsule(halfHeight, radius)
+        .setFriction(0.85)
+        .setRestitution(0),
+      body,
+    );
+
+    collider.setContactSkin?.(0.015);
+    enemy.physicsBody = body;
+    enemy.physicsCollider = collider;
+    this.enemyBodies.push(body);
+    return true;
+  }
+
   createEnemyColliders(enemies = []) {
     if (!this.RAPIER || !this.world) {
       return;
     }
 
     for (const enemy of enemies) {
-      const radius = enemy.collisionRadius ?? 0.5;
-      const height = enemy.collisionHeight ?? 1.8;
-      const halfHeight = Math.max(0.05, (height - radius * 2) * 0.5);
-      const body = this.world.createRigidBody(
-        this.RAPIER.RigidBodyDesc.kinematicPositionBased()
-          .setTranslation(
-            enemy.model.position.x,
-            enemy.model.position.y + radius + halfHeight,
-            enemy.model.position.z,
-          ),
-      );
-      const collider = this.world.createCollider(
-        this.RAPIER.ColliderDesc.capsule(halfHeight, radius)
-          .setFriction(0.85)
-          .setRestitution(0),
-        body,
-      );
-
-      collider.setContactSkin?.(0.015);
-      enemy.physicsBody = body;
-      enemy.physicsCollider = collider;
-      this.enemyBodies.push(body);
+      this.addEnemyCollider(enemy);
     }
   }
 

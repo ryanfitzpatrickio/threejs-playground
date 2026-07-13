@@ -539,6 +539,221 @@ export function applyHeadSeveranceToOutcome(outcome, limbLoss, severedProps = []
   return applySeveranceFromProps(outcome, limbLoss, severedProps);
 }
 
+/** Gun hits that can sever a limb (never core / waist bisect). */
+export const GUN_SEVER_REGIONS = Object.freeze(['head', 'armL', 'armR', 'legL', 'legR']);
+
+/**
+ * Classify a gun impact into a severable Mixamo region (or 'body').
+ * Uses bone proximity + height bands — no torso split.
+ *
+ * @param {object} enemy
+ * @param {{x:number,y:number,z:number}} hitPoint
+ * @param {'head'|'body'|'limb'|string|null} [coarseRegion] hitscan height band
+ * @returns {'head'|'armL'|'armR'|'legL'|'legR'|'body'}
+ */
+export function classifyGunHitLimbRegion(enemy, hitPoint, coarseRegion = null) {
+  if (!enemy?.model || enemy.limbLossProfile !== 'mixamo-humanoid' || !hitPoint) {
+    return coarseRegion === 'head' ? 'head' : 'body';
+  }
+
+  enemy.model.updateMatrixWorld(true);
+  const bones = findMixamoBones(enemy.model);
+  const height = Math.max(0.5, enemy.collisionHeight ?? 1.8);
+  const feetY = enemy.model.position.y;
+  const t = (Number(hitPoint.y) - feetY) / height;
+
+  if (t >= 0.78 || coarseRegion === 'head') {
+    return 'head';
+  }
+
+  const candidates = [
+    { id: 'armL', names: ['lefthand', 'leftforearm', 'leftarm', 'leftshoulder'] },
+    { id: 'armR', names: ['righthand', 'rightforearm', 'rightarm', 'rightshoulder'] },
+    { id: 'legL', names: ['lefttoe_end', 'lefttoebase', 'leftfoot', 'leftleg', 'leftupleg'] },
+    { id: 'legR', names: ['righttoe_end', 'righttoebase', 'rightfoot', 'rightleg', 'rightupleg'] },
+  ];
+
+  let bestId = null;
+  let bestD = Infinity;
+  for (const c of candidates) {
+    let minD = Infinity;
+    for (const name of c.names) {
+      const bone = bones.get(name);
+      if (!bone) continue;
+      bone.getWorldPosition(scratchPoint);
+      const dx = scratchPoint.x - hitPoint.x;
+      const dy = scratchPoint.y - hitPoint.y;
+      const dz = scratchPoint.z - hitPoint.z;
+      const d = dx * dx + dy * dy + dz * dz;
+      if (d < minD) minD = d;
+    }
+    if (minD < bestD) {
+      bestD = minD;
+      bestId = c.id;
+    }
+  }
+
+  if (!bestId || !Number.isFinite(bestD)) {
+    return 'body';
+  }
+
+  // Height gate: lower band prefers legs, mid band prefers arms.
+  if (t < 0.28) {
+    if (bestId === 'legL' || bestId === 'legR') return bestId;
+    // Low hit but closest bone is an arm — still body (grazed hip area).
+    return bestId.startsWith('leg') ? bestId : 'body';
+  }
+
+  if (t < 0.78) {
+    if (bestId === 'armL' || bestId === 'armR') {
+      // Require the arm to be closer than the torso, so chest hits stay body.
+      const spine = bones.get('spine1') ?? bones.get('spine') ?? bones.get('hips');
+      if (spine) {
+        spine.getWorldPosition(scratchPoint);
+        const dx = scratchPoint.x - hitPoint.x;
+        const dy = scratchPoint.y - hitPoint.y;
+        const dz = scratchPoint.z - hitPoint.z;
+        const spineD = dx * dx + dy * dy + dz * dz;
+        if (bestD <= spineD * 1.05) return bestId;
+        return 'body';
+      }
+      return bestId;
+    }
+  }
+
+  return 'body';
+}
+
+/**
+ * Author a single clean cut plane that severs only `region`.
+ * Never produces a vertical torso bisect or waist split (guns cannot do those).
+ *
+ * @param {object} enemy
+ * @param {'head'|'armL'|'armR'|'legL'|'legR'} region
+ * @returns {THREE.Plane|null}
+ */
+export function buildLimbSeverPlane(enemy, region) {
+  if (!enemy?.model || !GUN_SEVER_REGIONS.includes(region)) {
+    return null;
+  }
+
+  enemy.model.updateMatrixWorld(true);
+  const bones = findMixamoBones(enemy.model);
+  const point = new THREE.Vector3();
+  const normal = new THREE.Vector3();
+  const distal = new THREE.Vector3();
+  const proximal = new THREE.Vector3();
+
+  if (region === 'head') {
+    const neck = bones.get('neck') ?? bones.get('head');
+    const head = bones.get('head') ?? bones.get('headtop_end') ?? neck;
+    if (!neck || !head) return null;
+    neck.getWorldPosition(proximal);
+    head.getWorldPosition(distal);
+    point.copy(proximal).lerp(distal, 0.35);
+    // Prefer +Y so the head is clearly on the discard side of a neck slice.
+    normal.set(0, 1, 0);
+    if (distal.y < proximal.y) normal.y = -1;
+    return new THREE.Plane().setFromNormalAndCoplanarPoint(normal.normalize(), point);
+  }
+
+  if (region === 'armL' || region === 'armR') {
+    const isL = region === 'armL';
+    const shoulder = bones.get(isL ? 'leftshoulder' : 'rightshoulder')
+      ?? bones.get(isL ? 'leftarm' : 'rightarm');
+    const hand = bones.get(isL ? 'lefthand' : 'righthand')
+      ?? bones.get(isL ? 'leftforearm' : 'rightforearm');
+    const spine = bones.get('spine1') ?? bones.get('spine') ?? bones.get('hips');
+    if (!shoulder || !hand) return null;
+    shoulder.getWorldPosition(proximal);
+    hand.getWorldPosition(distal);
+    // Plane just outboard of the shoulder, normal toward the hand.
+    point.copy(proximal).lerp(distal, 0.12);
+    normal.copy(distal).sub(proximal);
+    // Flatten a bit so we don't drag the plane into the torso.
+    if (spine) {
+      spine.getWorldPosition(scratchPoint);
+      const out = new THREE.Vector3().copy(proximal).sub(scratchPoint);
+      out.y *= 0.25;
+      if (out.lengthSq() > 1e-6) {
+        normal.addScaledVector(out.normalize(), normal.length() * 0.55);
+      }
+    }
+    if (normal.lengthSq() < 1e-8) {
+      normal.set(isL ? -1 : 1, 0, 0);
+    }
+    return new THREE.Plane().setFromNormalAndCoplanarPoint(normal.normalize(), point);
+  }
+
+  // Legs: diagonal mid-shin plane (outward + down). Tuned so only one leg is
+  // discard-side: pure lateral also takes the same-side arm; pure down is a
+  // waist cut that severs both legs.
+  {
+    const isL = region === 'legL';
+    const upLeg = bones.get(isL ? 'leftupleg' : 'rightupleg');
+    const foot = bones.get(isL ? 'leftfoot' : 'rightfoot')
+      ?? bones.get(isL ? 'leftleg' : 'rightleg');
+    const hips = bones.get('hips');
+    if (!upLeg || !foot) return null;
+
+    upLeg.getWorldPosition(proximal);
+    foot.getWorldPosition(distal);
+    // Sit the plane lower on the limb (past the knee) so arms stay clear.
+    point.copy(proximal).lerp(distal, 0.58);
+
+    if (hips) {
+      hips.getWorldPosition(scratchPoint);
+      // Horizontal outward from hips through this hip joint.
+      normal.copy(proximal).sub(scratchPoint);
+      normal.y = 0;
+      if (normal.lengthSq() < 1e-8) {
+        normal.set(isL ? 1 : -1, 0, 0);
+      }
+      normal.normalize();
+    } else {
+      normal.set(isL ? 1 : -1, 0, 0);
+    }
+    // Blend outward + down (~pitch -35°): single-leg discard without waist-cut
+    // or same-side arm sever (validated against Mixamo bone layout).
+    normal.x *= 0.82;
+    normal.z *= 0.82;
+    normal.y = -0.57;
+    normal.normalize();
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, point);
+
+    // Tiny constant nudge: the diagonal can leave the same-side hand a hair on
+    // the discard side (→ multi-region ragdoll). Pull the plane so the hand
+    // matches the hips while the foot stays discarded.
+    // THREE.Plane distance = normal.dot(point) + constant; keep side is
+    // distance * keepSign >= 0 (same convention as getSoldierKeepSideSign).
+    const hand = bones.get(isL ? 'lefthand' : 'righthand');
+    if (hand && hips) {
+      hips.getWorldPosition(scratchPoint);
+      const keepSign = plane.distanceToPoint(scratchPoint) >= 0 ? 1 : -1;
+      hand.getWorldPosition(scratchMove);
+      const handSigned = plane.distanceToPoint(scratchMove) * keepSign;
+      foot.getWorldPosition(distal);
+      const footSigned = plane.distanceToPoint(distal) * keepSign;
+      if (handSigned < 0.02 && footSigned < -0.05) {
+        const need = 0.03 - handSigned; // target handSigned ≈ +0.03
+        plane.constant += need / keepSign;
+      }
+    }
+    return plane;
+  }
+}
+
+/**
+ * True when this region is still attached and can be gun-severed.
+ */
+export function canGunSeverRegion(enemy, region) {
+  if (!hasMixamoLimbLoss(enemy) || !GUN_SEVER_REGIONS.includes(region)) {
+    return false;
+  }
+  // limbLoss.true = intact
+  return enemy.limbLoss[region] !== false;
+}
+
 function severedPropMatchesRegion(prop, region, minWeight) {
   const weight = prop.region?.weights?.[region] ?? 0;
   return prop.region?.primary === region || weight >= minWeight;
@@ -551,8 +766,12 @@ export function pickHeadMissingClip(enemy) {
   return clip;
 }
 
+function hasMixamoLimbLoss(enemy) {
+  return enemy?.limbLossProfile === 'mixamo-humanoid' && Boolean(enemy?.limbLoss);
+}
+
 export function resolveSoldierLocomotionClip(enemy, { movingBackward = false } = {}) {
-  if (enemy?.archetype !== 'soldier' || !enemy.limbLoss) {
+  if (!hasMixamoLimbLoss(enemy)) {
     return null;
   }
 
@@ -589,7 +808,7 @@ export function resolveSoldierLocomotionClip(enemy, { movingBackward = false } =
 }
 
 export function resolveSoldierLocomotionSpeed(enemy, baseSpeed) {
-  if (enemy?.archetype !== 'soldier' || !enemy.limbLoss) {
+  if (!hasMixamoLimbLoss(enemy)) {
     return baseSpeed;
   }
 

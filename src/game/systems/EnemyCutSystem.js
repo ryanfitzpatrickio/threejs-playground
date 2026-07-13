@@ -16,6 +16,7 @@ import {
   applySeveranceFromProps,
   createSoldierLimbState,
   decideSoldierCutOutcome,
+  mergeLimbLoss,
 } from './soldierPartialCut.js';
 
 const CUT_TARGET_RANGE = 8.5;
@@ -192,6 +193,8 @@ const scratchJointMatrix = new THREE.Matrix4();
 const scratchBoneLinearVel = new THREE.Vector3();
 const scratchBoneAngularVel = new THREE.Vector3();
 const scratchHingeAxisWorld = new THREE.Vector3();
+const gunRegionTriangleMasks = new WeakMap();
+const GUN_LIMB_REGIONS = ['head', 'armL', 'armR', 'legL', 'legR'];
 
 // Per-archetype ragdoll/cut bone schemes. Each entry tells the cut system, for
 // a given skeleton, which bones become ragdoll bodies and how to weight them,
@@ -347,13 +350,13 @@ function getBoneScheme(enemy) {
 
 // Cut/ragdoll feel per enemy. The soldier is flesh and bone, so it gets a loose,
 // weighted skinned ragdoll ('squishy'); the original metal robot (creature rig)
-// stays 'rigid', falling apart into baked static chunks. Keyed off the same
-// fields EnemySystem stamps on each enemy (archetype/boneScheme).
+// stays 'rigid', falling apart into baked static chunks. Keyed off cutProfile
+// (one of the capability fields EnemySystem stamps on each enemy).
 function resolveCutStyle(enemy) {
   if (enemy?.isDestructibleProp) {
     return 'rigid';
   }
-  if (enemy?.archetype === 'soldier' || enemy?.boneScheme === 'mixamo') {
+  if (enemy?.cutProfile === 'mixamo-skinned') {
     return 'squishy';
   }
   return DEFAULT_CUT_STYLE;
@@ -455,6 +458,9 @@ function buildCutChunkTarget(cutProp) {
     model: cutProp.mesh,
     archetype: 'vehicleChunk',
     boneScheme: 'creature',
+    rigProfile: 'creature',
+    cutProfile: 'creature-rigid',
+    limbLossProfile: null,
     collisionHeight: Math.max(size.y, 0.5),
     collisionRadius: Math.max(size.x, size.z) * 0.5,
     health: 1,
@@ -702,6 +708,52 @@ export class EnemyCutSystem {
     }
   }
 
+  /** Count live articulated ragdoll props (for Horde detailed-death budget). */
+  countDetailedRagdolls() {
+    let count = 0;
+    for (const prop of this.props) {
+      if (prop.type === 'rigRagdoll') count += 1;
+    }
+    return count;
+  }
+
+  /**
+   * Whether a new detailed ragdoll is allowed under the given cap.
+   * Used by firearm death flush / mass-kill fallbacks in Horde mode.
+   */
+  canAffordDetailedRagdoll(max = Infinity) {
+    if (!Number.isFinite(max)) return true;
+    return this.countDetailedRagdolls() < Math.max(0, Math.floor(max));
+  }
+
+  /**
+   * Evict oldest rigRagdoll props until at or under `max`. Returns removed count.
+   */
+  enforceDetailedRagdollBudget(max = Infinity) {
+    if (!Number.isFinite(max)) return 0;
+    const limit = Math.max(0, Math.floor(max));
+    let removed = 0;
+    while (this.countDetailedRagdolls() > limit) {
+      let oldest = null;
+      let oldestAge = -1;
+      for (const prop of this.props) {
+        if (prop.type !== 'rigRagdoll') continue;
+        const age = prop.age ?? 0;
+        if (age >= oldestAge) {
+          oldestAge = age;
+          oldest = prop;
+        }
+      }
+      if (!oldest) break;
+      const index = this.props.indexOf(oldest);
+      if (index < 0) break;
+      this.props.splice(index, 1);
+      this.disposeCutProp(oldest);
+      removed += 1;
+    }
+    return removed;
+  }
+
   snapshot() {
     const stats = cutPropStats(this.props);
 
@@ -719,6 +771,7 @@ export class EnemyCutSystem {
       rigRegions: stats.rigRegions,
       propBudget: MAX_CUT_PROPS,
       destructiblePropBudget: MAX_DESTRUCTIBLE_CUT_PROPS,
+      detailedRagdolls: this.countDetailedRagdolls(),
       recuttableProps: this.props.filter((prop) => prop.recuttable).length,
       queuedCuts: this.queuedCuts.length,
       lastResult: this.lastResult,
@@ -886,6 +939,7 @@ export class EnemyCutSystem {
         enemySystem.applySoldierPartialCut(enemy, outcome);
       }
     } else {
+      enemySystem?.markDefeated?.(enemy, 'sword-cut');
       removeCutTarget({
         target: enemy,
         physicsSystem,
@@ -1119,7 +1173,7 @@ export class EnemyCutSystem {
   }
 
   trySoldierPartialCut({ enemy, plane, physicsSystem, baked }) {
-    if (!enemy?.model || enemy?.archetype !== 'soldier') {
+    if (!enemy?.model || enemy?.limbLossProfile !== 'mixamo-humanoid') {
       return null;
     }
 
@@ -1327,6 +1381,7 @@ export class EnemyCutSystem {
         enemySystem.applySoldierPartialCut(enemy, outcome);
       }
     } else {
+      enemySystem?.markDefeated?.(enemy, 'sword-cut');
       removeCutTarget({
         target: enemy,
         physicsSystem,
@@ -1406,6 +1461,7 @@ export class EnemyCutSystem {
         enemySystem?.applySoldierPartialCut?.(enemy, outcome);
       }
     } else {
+      enemySystem?.markDefeated?.(enemy, 'sword-cut');
       removeCutTarget({
         target: enemy,
         physicsSystem,
@@ -1415,10 +1471,148 @@ export class EnemyCutSystem {
       });
     }
 
+    // M5: ragdoll pieces inherit moving-platform / trailer velocity.
+    applyPlatformVelocityToCutProps(enemy, props);
+
     this.lastResult = didKeep
       ? `direct-partial-${outcome?.reason ?? 'limb'}-${props.length}`
       : `direct-cut-${props.length}-pieces`;
     return true;
+  }
+
+  // Firearms already resolve a specific anatomical region before reaching the
+  // cut system. Do not run the sword's exact plane-CSG path here: on the 43k-
+  // 49k vertex horde meshes it skins and clips the entire character several
+  // times and can block one animation frame for close to a second. Partition
+  // triangles by their authored skin weights instead, bake only the detached
+  // region for its physics prop, and keep the remaining skinned mesh live.
+  applyGunLimbSever({ enemy, region, plane, physicsSystem, enemySystem }) {
+    if (
+      !enemy?.model
+      || enemy.limbLossProfile !== 'mixamo-humanoid'
+      || !enemy.limbLoss?.[region]
+      || !plane
+      || (enemy.cutCount ?? 0) >= 2
+    ) {
+      return false;
+    }
+
+    const t0 = performance.now();
+    const props = [];
+    const replacements = [];
+    enemy.model.updateMatrixWorld(true);
+
+    enemy.model.traverse((child) => {
+      if (!child.isSkinnedMesh || !child.geometry || !child.skeleton) {
+        return;
+      }
+
+      const pair = partitionSkinnedGeometryByRegion({
+        geometry: child.geometry,
+        mesh: child,
+        enemy,
+        region,
+      });
+      if (!pair) {
+        return;
+      }
+
+      replacements.push({ child, geometry: pair.kept });
+      const material = Array.isArray(child.material) ? child.material[0] : child.material;
+      props.push(this.createDynamicProp({
+        geometry: pair.severed,
+        sideSign: -1,
+        splitPlane: plane,
+        region: { primary: region, weights: { [region]: 1 } },
+        bodyMaterial: cloneCutBodyMaterial(material),
+        physicsSystem,
+        lifetime: resolveCutPieceLifetime(enemy),
+        colliderMode: 'containment',
+      }));
+    });
+
+    if (!props.length) {
+      for (const replacement of replacements) replacement.geometry.dispose();
+      return false;
+    }
+
+    for (const replacement of replacements) {
+      if (replacement.child.userData.geometryOwned) {
+        replacement.child.geometry.dispose();
+      }
+      replacement.child.geometry = replacement.geometry;
+      replacement.child.userData.geometryOwned = true;
+    }
+    for (const prop of props) {
+      this.props.push(prop);
+      this.scene.add(prop.mesh);
+    }
+
+    const severedThisCut = {
+      head: region === 'head',
+      armL: region === 'armL',
+      armR: region === 'armR',
+      legL: region === 'legL',
+      legR: region === 'legR',
+      core: false,
+    };
+    const nextLoss = mergeLimbLoss(enemy.limbLoss, severedThisCut);
+    const outcome = {
+      mode: 'partial',
+      locomotion: region === 'head'
+        ? 'head'
+        : (!nextLoss.legL && !nextLoss.legR ? 'crawl' : 'limb'),
+      keepSign: 1,
+      severedThisCut,
+      nextLoss,
+      reason: region,
+    };
+
+    if (region === 'head') {
+      enemySystem?.applySoldierHeadPartialDeath?.(enemy, outcome, physicsSystem);
+    } else {
+      enemySystem?.applySoldierPartialCut?.(enemy, outcome);
+    }
+
+    this.lastCutMs = {
+      total: Number((performance.now() - t0).toFixed(2)),
+      bake: 0,
+      clip: 0,
+      split: 0,
+      spawn: 0,
+      pieces: props.length,
+      vertices: props.reduce(
+        (sum, prop) => sum + (prop.mesh?.geometry?.getAttribute('position')?.count ?? 0),
+        0,
+      ),
+      path: 'gun-region',
+    };
+    this.lastResult = `gun-partial-${region}-${props.length}`;
+    return true;
+  }
+
+  // Build region masks while horde assets are still behind the loading screen.
+  // CloneSkeleton instances share geometry, so the first instance of each
+  // archetype warms all later instances without multiplying memory or work.
+  prepareGunLimbSever(enemy) {
+    if (!enemy?.model || enemy.limbLossProfile !== 'mixamo-humanoid') return;
+    enemy.model.traverse((mesh) => {
+      const geometry = mesh.geometry;
+      const position = geometry?.getAttribute?.('position');
+      if (!mesh.isSkinnedMesh || !position || !mesh.skeleton) return;
+      const index = geometry.getIndex();
+      const triangleCount = Math.floor((index?.count ?? position.count) / 3);
+      for (const region of GUN_LIMB_REGIONS) {
+        getGunRegionTriangleMask({
+          geometry,
+          mesh,
+          enemy,
+          region,
+          index,
+          triangleCount,
+        });
+      }
+    });
   }
 
   // Convert a LIVE enemy into a full-body ragdoll and fling it along
@@ -1466,13 +1660,20 @@ export class EnemyCutSystem {
     this.props.push(prop);
     this.scene.add(prop.root);
 
+    // Vehicle run-over is lethal — signal defeat before the target is torn down
+    // (the fling + removeCutTarget below are the visual/collider cleanup).
+    enemySystem?.markDefeated?.(enemy, 'vehicle-runover');
+
     // Fling: ADD the launch velocity to every ragdoll body so the whole limp body
     // arcs up and over together (the small natural spawn velocity stays as variation).
-    if (launchVelocity) {
+    // Compose with platform/trailer velocity when the enemy was riding one (M5).
+    const platformVel = getEnemyPlatformVelocity(enemy);
+    const composed = composeLaunchVelocity(launchVelocity, platformVel);
+    if (composed) {
       for (const record of prop.ragdollBodies ?? []) {
         const v = record.body.linvel();
         record.body.setLinvel(
-          { x: v.x + launchVelocity.x, y: v.y + launchVelocity.y, z: v.z + launchVelocity.z },
+          { x: v.x + composed.x, y: v.y + composed.y, z: v.z + composed.z },
           true,
         );
       }
@@ -1608,6 +1809,7 @@ export class EnemyCutSystem {
     lifetime,
     recuttable = false,
     usePropCap = false,
+    colliderMode = CUT_COLLIDER_MODE,
   }) {
     geometry.computeBoundingBox();
     const bounds = geometry.boundingBox;
@@ -1652,7 +1854,7 @@ export class EnemyCutSystem {
       spawnAngvel,
       geometry,
       fallbackSize: size,
-      colliderMode: CUT_COLLIDER_MODE,
+      colliderMode,
     });
     this.lastColliderType = colliderType;
     return {
@@ -1930,7 +2132,7 @@ export class EnemyCutSystem {
       enemy,
     });
     const isStiff = resolveCutStyle(enemy) === 'stiff';
-    const isMixamoSquishy = !isStiff && (enemy?.boneScheme === 'mixamo' || enemy?.archetype === 'soldier');
+    const isMixamoSquishy = !isStiff && enemy?.cutProfile === 'mixamo-skinned';
     const records = [];
     const recordByBone = new Map();
     const joints = [];
@@ -2724,6 +2926,189 @@ function computePosedWorldPositions(geometry, mesh) {
   }
 
   return out;
+}
+
+// Fast firearm-only geometry partition. A sword needs an exact arbitrary plane
+// and cap, but a gun sever has already selected a named rig region. Skin weights
+// are therefore both more stable (independent of the current animation pose) and
+// dramatically cheaper than skinning + CSG clipping the whole character twice.
+function partitionSkinnedGeometryByRegion({ geometry, mesh, enemy, region }) {
+  const position = geometry.getAttribute('position');
+  const skinIndex = geometry.getAttribute('skinIndex');
+  const skinWeight = geometry.getAttribute('skinWeight');
+  if (!position || !skinIndex || !skinWeight || !mesh?.skeleton) {
+    return null;
+  }
+
+  const index = geometry.getIndex();
+  const elementCount = index?.count ?? position.count;
+  const triangleCount = Math.floor(elementCount / 3);
+  const regionMask = getGunRegionTriangleMask({
+    geometry,
+    mesh,
+    enemy,
+    region,
+    index,
+    triangleCount,
+  });
+  const kept = [];
+  const severed = [];
+  const groups = geometry.groups?.length
+    ? geometry.groups
+    : [{ start: 0, count: elementCount, materialIndex: 0 }];
+  let groupIndex = 0;
+
+  for (let triangle = 0; triangle < triangleCount; triangle += 1) {
+    const offset = triangle * 3;
+    while (
+      groupIndex + 1 < groups.length
+      && offset >= groups[groupIndex].start + groups[groupIndex].count
+    ) {
+      groupIndex += 1;
+    }
+
+    const vertices = [
+      index ? index.getX(offset) : offset,
+      index ? index.getX(offset + 1) : offset + 1,
+      index ? index.getX(offset + 2) : offset + 2,
+    ];
+    const entry = {
+      vertices,
+      materialIndex: groups[groupIndex]?.materialIndex ?? 0,
+    };
+    // Majority influence avoids pulling shoulder/hip torso triangles into the
+    // detached prop while retaining blend-zone triangles on the live body.
+    if (regionMask[triangle]) {
+      severed.push(entry);
+    } else {
+      kept.push(entry);
+    }
+  }
+
+  if (severed.length < 2 || kept.length < 2) {
+    return null;
+  }
+
+  return {
+    kept: buildRegionSubsetGeometry(geometry, mesh, kept, { outputWorld: false }),
+    severed: buildRegionSubsetGeometry(geometry, mesh, severed, { outputWorld: true }),
+  };
+}
+
+function getGunRegionTriangleMask({ geometry, mesh, enemy, region, index, triangleCount }) {
+  let byRegion = gunRegionTriangleMasks.get(geometry);
+  if (!byRegion) {
+    byRegion = new Map();
+    gunRegionTriangleMasks.set(geometry, byRegion);
+  }
+  const cached = byRegion.get(region);
+  if (cached?.length === triangleCount) return cached;
+
+  const skinIndex = geometry.getAttribute('skinIndex');
+  const skinWeight = geometry.getAttribute('skinWeight');
+  const boneRegions = mesh.skeleton.bones.map((bone) => getBoneScheme(enemy).region(bone?.name ?? ''));
+  const mask = new Uint8Array(triangleCount);
+  for (let triangle = 0; triangle < triangleCount; triangle += 1) {
+    let targetWeight = 0;
+    let totalWeight = 0;
+    for (let corner = 0; corner < 3; corner += 1) {
+      const offset = triangle * 3 + corner;
+      const vertex = index ? index.getX(offset) : offset;
+      for (let slot = 0; slot < 4; slot += 1) {
+        const weight = skinWeight.getComponent(vertex, slot);
+        if (!Number.isFinite(weight) || weight <= 0) continue;
+        const bone = Math.max(0, Math.round(skinIndex.getComponent(vertex, slot)));
+        totalWeight += weight;
+        if (boneRegions[bone] === region) targetWeight += weight;
+      }
+    }
+    mask[triangle] = totalWeight > 0 && targetWeight / totalWeight >= 0.5 ? 1 : 0;
+  }
+  byRegion.set(region, mask);
+  return mask;
+}
+
+function buildRegionSubsetGeometry(source, mesh, triangles, { outputWorld }) {
+  const result = new THREE.BufferGeometry();
+  const vertexCount = triangles.length * 3;
+  const sourceAttributes = Object.entries(source.attributes);
+
+  // The live skinned half can retain the source vertex table and draw only the
+  // kept triangle indices. Typed-array clone/slice happens in native code and is
+  // substantially cheaper than expanding every kept vertex in JavaScript.
+  if (!outputWorld) {
+    for (const [name, attribute] of sourceAttributes) {
+      if (name !== 'cutTest') result.setAttribute(name, attribute.clone());
+    }
+    for (const [name, attributes] of Object.entries(source.morphAttributes ?? {})) {
+      result.morphAttributes[name] = attributes.map((attribute) => attribute.clone());
+    }
+    result.morphTargetsRelative = source.morphTargetsRelative;
+    const IndexArray = source.getAttribute('position').count > 65535 ? Uint32Array : Uint16Array;
+    const indices = new IndexArray(vertexCount);
+    let write = 0;
+    for (const triangle of triangles) {
+      indices[write++] = triangle.vertices[0];
+      indices[write++] = triangle.vertices[1];
+      indices[write++] = triangle.vertices[2];
+    }
+    result.setIndex(new THREE.BufferAttribute(indices, 1));
+    addRegionSubsetGroups(result, triangles, vertexCount);
+    result.boundingBox = source.boundingBox?.clone() ?? null;
+    result.boundingSphere = source.boundingSphere?.clone() ?? null;
+    return result;
+  }
+
+  for (const [name, attribute] of sourceAttributes) {
+    if (outputWorld && (name === 'skinIndex' || name === 'skinWeight' || name === 'cutTest')) {
+      continue;
+    }
+    const ArrayType = attribute.array?.constructor ?? Float32Array;
+    const values = new ArrayType(vertexCount * attribute.itemSize);
+    let write = 0;
+    for (const triangle of triangles) {
+      for (const vertex of triangle.vertices) {
+        for (let component = 0; component < attribute.itemSize; component += 1) {
+          values[write++] = attribute.getComponent(vertex, component);
+        }
+      }
+    }
+    result.setAttribute(name, new THREE.BufferAttribute(values, attribute.itemSize, attribute.normalized));
+  }
+
+  if (outputWorld) {
+    const positions = result.getAttribute('position');
+    let write = 0;
+    for (const triangle of triangles) {
+      for (const vertex of triangle.vertices) {
+        scratchPosed.fromBufferAttribute(source.getAttribute('position'), vertex);
+        mesh.applyBoneTransform(vertex, scratchPosed);
+        scratchPosed.applyMatrix4(mesh.matrixWorld);
+        positions.setXYZ(write, scratchPosed.x, scratchPosed.y, scratchPosed.z);
+        write += 1;
+      }
+    }
+    result.computeVertexNormals();
+  }
+
+  addRegionSubsetGroups(result, triangles, vertexCount);
+  result.computeBoundingBox();
+  result.computeBoundingSphere();
+  return result;
+}
+
+function addRegionSubsetGroups(result, triangles, vertexCount) {
+  let groupStart = 0;
+  let activeMaterial = triangles[0]?.materialIndex ?? 0;
+  for (let triangle = 0; triangle < triangles.length; triangle += 1) {
+    const material = triangles[triangle].materialIndex;
+    if (material !== activeMaterial) {
+      result.addGroup(groupStart, triangle * 3 - groupStart, activeMaterial);
+      groupStart = triangle * 3;
+      activeMaterial = material;
+    }
+  }
+  result.addGroup(groupStart, vertexCount - groupStart, activeMaterial);
 }
 
 function pieceCanUseRigShard(piece, region, enemy = null) {
@@ -3923,4 +4308,45 @@ function cutDebugLogDispose(reason, prop) {
   const position = cutDebugPropPosition(prop);
   const height = position ? `pos=(${position.x.toFixed(2)},${position.y.toFixed(2)},${position.z.toFixed(2)})` : 'pos=?';
   console.warn(`[cut-debug] DISPOSE reason=${reason} type=${prop.type} region=${prop.region?.primary} ${height} age=${(prop.age ?? 0).toFixed(2)}`);
+}
+
+/** M5: platform / trailer world velocity cached on the enemy while riding. */
+export function getEnemyPlatformVelocity(enemy) {
+  if (!enemy) return null;
+  const pv = enemy.platformVelocity;
+  if (pv && (Math.abs(pv.x) + Math.abs(pv.y) + Math.abs(pv.z) > 1e-6)) {
+    return { x: pv.x, y: pv.y, z: pv.z };
+  }
+  const lp = enemy.platformSupport?.lastPointVelocity;
+  if (lp && (Math.abs(lp.x) + Math.abs(lp.y) + Math.abs(lp.z) > 1e-6)) {
+    return { x: lp.x, y: lp.y, z: lp.z };
+  }
+  return null;
+}
+
+export function composeLaunchVelocity(base, platformVel) {
+  if (!base && !platformVel) return null;
+  return {
+    x: (base?.x ?? 0) + (platformVel?.x ?? 0),
+    y: (base?.y ?? 0) + (platformVel?.y ?? 0),
+    z: (base?.z ?? 0) + (platformVel?.z ?? 0),
+  };
+}
+
+function applyPlatformVelocityToCutProps(enemy, props) {
+  const pv = getEnemyPlatformVelocity(enemy);
+  if (!pv || !props?.length) return;
+  for (const prop of props) {
+    for (const record of prop.ragdollBodies ?? []) {
+      try {
+        const v = record.body.linvel();
+        record.body.setLinvel(
+          { x: v.x + pv.x, y: v.y + pv.y, z: v.z + pv.z },
+          true,
+        );
+      } catch {
+        // ignore transient aliasing
+      }
+    }
+  }
 }

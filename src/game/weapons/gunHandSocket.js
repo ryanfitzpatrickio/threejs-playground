@@ -205,9 +205,9 @@ export const GUN_SOCKET_PRESETS = Object.freeze({
     aimPitchGun: -1,
     aimPitchSpine: -0.6,
   }),
-  // Modern AR-15 — live-fit 2026-07-11 (chest-anchored dual-hand IK).
+  // Modern AR-15 — live-fit 2026-07-12 (chest-anchored dual-hand IK).
   'modern-ar15': Object.freeze({
-    handPosition: Object.freeze([-0.13, -0.035, 0.37]),
+    handPosition: Object.freeze([-0.185, -0.11, 0.335]),
     handRotationDeg: Object.freeze([0, -180, 0]),
     gunPosition: Object.freeze([0, 0, 0]),
     gunRotationDeg: Object.freeze([0, 0, 0]),

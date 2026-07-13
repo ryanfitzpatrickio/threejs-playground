@@ -21,6 +21,11 @@ import { VEHICLE_DOMAINS } from '../config/vehicleConfig.js';
 // character.vehicle.active).
 // ---------------------------------------------------------------------------
 
+/** Vehicle activity tiers (O1). Hot loops skip `dormantPool`. */
+export const VEHICLE_ACTIVITY_ACTIVE = 'active';
+export const VEHICLE_ACTIVITY_SLEEPING = 'sleeping';
+export const VEHICLE_ACTIVITY_DORMANT = 'dormantPool';
+
 const ENTER_DISTANCE = 4.5;
 const HEADLIGHT_COLOR = 0xc9e9ff;
 const HEADLIGHT_INTENSITY = 14000;
@@ -57,10 +62,26 @@ const RECOVERY_ROAD_SEARCH_MAX = 180;
 // needs real collider clearance).
 const SPAWN_EXTRA_CLEARANCE = 0.15;
 const CONTROL_RECORDING_LIMIT = 72_000;
+/** Cabin ↔ roof seat-swap blend (s). Steering is locked during the swap. */
+const ROOF_SWAP_DURATION = 0.38;
+/** Stability stress accumulates while roof-surfing under harsh inputs. */
+const ROOF_STABILITY_HARD_STEER = 0.85;
+const ROOF_STABILITY_HARD_BRAKE = 0.7;
+const ROOF_STABILITY_MIN_SPEED = 10; // m/s before harsh inputs matter
+const ROOF_STABILITY_BUILD = 1.15; // stress / second under load
+const ROOF_STABILITY_RECOVER = 0.9;
+const ROOF_STABILITY_THROW = 1; // dump back to seat at this stress
+const ROOF_STABILITY_EJECT = 1.55; // full exit if extreme (impact + high stress)
 
 export class VehicleSystem {
   constructor() {
     this.vehicles = [];
+    /**
+     * Vehicles that receive frame + fixed-step work (not dormantPool).
+     * Ownership still lives in `vehicles`; this is an iteration filter.
+     * @type {import('../vehicles/BaseVehicle.js').BaseVehicle[]}
+     */
+    this.simulatedVehicles = [];
     this.activeVehicle = null;
     this.cinematicDemoActive = false;
     this.physics = null;
@@ -68,17 +89,30 @@ export class VehicleSystem {
     this.level = null;
     this.weatherSystem = null;
     this.vehicleDamageSystem = null;
+    this.cameraSystem = null;
     this.status = 'idle';
     this.headlightsEnabled = false;
     this.controlRecording = [];
+    /** @type {{ fromIndex: number, toIndex: number, elapsed: number, duration: number }|null} */
+    this._seatSwap = null;
+    this._roofStability = 0;
+    this._cameraModeBeforeRoof = null;
   }
 
-  initialize({ physics, scene, level = null, weatherSystem = null, vehicleDamageSystem = null }) {
+  initialize({
+    physics,
+    scene,
+    level = null,
+    weatherSystem = null,
+    vehicleDamageSystem = null,
+    cameraSystem = null,
+  }) {
     this.physics = physics;
     this.scene = scene;
     this.level = level;
     this.weatherSystem = weatherSystem;
     this.vehicleDamageSystem = vehicleDamageSystem;
+    this.cameraSystem = cameraSystem ?? null;
     this.status = 'ready';
   }
 
@@ -86,9 +120,73 @@ export class VehicleSystem {
   registerVehicle(vehicle) {
     if (!this.vehicles.includes(vehicle)) {
       this.vehicles.push(vehicle);
+      if (!vehicle.activity) vehicle.activity = VEHICLE_ACTIVITY_ACTIVE;
+      this._syncSimulatedList();
       installHeadlights(vehicle, this.headlightsEnabled);
     }
     return vehicle;
+  }
+
+  /**
+   * Set activity tier for a registered vehicle (O1 highway dormant pool).
+   * @param {object} vehicle
+   * @param {'active'|'sleeping'|'dormantPool'} activity
+   * @param {{ physics?: object|null }} [opts]
+   */
+  setVehicleActivity(vehicle, activity, { physics = this.physics } = {}) {
+    if (!vehicle) return false;
+    const next = activity === VEHICLE_ACTIVITY_DORMANT
+      || activity === VEHICLE_ACTIVITY_SLEEPING
+      || activity === VEHICLE_ACTIVITY_ACTIVE
+      ? activity
+      : VEHICLE_ACTIVITY_ACTIVE;
+    const prev = vehicle.activity ?? VEHICLE_ACTIVITY_ACTIVE;
+    if (prev === next && vehicle._activityApplied === next) {
+      return true;
+    }
+    vehicle.activity = next;
+    vehicle._activityApplied = next;
+
+    const body = physics?.getFreshBody?.(vehicle.bodyHandle);
+    if (next === VEHICLE_ACTIVITY_DORMANT) {
+      if (vehicle.group) vehicle.group.visible = false;
+      vehicle.tireEffects?.mute?.(true);
+      vehicle.engineAudio?.mute?.(true);
+      vehicle.crashAudio?.mute?.(true);
+      try {
+        body?.setEnabled?.(false);
+      } catch {
+        // Older body wrappers may lack setEnabled — leave sleeping.
+        body?.sleep?.();
+      }
+    } else {
+      try {
+        body?.setEnabled?.(true);
+      } catch {
+        // ignore
+      }
+      body?.wakeUp?.();
+      if (vehicle.group && next === VEHICLE_ACTIVITY_ACTIVE) {
+        vehicle.group.visible = true;
+      }
+      vehicle.tireEffects?.mute?.(false);
+      // Engine audio stays muted until a driver enters / traffic unmutes as needed.
+    }
+    this._syncSimulatedList();
+    return true;
+  }
+
+  /** Rebuild simulatedVehicles from activity flags. */
+  _syncSimulatedList() {
+    this.simulatedVehicles = this.vehicles.filter(
+      (v) => (v.activity ?? VEHICLE_ACTIVITY_ACTIVE) !== VEHICLE_ACTIVITY_DORMANT,
+    );
+  }
+
+  /** Whether a vehicle participates in frame/fixed-step work. */
+  isSimulated(vehicle) {
+    if (!vehicle) return false;
+    return (vehicle.activity ?? VEHICLE_ACTIVITY_ACTIVE) !== VEHICLE_ACTIVITY_DORMANT;
   }
 
   setHeadlightsEnabled(enabled) {
@@ -203,16 +301,18 @@ export class VehicleSystem {
     const idx = this.vehicles.indexOf(vehicle);
     if (idx >= 0) {
       this.vehicles.splice(idx, 1);
+      this._syncSimulatedList();
     }
     vehicle.dispose({ scene: this.scene, physics: this.physics });
   }
 
   // Returns { input } — possibly a locked clone while driving, or the original
   // (with the mount key consumed) when an enter/exit was handled this frame.
-  update({ delta, input, character, level, camera = null }) {
+  update({ delta, input, character, level, camera = null, cameraSystem = null }) {
     if (this.status !== 'ready' || !character) {
       return { input };
     }
+    if (cameraSystem) this.cameraSystem = cameraSystem;
 
     let consumedMount = false;
 
@@ -228,6 +328,16 @@ export class VehicleSystem {
           consumedMount = true;
         }
       }
+    }
+
+    // ---- roof-surf seat swap (cabin ↔ roof), not a full dismount ----
+    if (
+      input.roofSurfPressed
+      && this.activeVehicle
+      && !this.cinematicDemoActive
+      && !this._seatSwap
+    ) {
+      this._toggleRoofSurf(character);
     }
 
     // ---- drive the active vehicle, idle the rest ----
@@ -276,9 +386,22 @@ export class VehicleSystem {
         this.level.updateForestDrivingColliders(this.activeVehicle.group.position, this.physics);
       }
       this._updateVehicleSurface(this.activeVehicle);
-      const controls = this.cinematicDemoActive && this.activeVehicle.autopilot?.target
+
+      // During seat-swap, lock steer/throttle briefly so the pop-up reads cleanly.
+      const swapActive = Boolean(this._seatSwap);
+      const roofSurfing = Boolean(character.vehicle?.roofSurfing);
+      let controls = this.cinematicDemoActive && this.activeVehicle.autopilot?.target
         ? this.activeVehicle.computeAutopilotControls()
-        : this._controlsFromInput(this.activeVehicle, input);
+        : this._controlsFromInput(this.activeVehicle, input, { roofSurfing });
+      if (swapActive) {
+        controls = {
+          ...controls,
+          throttle: controls.throttle * 0.35,
+          steer: 0,
+          brake: Math.max(controls.brake, 0.15),
+        };
+      }
+
       this.activeVehicle.update({
         dt: delta,
         controls,
@@ -287,20 +410,27 @@ export class VehicleSystem {
         integrate: !this.physics?.fixedStepPlanning,
         camera,
       });
+
+      this._updateSeatSwap(character, delta);
+      this._updateRoofStability(character, delta, controls, level);
       this._lockRiderToSeat(character);
-      outputInput = lockedInput(input);
+      outputInput = lockedInput(input, { roofSurfing });
     }
 
     const neutral = makeNeutralControls();
     const parked = makeParkedControls();
-    for (const vehicle of this.vehicles) {
+    for (const vehicle of this.simulatedVehicles) {
       if (vehicle === this.activeVehicle) {
         continue;
       }
       this._updateVehicleSurface(vehicle);
-      const controls = vehicle.autopilot?.target
-        ? vehicle.computeAutopilotControls()
-        : parked;
+      // M6 highway cruise before generic autopilot/parked idle.
+      let controls = parked;
+      if (vehicle.highwayCruise) {
+        controls = vehicle.computeHighwayCruiseControls?.() ?? parked;
+      } else if (vehicle.autopilot?.target) {
+        controls = vehicle.computeAutopilotControls();
+      }
       vehicle.update({
         dt: delta,
         controls,
@@ -339,7 +469,7 @@ export class VehicleSystem {
     if (!mudField) return;
 
     const step = Number.isFinite(dt) && dt > 0 ? Math.min(dt, 0.05) : 1 / 60;
-    for (const vehicle of this.vehicles) {
+    for (const vehicle of this.simulatedVehicles) {
       // Keep vehicle.mudField pointer fresh (used by grip sampling too).
       vehicle.mudField = mudField;
       vehicle.stampMudRuts?.(mudField, step);
@@ -350,7 +480,7 @@ export class VehicleSystem {
     // ~70 m of the last center are fully faded.
     const focus = this.activeVehicle?.group?.position
       ?? character?.group?.position
-      ?? this.vehicles.find((v) => v.domain === VEHICLE_DOMAINS.GROUND)?.group?.position;
+      ?? this.simulatedVehicles.find((v) => v.domain === VEHICLE_DOMAINS.GROUND)?.group?.position;
     if (focus) {
       mudField.setCenter(focus.x, focus.z);
       mudField.refreshPreWorn?.(focus.x, focus.z);
@@ -362,6 +492,19 @@ export class VehicleSystem {
 
   _updateVehicleSurface(vehicle) {
     if (vehicle?.domain !== VEHICLE_DOMAINS.GROUND) return;
+    // Highway TSL proxies only need a ride-height sample, not full surface tuning.
+    if (vehicle.userData?.highwayProxyVisual && vehicle.highwayCruise && !vehicle.hasDriver?.()) {
+      const position = vehicle.group?.position ?? vehicle.spawnPosition;
+      if (position && this.level?.getGroundHeightAt) {
+        const gy = this.level.getGroundHeightAt(position, 0, { preferRoadSurface: true });
+        if (Number.isFinite(gy)) {
+          const clearance = vehicle.getGroundSpawnClearance?.() ?? 0.9;
+          vehicle._highwayGroundY = gy + clearance * 0.35;
+        }
+      }
+      vehicle.groundSurface = 'asphalt';
+      return;
+    }
     const position = vehicle.group?.position ?? vehicle.spawnPosition;
     const surface = position
       ? this.level?.getRoadSurfaceAt?.(position.x, position.z)
@@ -377,7 +520,7 @@ export class VehicleSystem {
     const listener = character?.group?.position;
     if (!listener) return;
     const inVehicle = Boolean(this.activeVehicle);
-    for (const vehicle of this.vehicles) {
+    for (const vehicle of this.simulatedVehicles) {
       vehicle.updateExteriorIdleAudio?.(listener, { inVehicle });
     }
   }
@@ -387,7 +530,7 @@ export class VehicleSystem {
   // Once per fixed step, before integration: record every vehicle's current body
   // pose as the interpolation "previous" state.
   capturePrevPoses() {
-    for (const vehicle of this.vehicles) {
+    for (const vehicle of this.simulatedVehicles) {
       vehicle.capturePosePreStep(this.physics);
     }
   }
@@ -397,7 +540,7 @@ export class VehicleSystem {
   // frame (may be 0, may be several during hitch catch-up). Reuses the controls
   // smoothed by this frame's update().
   integrateStep(dt, tick = this.physics?.tickCount ?? 0) {
-    for (const vehicle of this.vehicles) {
+    for (const vehicle of this.simulatedVehicles) {
       if (vehicle === this.activeVehicle) {
         this.controlRecording.push({ tick, controls: { ...vehicle.controls } });
         if (this.controlRecording.length > CONTROL_RECORDING_LIMIT) this.controlRecording.shift();
@@ -422,7 +565,7 @@ export class VehicleSystem {
   // between the last two physics states, and re-seat the rider so the character
   // (and the camera behind it) tracks the interpolated car, not the raw body.
   syncVisualPoses(alpha, character = null) {
-    for (const vehicle of this.vehicles) {
+    for (const vehicle of this.simulatedVehicles) {
       vehicle.syncVisualFromBody(this.physics, alpha);
     }
     if (character && this.activeVehicle && character.vehicle?.active) {
@@ -551,6 +694,8 @@ export class VehicleSystem {
     vehicle.wakeForDrive(this.physics);
     vehicle.seatOccupant(seatIndex, character);
     this.activeVehicle = vehicle;
+    this._seatSwap = null;
+    this._roofStability = 0;
     character.velocity?.set(0, 0, 0);
     character.verticalVelocity = 0;
     character.grounded = true;
@@ -558,6 +703,7 @@ export class VehicleSystem {
       active: true,
       vehicle,
       seatIndex,
+      roofSurfing: false,
       // Reuse the horse's seated riding loop as the driving pose; arm IK pins the
       // hands to the steering wheel. Swap for a dedicated driving clip later.
       animationState: vehicle.driverAnimationState ?? 'ridingHorse',
@@ -604,6 +750,9 @@ export class VehicleSystem {
     if (!vehicle) {
       return;
     }
+    this._restoreCameraAfterRoof();
+    this._seatSwap = null;
+    this._roofStability = 0;
     if (vehicle.doorRig) vehicle.doorOpenTarget = 0;
     const seatIndex = vehicle.clearOccupant(character);
     vehicle.getExitWorldPosition(_exitPos, level);
@@ -627,12 +776,350 @@ export class VehicleSystem {
     vehicle.tireEffects?.mute(true);
   }
 
+  /**
+   * Leave the vehicle mid-roof-surf for a car leap without side-exit park.
+   * Car keeps its current velocity (coast); rider is freed for ballistic leap.
+   */
+  detachRiderForLeap(character) {
+    const vehicle = this.activeVehicle;
+    if (!vehicle || !character?.vehicle?.active) return false;
+    this._releaseVehicleKeepCoast(character, vehicle);
+    return true;
+  }
+
+  /**
+   * M4 hijack: transfer player ownership from free platform / current vehicle
+   * onto `newVehicle` (default: into the cabin driver seat).
+   *
+   * @param {object} character
+   * @param {import('../vehicles/BaseVehicle.js').BaseVehicle} newVehicle
+   * @param {{ fromSeat?: string, toSeat?: string, animate?: boolean }} [opts]
+   */
+  transferPlayerTo(character, newVehicle, {
+    fromSeat = 'roof',
+    toSeat = 'driver',
+    animate = true,
+  } = {}) {
+    if (!character || !newVehicle || newVehicle.status !== 'ready') return false;
+    if (newVehicle.hasDriver() && this.activeVehicle !== newVehicle) return false;
+
+    const oldVehicle = this.activeVehicle;
+
+    // Free the rider from old vehicle / platform seat-lock.
+    if (oldVehicle && character.vehicle?.active) {
+      this._releaseVehicleKeepCoast(character, oldVehicle);
+    } else {
+      character.vehicle = null;
+      character.platformSupport = null;
+    }
+
+    // Mount new vehicle in cabin driver (or requested seat).
+    this._enter({ character, vehicle: newVehicle });
+
+    let seatIndex = newVehicle.driverSeatIndex;
+    if (toSeat === 'roof' && newVehicle.roofSeatIndex >= 0) {
+      seatIndex = newVehicle.roofSeatIndex;
+    } else if (toSeat && toSeat !== 'driver') {
+      const named = newVehicle.findSeatIndex?.(toSeat) ?? -1;
+      if (named >= 0) seatIndex = named;
+    }
+
+    if (seatIndex !== character.vehicle.seatIndex) {
+      this.swapSeat(character, seatIndex, { animate });
+    }
+
+    // Ensure audio / tires live on the new ride.
+    if (newVehicle.engineAudio) {
+      newVehicle.engineAudio.resume?.();
+      newVehicle.engineAudio.mute?.(false);
+    }
+    newVehicle.tireEffects?.resume?.();
+    newVehicle.tireEffects?.mute?.(false);
+
+    void fromSeat;
+    return true;
+  }
+
+  /**
+   * Candidate for hijack: free on a hijackable vehicle roof platform.
+   * @param {object} character
+   * @param {object|null} platforms PlatformRidingSystem
+   * @returns {import('../vehicles/BaseVehicle.js').BaseVehicle|null}
+   */
+  getHijackCandidate(character, platforms = null) {
+    if (!character || character.vehicle?.active) return null;
+    if (character.carLeap?.active) return null;
+    const support = character.platformSupport;
+    if (!support || !Number.isFinite(support.bodyHandle)) return null;
+
+    const entry = platforms?.platforms?.get?.(support.bodyHandle);
+    if (!entry || entry.hijackable !== true) return null;
+
+    const vehicle = entry.owner;
+    if (!vehicle || vehicle.status !== 'ready') return null;
+    if (vehicle === this.activeVehicle) return null;
+    if (vehicle.hasDriver?.()) return null;
+    // Must be a real BaseVehicle-ish registry member (or at least have seats).
+    if (!vehicle.config?.seats || !Number.isFinite(vehicle.bodyHandle)) return null;
+    return vehicle;
+  }
+
+  /**
+   * Try hijack on ability/F when standing on a hijackable roof.
+   * @returns {{ input: object, hijacked: boolean, vehicle: object|null }}
+   */
+  tryHijack({ character, input, platforms = null, trafficSystem = null }) {
+    if (!input?.abilityPressed || !character) {
+      return { input, hijacked: false, vehicle: null };
+    }
+    const candidate = this.getHijackCandidate(character, platforms);
+    if (!candidate) {
+      return { input, hijacked: false, vehicle: null };
+    }
+
+    // O6: transfer first; only claim pool ownership after a successful seat swap.
+    const ok = this.transferPlayerTo(character, candidate, {
+      fromSeat: 'roof',
+      toSeat: 'driver',
+      animate: true,
+    });
+    if (!ok) {
+      return { input, hijacked: false, vehicle: null };
+    }
+    // claimVehicleForPlayer also clears highwayCruise so cabin input takes over.
+    trafficSystem?.claimVehicleForPlayer?.(candidate);
+    if (candidate.highwayCruise) candidate.highwayCruise = null;
+
+    // Consume ability so AbilitySystem does not also fire swing/wingsuit.
+    const nextInput = { ...input, abilityPressed: false, abilityHeld: false };
+    return { input: nextInput, hijacked: true, vehicle: candidate };
+  }
+
+  /**
+   * Drop active vehicle ownership without side-exit teleport; leave residual velocity.
+   */
+  _releaseVehicleKeepCoast(character, vehicle) {
+    this._restoreCameraAfterRoof();
+    this._seatSwap = null;
+    this._roofStability = 0;
+    if (vehicle.doorRig) vehicle.doorOpenTarget = 0;
+    vehicle.clearOccupant(character);
+    character.vehicle = null;
+    if (this.activeVehicle === vehicle) this.activeVehicle = null;
+    // Coast: do not park. Light residual damping happens via normal parked idle later.
+    if (vehicle.engineAudio) vehicle.engineAudio.mute?.(true);
+    vehicle.tireEffects?.mute?.(true);
+    // Seat-lock wrote a full chassis quaternion; clear pitch/roll so FP body is upright.
+    if (character?.group) {
+      const e = new THREE.Euler().setFromQuaternion(
+        vehicle.group?.quaternion ?? character.group.quaternion,
+        'YXZ',
+      );
+      // Body facing convention: travel −Z at chassis yaw 0 → body yaw π.
+      const bodyYaw = e.y + Math.PI;
+      character.group.rotation.order = 'YXZ';
+      character.group.rotation.set(0, bodyYaw, 0);
+      character.group.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), bodyYaw);
+      character.yaw = bodyYaw;
+    }
+  }
+
+  /**
+   * Toggle cabin driver seat ↔ roof stunt position (H key).
+   * Seat swap only — does not dismount.
+   */
+  _toggleRoofSurf(character) {
+    const vehicle = this.activeVehicle;
+    if (!vehicle || !character?.vehicle?.active) return false;
+    const roofIndex = vehicle.roofSeatIndex;
+    if (roofIndex < 0) return false;
+    const driverIndex = vehicle.driverSeatIndex;
+    const current = character.vehicle.seatIndex ?? driverIndex;
+    const onRoof = vehicle.config.seats[current]?.name === 'roof';
+    const target = onRoof ? driverIndex : roofIndex;
+    return this.swapSeat(character, target, { animate: true });
+  }
+
+  /**
+   * Move the player between seats on the active vehicle.
+   * @param {object} character
+   * @param {number} seatIndex
+   * @param {{ animate?: boolean }} [opts]
+   */
+  swapSeat(character, seatIndex, { animate = true } = {}) {
+    const vehicle = this.activeVehicle;
+    if (!vehicle || !character?.vehicle?.active) return false;
+    if (seatIndex < 0 || seatIndex >= vehicle.config.seats.length) return false;
+    const fromIndex = character.vehicle.seatIndex ?? vehicle.driverSeatIndex;
+    if (fromIndex === seatIndex) return true;
+
+    vehicle.clearOccupant(character);
+    vehicle.seatOccupant(seatIndex, character);
+    character.vehicle.seatIndex = seatIndex;
+    const seat = vehicle.config.seats[seatIndex];
+    const onRoof = seat?.name === 'roof';
+    character.vehicle.roofSurfing = onRoof;
+    character.vehicle.animationState = onRoof
+      ? 'idle'
+      : (vehicle.driverAnimationState ?? 'ridingHorse');
+    character.vehicle.handTargets = seat?.handGrip
+      ? {
+          center: new THREE.Vector3(),
+          left: new THREE.Vector3(),
+          right: new THREE.Vector3(),
+          tangent: new THREE.Vector3(),
+          normal: new THREE.Vector3(),
+        }
+      : null;
+    character.vehicle.footTargets = seat?.footGrip
+      ? {
+          left: new THREE.Vector3(),
+          right: new THREE.Vector3(),
+          tangent: new THREE.Vector3(),
+          normal: new THREE.Vector3(),
+        }
+      : null;
+    // Recompute hip anchor for standing vs seated.
+    character.vehicle.anchorOffset = getRiderHipAnchorOffset(character);
+
+    if (animate) {
+      this._seatSwap = {
+        fromIndex,
+        toIndex: seatIndex,
+        elapsed: 0,
+        duration: ROOF_SWAP_DURATION,
+      };
+    } else {
+      this._seatSwap = null;
+      this._lockRiderToSeat(character);
+    }
+
+    character.animationController?.play?.(character.vehicle.animationState, 0.18);
+    this._applyRoofCamera(onRoof);
+    if (!onRoof) this._roofStability = 0;
+    return true;
+  }
+
+  _updateSeatSwap(character, delta) {
+    if (!this._seatSwap || !character?.vehicle) return;
+    const swap = this._seatSwap;
+    swap.elapsed += delta;
+    const t = Math.min(1, swap.elapsed / Math.max(1e-4, swap.duration));
+    // Smoothstep blend between seat world poses.
+    const a = t * t * (3 - 2 * t);
+    const vehicle = this.activeVehicle;
+    if (!vehicle) {
+      this._seatSwap = null;
+      return;
+    }
+    const fromPos = new THREE.Vector3();
+    const toPos = new THREE.Vector3();
+    const fromQuat = new THREE.Quaternion();
+    const toQuat = new THREE.Quaternion();
+    vehicle.getSeatWorldTransform(swap.fromIndex, fromPos, fromQuat);
+    vehicle.getSeatWorldTransform(swap.toIndex, toPos, toQuat);
+    _seatPos.lerpVectors(fromPos, toPos, a);
+    _seatQuat.slerpQuaternions(fromQuat, toQuat, a);
+    if (character.vehicle.anchorOffset) {
+      _anchorOffset.copy(character.vehicle.anchorOffset).applyQuaternion(_seatQuat);
+      character.group.position.copy(_seatPos).sub(_anchorOffset);
+    } else {
+      character.group.position.copy(_seatPos);
+    }
+    character.group.quaternion.copy(_seatQuat);
+    if (t >= 1) {
+      this._seatSwap = null;
+      character.vehicle.seatIndex = swap.toIndex;
+      this._lockRiderToSeat(character);
+    }
+  }
+
+  /**
+   * Roof-surf stability: hard steer/brake or body tip builds stress and dumps
+   * the player back to the seat (or ejects on extreme load).
+   */
+  _updateRoofStability(character, delta, controls, level) {
+    if (!character?.vehicle?.roofSurfing || this._seatSwap) return;
+    const vehicle = this.activeVehicle;
+    if (!vehicle) return;
+
+    const speed = vehicle.speed ?? 0;
+    let load = 0;
+    if (speed >= ROOF_STABILITY_MIN_SPEED) {
+      if (Math.abs(controls?.steer ?? 0) >= ROOF_STABILITY_HARD_STEER) load += 1;
+      if ((controls?.brake ?? 0) >= ROOF_STABILITY_HARD_BRAKE) load += 0.85;
+      if (controls?.handbrake) load += 0.5;
+    }
+    const body = this.physics?.getFreshBody?.(vehicle.bodyHandle);
+    if (body) {
+      try {
+        const av = body.angvel();
+        const tip = Math.hypot(av.x, av.z);
+        if (tip > 1.1) load += Math.min(1.2, tip * 0.55);
+      } catch { /* ignore */ }
+    }
+    if ((vehicle.pendingDamageImpacts?.length ?? 0) > 0) load += 1.2;
+
+    if (load > 0.05) {
+      this._roofStability += load * ROOF_STABILITY_BUILD * delta;
+    } else {
+      this._roofStability = Math.max(0, this._roofStability - ROOF_STABILITY_RECOVER * delta);
+    }
+
+    if (this._roofStability >= ROOF_STABILITY_EJECT && load >= 1.5) {
+      // Extreme: throw off the side onto the road.
+      this._exit({ character, level: level ?? this.level });
+      character.pendingImpulse = character.pendingImpulse ?? new THREE.Vector3();
+      const yaw = vehicle.group?.rotation.y ?? 0;
+      character.pendingImpulse.x += Math.cos(yaw) * 6;
+      character.pendingImpulse.z += Math.sin(yaw) * 6;
+      character.verticalVelocity = Math.max(character.verticalVelocity, 3);
+      this._roofStability = 0;
+      return;
+    }
+    if (this._roofStability >= ROOF_STABILITY_THROW) {
+      // Mild failure: drop back into the cabin seat.
+      this.swapSeat(character, vehicle.driverSeatIndex, { animate: true });
+      this._roofStability = 0;
+    }
+  }
+
+  _applyRoofCamera(onRoof) {
+    const cam = this.cameraSystem;
+    if (!cam?.setVehicleCameraMode) return;
+    if (onRoof) {
+      if (this._cameraModeBeforeRoof == null) {
+        this._cameraModeBeforeRoof = cam.vehicleCameraMode ?? 'close';
+      }
+      cam.setVehicleCameraMode('roof');
+    } else {
+      this._restoreCameraAfterRoof();
+    }
+  }
+
+  _restoreCameraAfterRoof() {
+    const cam = this.cameraSystem;
+    if (!cam?.setVehicleCameraMode) {
+      this._cameraModeBeforeRoof = null;
+      return;
+    }
+    if (cam.vehicleCameraMode === 'roof') {
+      const restore = this._cameraModeBeforeRoof ?? 'close';
+      // Prefer a chase mode; firstPerson is awkward right after roof-surf.
+      cam.setVehicleCameraMode(restore === 'roof' ? 'close' : restore);
+    }
+    this._cameraModeBeforeRoof = null;
+  }
+
   _lockRiderToSeat(character) {
     const vehicle = this.activeVehicle;
     const state = character.vehicle;
     if (!vehicle || !state) {
       return;
     }
+    // Mid seat-swap owns the pose.
+    if (this._seatSwap) return;
+
     if (vehicle.getSeatWorldTransform(state.seatIndex, _seatPos, _seatQuat)) {
       // Hip-anchor: place the group so the rider's hips (not the group origin)
       // land on the seat, the same way the horse saddle does.
@@ -658,7 +1145,7 @@ export class VehicleSystem {
 
   // ---- control routing -----------------------------------------------------
 
-  _controlsFromInput(vehicle, input) {
+  _controlsFromInput(vehicle, input, { roofSurfing = false } = {}) {
     const c = makeNeutralControls();
     const throttle = clamp(-input.moveZ, -1, 1); // W (forward) => moveZ = -1
     const steer = applyVehicleSteer(clamp(input.moveX, -1, 1)); // D (right) => +1
@@ -680,7 +1167,8 @@ export class VehicleSystem {
       default:
         c.throttle = throttle;
         c.steer = steer;
-        c.brake = input.jump ? 1 : 0; // Space = brake
+        // Space = brake in cabin; on roof-surf Space is car-leap (hold/release).
+        c.brake = (!roofSurfing && input.jump) ? 1 : 0;
         c.handbrake = input.brace === true; // Shift = handbrake / drift entry
         break;
     }
@@ -689,16 +1177,60 @@ export class VehicleSystem {
 
   // ---- debug ---------------------------------------------------------------
 
-  snapshot() {
+  snapshot(character = null, platforms = null) {
+    const hijack = character
+      ? this.getHijackCandidate(character, platforms)
+      : null;
     return {
       status: this.status,
       count: this.vehicles.length,
       activeId: this.activeVehicle?.id ?? null,
+      roofSurfing: Boolean(this.activeVehicle && this._isRoofSeatActive()),
+      roofStability: this._roofStability,
+      seatSwapActive: Boolean(this._seatSwap),
+      hijackPrompt: Boolean(hijack),
+      hijackVehicleId: hijack?.id ?? null,
       headlightsEnabled: this.headlightsEnabled,
       headlightCount: this.vehicles.reduce((count, vehicle) => count + (vehicle.headlights?.length ?? 0), 0),
       recordedControlTicks: this.controlRecording.length,
+      vehicleCounts: this.activityCounts(),
       vehicles: this.vehicles.map((v) => v.snapshot()),
     };
+  }
+
+  /**
+   * Compact activity summary for highway benchmarks (no full per-vehicle dump).
+   */
+  activityCounts() {
+    let active = 0;
+    let sleeping = 0;
+    let dormantPool = 0;
+    let occupied = 0;
+    for (const v of this.vehicles) {
+      const a = v.activity ?? VEHICLE_ACTIVITY_ACTIVE;
+      if (a === VEHICLE_ACTIVITY_DORMANT) dormantPool += 1;
+      else if (a === VEHICLE_ACTIVITY_SLEEPING) sleeping += 1;
+      else active += 1;
+      if (v.hasDriver?.()) occupied += 1;
+    }
+    return {
+      total: this.vehicles.length,
+      simulated: this.simulatedVehicles.length,
+      active,
+      sleeping,
+      dormantPool,
+      occupied,
+      protectedActive: this.activeVehicle ? 1 : 0,
+    };
+  }
+
+  _isRoofSeatActive() {
+    const v = this.activeVehicle;
+    if (!v) return false;
+    // Occupant on a seat named roof.
+    const roofIndex = v.roofSeatIndex;
+    if (roofIndex < 0) return false;
+    return v.occupants[roofIndex] != null;
   }
 
   dispose() {
@@ -706,10 +1238,14 @@ export class VehicleSystem {
       vehicle.dispose({ scene: this.scene, physics: this.physics });
     }
     this.vehicles = [];
+    this.simulatedVehicles = [];
     this.activeVehicle = null;
     this.physics = null;
     this.scene = null;
     this.level = null;
+    this.cameraSystem = null;
+    this._seatSwap = null;
+    this._roofStability = 0;
     this.controlRecording = [];
     this.status = 'idle';
   }
@@ -808,13 +1344,15 @@ function installHeadlights(vehicle, enabled) {
   vehicle.group.add(rig);
 }
 
-function lockedInput(input) {
+function lockedInput(input, { roofSurfing = false } = {}) {
   return {
     ...input,
     moveX: 0,
     moveZ: 0,
-    jump: false,
-    jumpPressed: false,
+    // On roof-surf, keep Space (jump) for hold-to-leap; cabin strips jump (brake is applied before lock).
+    jump: roofSurfing ? Boolean(input.jump) : false,
+    jumpPressed: roofSurfing ? Boolean(input.jumpPressed) : false,
+    jumpReleased: roofSurfing ? Boolean(input.jumpReleased) : false,
     brace: false,
     bracePressed: false,
     slide: false,
@@ -832,6 +1370,17 @@ function lockedInput(input) {
     wingsuitTogglePressed: false,
     abilityPressed: false,
     dodgeDirection: null,
+    // Leap aliases (Space preferred; L optional).
+    carLeapHeld: roofSurfing
+      ? Boolean(input.jump || input.carLeapHeld)
+      : Boolean(input.carLeapHeld),
+    carLeapPressed: roofSurfing
+      ? Boolean(input.jumpPressed || input.carLeapPressed)
+      : Boolean(input.carLeapPressed),
+    carLeapReleased: roofSurfing
+      ? Boolean(input.jumpReleased || input.carLeapReleased)
+      : Boolean(input.carLeapReleased),
+    roofSurfPressed: input.roofSurfPressed === true,
   };
 }
 

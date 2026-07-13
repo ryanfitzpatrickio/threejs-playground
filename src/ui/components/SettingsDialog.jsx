@@ -153,6 +153,8 @@ export function SettingsDialog(props) {
                       { id: 'rally', label: 'Rally', title: 'Pine Ridge dirt stage', accent: true },
                       { id: 'wilds', label: 'Wilds', title: 'Eroded alpine valley' },
                       { id: 'range', label: 'Range', title: 'Warehouse breach shooting course' },
+                      { id: 'horde', label: 'Horde', title: 'Robot wave arena' },
+                      { id: 'highway', label: 'Highway', title: 'Matrix highway greybox chase' },
                     ]}
                   />
                 </SettingSection>

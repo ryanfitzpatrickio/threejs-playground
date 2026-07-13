@@ -1,9 +1,10 @@
 /**
  * WeaponSystem (M5–M7) — loadout + perf-conscious fire path.
  *
- * Owns the unified weapon list (great sword first, then guns). Scroll cycles the
- * equipped entry; number keys 1–0 jump to catalog guns; Z holsters / draws it.
- * Fire path only runs when a gun is drawn in first person.
+ * Owns the unified weapon list (great sword first, then guns). Number keys 1–0
+ * jump to catalog guns; Z holsters / draws the equipped weapon. Scroll is left
+ * for camera zoom (no weapon cycling). Fire path only runs when a gun is drawn
+ * in first person.
  *
  * Hitscan prefers cheap enemy capsules; world Rapier rays are optional (expensive
  * against city heightfields). No PointLight flash, no per-shot layout force,
@@ -32,6 +33,11 @@ import { GUN_CATALOG } from '../weapons/gunProfile.js';
 import { findMagazineMeshes } from '../weapons/magazineParts.js';
 import { createDroppedMagazineManager } from '../weapons/droppedMagazines.js';
 import { WeaponPresentationSystem } from './WeaponPresentationSystem.js';
+import {
+  buildLimbSeverPlane,
+  canGunSeverRegion,
+  classifyGunHitLimbRegion,
+} from './soldierPartialCut.js';
 
 const TRACER_POOL = 12;
 const TRACER_LIFE = 0.055;
@@ -178,7 +184,7 @@ export class WeaponSystem {
   }
 
   /**
-   * Cycle loadout by scroll direction (+1 / -1).
+   * Cycle loadout by direction (+1 / -1). Kept for debug/API; not bound to scroll.
    * @param {number} dir
    * @returns {string}
    */
@@ -191,8 +197,9 @@ export class WeaponSystem {
   }
 
   /**
-   * Early-frame loadout: Z holster/draw, scroll cycle, 1–0 gun hotkeys.
+   * Early-frame loadout: Z holster/draw, 1–0 gun hotkeys.
    * Call before combat/FP consume the frame so sword and gun stance stay in sync.
+   * Scroll is not used for weapons (camera zoom keeps zoomDelta).
    *
    * @returns {object} patched input (drawSheathe / gunSlot consumed when handled)
    */
@@ -213,7 +220,7 @@ export class WeaponSystem {
     );
     const reloading = Boolean(firstPersonWeaponSystem?.gunView?.gun?.isReloading);
 
-    // Number keys 1–0 equip GUN_CATALOG[0..9] directly (sword stays on scroll / Z).
+    // Number keys 1–0 equip GUN_CATALOG[0..9] directly (sword stays on Z).
     const slot = Number.isInteger(input.gunSlotPressed) ? input.gunSlotPressed : -1;
     if (slot >= 0 && slot < GUN_CATALOG.length && !busy && !reloading) {
       const gunId = GUN_CATALOG[slot]?.id;
@@ -236,25 +243,6 @@ export class WeaponSystem {
         }
       }
       nextInput = { ...nextInput, gunSlotPressed: null };
-    }
-
-    // Scroll cycles the full weapon list (sword + guns) when free.
-    const zoom = Number(nextInput.zoomDelta) || 0;
-    if (zoom !== 0 && !busy && !reloading) {
-      const prevId = this.equippedId;
-      this.cycle(zoom > 0 ? 1 : -1);
-      if (this.equippedId !== prevId) {
-        this._onEquippedChanged({ character, combatSystem, firstPersonWeaponSystem });
-        // Stay drawn/holstered as before; snap the new weapon into that state.
-        this._applyDrawnState({
-          character,
-          combatSystem,
-          firstPersonWeaponSystem,
-          animated: false,
-        });
-      }
-      // Consume zoom so abilities / camera do not also react this frame.
-      nextInput = { ...nextInput, zoomDelta: 0 };
     }
 
     // Z: holster put-away / draw the equipped weapon (sword first by default).
@@ -367,6 +355,10 @@ export class WeaponSystem {
     vehicleDamageSystem = null,
     vehicleSystem = null,
     shootingRangeSystem = null,
+    hordeProxySystem = null,
+    resolveHordeTarget = null,
+    maxDetailedRagdolls = Infinity,
+    fallbackHordeDeath = null,
   }) {
     const dt = Math.max(0, Number(delta) || 0);
     this._tickEffects(dt);
@@ -374,7 +366,14 @@ export class WeaponSystem {
     // Dropped mags outlive the fire path (they keep falling while holstered), so
     // sync/age them before the active-weapon early-out.
     this._droppedMags?.update({ delta: dt, physicsSystem });
-    this._flushOneRagdoll({ physicsSystem, enemySystem, enemyCutSystem, propSystem });
+    this._flushOneRagdoll({
+      physicsSystem,
+      enemySystem,
+      enemyCutSystem,
+      propSystem,
+      maxDetailedRagdolls,
+      fallbackHordeDeath,
+    });
     this._recoverRecoil(dt);
 
     const fp = firstPersonWeaponSystem;
@@ -404,7 +403,7 @@ export class WeaponSystem {
       this._preloadGunSounds(gun);
     }
 
-    // Keep switch index aligned with loadout (scroll is handled in processLoadout).
+    // Keep switch index aligned with loadout.
     this.switchIndex = weaponIndex(this.equippedId);
 
     // X held: inspect firearm (Z is holster only).
@@ -489,9 +488,13 @@ export class WeaponSystem {
         cameraSystem,
         physicsSystem,
         enemySystem,
+        enemyCutSystem,
+        propSystem,
         vehicleDamageSystem,
         vehicleSystem,
         shootingRangeSystem,
+        hordeProxySystem,
+        resolveHordeTarget,
       });
     }
 
@@ -505,9 +508,13 @@ export class WeaponSystem {
     cameraSystem,
     physicsSystem,
     enemySystem,
+    enemyCutSystem = null,
+    propSystem = null,
     vehicleDamageSystem,
     vehicleSystem,
     shootingRangeSystem = null,
+    hordeProxySystem = null,
+    resolveHordeTarget = null,
   }) {
     this.totalShots += 1;
     const camera = cameraSystem?.camera;
@@ -542,16 +549,29 @@ export class WeaponSystem {
 
     const dirs = buildPelletDirections(this._fwdScratch, pelletCount, spread);
     const rangeHits = shootingRangeSystem?.getHitEntities?.() ?? [];
+    // Spatial proxy candidates near the camera aim (M4) — avoid scanning all 250.
+    let proxyTargets = [];
+    if (hordeProxySystem?.getHitTargetsNear) {
+      const focus = this._originScratch;
+      proxyTargets = hordeProxySystem.getHitTargetsNear(focus.x, focus.z, Math.min(range, 36)) ?? [];
+    } else {
+      proxyTargets = hordeProxySystem?.getHitTargets?.() ?? [];
+    }
     // Capsule hitscan treats range targets like enemies (same vertical cylinder).
-    const enemies = rangeHits.length
-      ? [...(enemySystem?.enemies ?? []), ...rangeHits]
-      : (enemySystem?.enemies ?? null);
+    // Horde proxies are included so a direct aim promotes (or lightweight-damages).
+    const baseEnemies = enemySystem?.enemies ?? [];
+    const enemies = rangeHits.length || proxyTargets.length
+      ? [...baseEnemies, ...rangeHits, ...proxyTargets]
+      : baseEnemies;
     // City/world raycasts remain opt-in, but the compact shooting range exists
     // specifically to exercise surface response and has a small fixed collider set.
     const physics = (USE_WORLD_RAY || shootingRangeSystem?.enabled) ? physicsSystem : null;
 
     let hitSummary = null;
     let impactAudioPlayed = false;
+    // One CSG sever per enemy per shot (shotgun pellets still damage, but only
+    // the first pellet that lands a limb/head region runs the cut path).
+    const severedThisShot = new Set();
     // Nearest world surface the shot pointed at — drives the fake muzzle-flash
     // bounce glow (cheaper than a dynamic light). Reuses the pellet raycasts.
     let nearestWorld = null;
@@ -600,12 +620,32 @@ export class WeaponSystem {
           damage: result.damage,
         });
       } else if (result.kind === 'enemy' && result.enemy) {
+        let enemy = result.enemy;
+        if (resolveHordeTarget) {
+          // Horde: route EVERY hit (proxy or full-actor tip) through the
+          // resolver so M3 suppression + tip knockback fire for full actors
+          // too. Proxies may promote or take lightweight damage (→ null).
+          enemy = resolveHordeTarget(enemy, { damage: result.damage, point: result.point }) ?? null;
+          if (!enemy) {
+            this.totalHits += 1;
+            continue;
+          }
+        } else if (enemy.isHordeProxy) {
+          hordeProxySystem?.applyLightweightDamage?.(result.enemy, result.damage);
+          this.totalHits += 1;
+          continue;
+        }
         this._applyEnemyDamage({
-          enemy: result.enemy,
+          enemy,
           damage: result.damage,
           region: result.region,
+          point: result.point,
           direction: d,
           enemySystem,
+          enemyCutSystem,
+          physicsSystem,
+          propSystem,
+          severedThisShot,
         });
       } else if (result.kind === 'world') {
         this._tryDamageVehicle({
@@ -664,9 +704,49 @@ export class WeaponSystem {
     }
   }
 
-  _applyEnemyDamage({ enemy, damage, region, direction, enemySystem }) {
-    if (!enemy || enemy.pendingCorpse || (enemy.health ?? 0) <= 0) return;
+  _applyEnemyDamage({
+    enemy,
+    damage,
+    region,
+    point = null,
+    direction,
+    enemySystem,
+    enemyCutSystem = null,
+    physicsSystem = null,
+    propSystem = null,
+    severedThisShot = null,
+  }) {
+    if (!enemy || enemy.pendingCorpse || enemy.defeated || (enemy.health ?? 0) <= 0) return;
     this.totalHits += 1;
+
+    // Debug invulnerable: arm/leg severs still run (posture testing), but HP
+    // never drops and head-sever kill is blocked (allowHead: false).
+    const invuln = Boolean(enemySystem?.isInvulnerable?.());
+
+    // Mixamo humanoids: gun hits on limb/head regions use the fast skin-region
+    // sever path (disability anim + severed-limb prop). Body stays HP-only; guns
+    // never author the sword's expensive torso bisect / waist split geometry.
+    const severHandled = this._tryGunLimbSever({
+      enemy,
+      region,
+      point,
+      enemySystem,
+      enemyCutSystem,
+      physicsSystem,
+      propSystem,
+      severedThisShot,
+      allowHead: !invuln,
+    });
+    if (severHandled === 'removed') {
+      // Head death / cut-limit ragdoll already tore down the enemy.
+      return;
+    }
+
+    if (invuln) {
+      enemy.staggerTimer = Math.max(enemy.staggerTimer ?? 0, region === 'head' ? 0.45 : 0.22);
+      return;
+    }
+
     enemy.health = Math.max(0, (enemy.health ?? 100) - damage);
     enemy.staggerTimer = Math.max(enemy.staggerTimer ?? 0, region === 'head' ? 0.45 : 0.22);
     enemySystem?.applyKnockback?.(enemy, {
@@ -675,11 +755,13 @@ export class WeaponSystem {
     });
 
     if ((enemy.health ?? 0) > 0) return;
+    if (enemy.pendingCorpse || enemy.defeated || !enemy.model?.parent) return;
 
     // Defer ragdoll spawn — smashEnemyToRagdoll is multi-ms and hitchy mid-burst.
     this.totalKills += 1;
     enemy.health = 0;
     enemy.pendingCorpse = true;
+    enemySystem?.markDefeated?.(enemy, 'firearm');
     this._pendingRagdolls.push({
       enemy,
       launch: {
@@ -690,11 +772,89 @@ export class WeaponSystem {
     });
   }
 
-  _flushOneRagdoll({ physicsSystem, enemySystem, enemyCutSystem, propSystem }) {
+  /**
+   * @returns {'removed'|'severed'|false}
+   */
+  _tryGunLimbSever({
+    enemy,
+    region,
+    point,
+    enemySystem,
+    enemyCutSystem,
+    physicsSystem,
+    propSystem,
+    severedThisShot,
+    allowHead = true,
+  }) {
+    if (!enemyCutSystem?.applyGunLimbSever) return false;
+    if (enemy.limbLossProfile !== 'mixamo-humanoid' || !enemy.limbLoss) return false;
+    if (severedThisShot?.has(enemy.id)) return false;
+
+    const hitPoint = point
+      ? { x: point.x, y: point.y, z: point.z }
+      : {
+        x: enemy.model?.position?.x ?? 0,
+        y: (enemy.model?.position?.y ?? 0) + (enemy.collisionHeight ?? 1.8) * 0.55,
+        z: enemy.model?.position?.z ?? 0,
+      };
+
+    const limbRegion = classifyGunHitLimbRegion(enemy, hitPoint, region);
+    if (!allowHead && limbRegion === 'head') return false;
+    if (!canGunSeverRegion(enemy, limbRegion)) return false;
+
+    const plane = buildLimbSeverPlane(enemy, limbRegion);
+    if (!plane) return false;
+
+    const cut = enemyCutSystem.applyGunLimbSever({
+      enemy,
+      region: limbRegion,
+      plane,
+      physicsSystem,
+      enemySystem,
+    });
+    if (!cut) return false;
+
+    severedThisShot?.add(enemy.id);
+
+    // Head sever + cut-limit / full ragdoll paths remove or corpse the enemy.
+    if (enemy.pendingCorpse || enemy.defeated || !enemy.model?.parent) {
+      if (enemy.defeated || enemy.pendingCorpse) {
+        this.totalKills += 1;
+      }
+      return 'removed';
+    }
+
+    return 'severed';
+  }
+
+  _flushOneRagdoll({
+    physicsSystem,
+    enemySystem,
+    enemyCutSystem,
+    propSystem,
+    maxDetailedRagdolls = Infinity,
+    fallbackHordeDeath = null,
+  }) {
     if (!this._pendingRagdolls.length) return;
     const job = this._pendingRagdolls.shift();
     const { enemy, launch } = job;
-    if (!enemy?.model) return;
+    // `model.parent` is null after clearEnemies disposed the model but before
+    // the enemy record was nulled — skip stale jobs so a post-restart flush
+    // can't ragdoll an enemy that no longer exists in the scene.
+    if (!enemy?.model?.parent) return;
+
+    // M4: when the detailed-ragdoll budget is exhausted, degrade to an instanced
+    // fallen corpse (or silent despawn) instead of spawning more Rapier bodies.
+    const canAfford = enemyCutSystem?.canAffordDetailedRagdoll?.(maxDetailedRagdolls) ?? true;
+    if (!canAfford) {
+      if (typeof fallbackHordeDeath === 'function' && fallbackHordeDeath(enemy, launch)) {
+        return;
+      }
+      physicsSystem?.removeEnemyCollider?.(enemy);
+      enemySystem?.releasePlayerSlot?.(enemy);
+      enemySystem?.removeEnemy?.(enemy);
+      return;
+    }
 
     const smashed = enemyCutSystem?.smashEnemyToRagdoll?.({
       enemy,
@@ -704,9 +864,23 @@ export class WeaponSystem {
       propSystem,
     });
     if (!smashed) {
+      // smash can fail for non-squishy styles — still try corpse fallback in horde.
+      if (typeof fallbackHordeDeath === 'function' && fallbackHordeDeath(enemy, launch)) {
+        return;
+      }
       physicsSystem?.removeEnemyCollider?.(enemy);
       enemySystem?.releasePlayerSlot?.(enemy);
+    } else {
+      // Keep budget honest if many shards spawned from one kill.
+      enemyCutSystem?.enforceDetailedRagdollBudget?.(maxDetailedRagdolls);
     }
+  }
+
+  // Drop every deferred firearm ragdoll without spawning them. Called by
+  // EnemySystem.clearEnemies on horde restart/teardown so a queued job can't
+  // ragdoll an enemy that was just disposed.
+  clearPendingRagdolls() {
+    this._pendingRagdolls.length = 0;
   }
 
   _tryDamageVehicle({ point, direction, damage, vehicleSystem, vehicleDamageSystem }) {

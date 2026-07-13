@@ -209,8 +209,10 @@ export class CameraSystem {
   }
 
   setVehicleCameraMode(mode) {
-    const order = GAME_CONFIG.camera.vehicleCameraModeOrder;
-    if (!order.includes(mode)) {
+    // Allow any named mode in vehicleCameraModes (includes M2 'roof', which is
+    // not in the eye-cycle order).
+    const modes = GAME_CONFIG.camera.vehicleCameraModes;
+    if (!modes?.[mode]) {
       return this.vehicleCameraMode;
     }
     if (mode === this.vehicleCameraMode) {
