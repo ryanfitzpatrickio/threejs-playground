@@ -1,0 +1,1 @@
+export { buildAvatarMeshColliderSnapshotFromSkinnedMeshes } from './AvatarCollisionRegistry'

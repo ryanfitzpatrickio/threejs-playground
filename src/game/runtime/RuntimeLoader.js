@@ -13,7 +13,9 @@ import {
 } from '../../world/worldMap/worldMapScenes.js';
 import { sanitizeWebGPUVertexBuffers } from '../geometry/prepareWebGPUGeometry.js';
 import { installRangeEnvironment } from '../world/installRangeEnvironment.js';
+import { createHordeGiController } from '../world/hordeGi.js';
 import { registerBuiltinShaderDebug } from 'virtual:dreamfall-shader-debug';
+import { configureRuntimeStartupEnvironment } from './configureRuntimeStartupEnvironment.js';
 import {
   getOnFootFirstPerson,
   setOnFootFirstPerson,
@@ -73,108 +75,7 @@ async function startRuntime() {
   if (this.disposed) {
     return;
   }
-  // Animated rally spectators bake flipbook frames whose per-frame instance
-  // count varies every tick; WebGPU captures that count into the instance
-  // binding at pipeline-build time. Weather/env changes (and resize) call
-  // invalidatePipeline, rebuilding those bindings at a stale small count so
-  // the crowd flickers. Re-prime the current level's crowd on each invalidate
-  // (looked up dynamically so it survives level swaps). The bare scene-fog
-  // toggle path is covered separately in the debug bridge.
-  this.rendererSystem.onPipelineInvalidated = () => {
-    this.levelSystem.level?.spectatorCrowd?.markPipelinesDirty?.();
-    this.hordeProxySystem?.markPipelinesDirty?.();
-  };
-  // Rally starts at midday under rain. Bake sky + IBL with the overcast
-  // profile before the first environment capture so startup matches the live
-  // weather (setWeather below still wires rain VFX/audio).
-  // Range: clear morning sky so the open-roof warehouse gets strong env-map IBL.
-  if (this.levelMode === 'rally' && !this.photorealismPresetId) {
-    this.sceneSystem.skySystem?.setTimeOfDay?.(0.5);
-    this.sceneSystem.skySystem?.setWeather?.('rain');
-    this.sceneSystem.setWeather?.('rain');
-    this.sceneSystem.setSceneFogEnabled?.(true);
-    this.rendererSystem.setWeather?.('rain');
-  } else if (this.levelMode === 'range') {
-    this.sceneSystem.skySystem?.setTimeOfDay?.(0.42);
-    this.sceneSystem.skySystem?.setWeather?.('clear');
-    this.sceneSystem.setWeather?.('clear');
-    this.sceneSystem.setSceneFogEnabled?.(false);
-    this.rendererSystem.setWeather?.('clear');
-    // One shadow volume over the whole warehouse (not a 32 m player bubble).
-    // Aligns sun with sky so far walls cast and god rays match time of day.
-    this.sceneSystem.configureRangeShadows?.({
-      center: new THREE.Vector3(0, 1.5, 50),
-      halfExtent: 72,
-      far: 220,
-      sunDistance: 100,
-      mapSize: this.qualityPreset.shadowMapSize ?? 2048,
-    });
-    // Official TSL godrays march the sun shadow map — bind the scene sun so
-    // shafts track time-of-day direction + intensity automatically.
-    this.rendererSystem.setGodRaysLight?.(this.sceneSystem.sun ?? null);
-  } else if (this.levelMode === 'horde') {
-    // Outdoor foundry yard: clear late-morning sky, normal third-person combat.
-    // Do not force FP / gun / range godrays — weapons stay switchable.
-    // Fog is applied lightly via applyHordeSpectaclePreset (M6); keep off until then.
-    this.sceneSystem.skySystem?.setTimeOfDay?.(0.38);
-    this.sceneSystem.skySystem?.setWeather?.('clear');
-    this.sceneSystem.setWeather?.('clear');
-    this.sceneSystem.setSceneFogEnabled?.(false);
-    this.rendererSystem.setWeather?.('clear');
-    // Compact yard — no clipmap cascade tax; modest follow shadow only.
-    this.sceneSystem.configureRangeShadows?.({
-      center: new THREE.Vector3(0, 2, 0),
-      halfExtent: this.qualityPreset.shadowFrustumHalf ?? 28,
-      far: this.qualityPreset.shadowFar ?? 64,
-      sunDistance: 80,
-      mapSize: this.qualityPreset.shadowMapSize ?? 1024,
-    });
-  } else if (this.levelMode === 'highway') {
-    // Elevated daylight freeway — distance fog hides visual segment recycle.
-    this.sceneSystem.skySystem?.setTimeOfDay?.(0.46);
-    this.sceneSystem.skySystem?.setWeather?.('clear');
-    this.sceneSystem.setWeather?.('clear');
-    this.sceneSystem.setSceneFogEnabled?.(true);
-    this.rendererSystem.setWeather?.('clear');
-  } else if (this.photorealismPresetId) {
-    this.sceneSystem.skySystem?.setWeather?.('clear');
-    this.sceneSystem.setWeather?.('clear');
-    this.sceneSystem.setSceneFogEnabled?.(false);
-    this.rendererSystem.setWeather?.('clear');
-  }
-  this.rendererSystem.installEnvironment(this.sceneSystem.scene, this.sceneSystem.skySystem);
-  if (this.levelMode === 'range' && this.sceneSystem.scene) {
-    // Stronger sky PMREM so timber materials read outdoors light through open roof.
-    this.sceneSystem.scene.environmentIntensity = 0.95;
-  }
-  // Hand the volumetric sky/cloud provider (if active) to the renderer so its
-  // cloud composite can be inserted into the post pipeline.
-  this.rendererSystem.cloudSkyProvider = this.sceneSystem.skySystem?.provider ?? null;
-  this.weatherSystem.initialize({
-    rendererSystem: this.rendererSystem,
-    sceneSystem: this.sceneSystem,
-    levelSystem: this.levelSystem,
-    qualityPreset: this.qualityPreset,
-  });
-  if (this.photorealismPresetId || this.levelMode === 'range' || this.levelMode === 'horde' || this.levelMode === 'highway') {
-    this.weatherSystem.setWeather('clear');
-  } else if (this.levelMode === 'rally') {
-    this.weatherSystem.setWeather('rain');
-  }
-  // setWeather resets environmentIntensity from the quality preset — restore
-  // the open-roof IBL boost after clear weather is applied.
-  if (this.levelMode === 'range' && this.sceneSystem.scene) {
-    this.sceneSystem.scene.environmentIntensity = 0.95;
-    // Re-apply after weather may have touched the sun; keep range shadow volume.
-    this.sceneSystem.configureRangeShadows?.({
-      center: new THREE.Vector3(0, 1.5, 50),
-      halfExtent: 72,
-      far: 220,
-      sunDistance: 100,
-      mapSize: this.qualityPreset.shadowMapSize ?? 2048,
-    });
-    this.rendererSystem.setGodRaysLight?.(this.sceneSystem.sun ?? null);
-  }
+  configureRuntimeStartupEnvironment(this);
 
   this.cameraSystem.initialize(this.sceneSystem.scene, this.qualityPreset);
   this.cameraSystem.setComfortOptions({
@@ -279,6 +180,9 @@ async function streamAssetsInBackground() {
   const character = this.characterSystem.character;
   if (character && this.levelSystem.level?.spawnPoint) {
     character.group.position.copy(this.levelSystem.level.spawnPoint);
+    character.group.visible = this.levelMode !== 'sims' && this.levelMode !== 'dog-park';
+    if (this.levelMode === 'sims') character.hiddenForSims = true;
+    if (this.levelMode === 'dog-park') character.hiddenForDogPark = true;
     if (character.velocity) character.velocity.set(0, 0, 0);
     character.verticalVelocity = 0;
   }
@@ -302,10 +206,13 @@ async function streamAssetsInBackground() {
     }
   }
 
+  await this.simsFeature.initializeAfterLevel();
+  await this.dogParkFeature.initializeAfterLevel();
+
   this._setLoadProgress({ phase: 'systems', label: 'Loading systems…', sub: { systems: 0.05 } });
 
   // Rally / range / horde / highway are purpose-built scenes — skip open-world ambient systems.
-  if (this.levelMode !== 'rally' && this.levelMode !== 'range' && this.levelMode !== 'horde' && this.levelMode !== 'highway') {
+  if (this.levelMode !== 'rally' && this.levelMode !== 'range' && this.levelMode !== 'horde' && this.levelMode !== 'highway' && this.levelMode !== 'sims' && this.levelMode !== 'dog-park') {
     await this.horseSystem.load(this.sceneSystem.scene, {
       position: horseSpawnPosition(character?.group.position, this.levelSystem),
       getGroundHeightAt: (position) => horseGroundHeight(this.levelSystem, position),
@@ -459,6 +366,9 @@ async function streamAssetsInBackground() {
   this.firstPersonWeaponSystem.start({
     character: this.characterSystem.character,
   });
+  // Late systems (FP weapons, etc.) can force Mara visible; re-park after they start.
+  if (this.levelMode === 'sims') this.simsFeature?.parkMainPlayer?.();
+  if (this.levelMode === 'dog-park') this.dogParkFeature?.parkMainPlayer?.();
   this.weaponSystem.initialize(this.sceneSystem.scene);
 
   // Shooting range: force first-person + equip a gun for the session (training focus).
@@ -507,6 +417,24 @@ async function streamAssetsInBackground() {
     }
   }
 
+  // Ground carry pickups (propane tanks, etc.) authored on the level.
+  this.carryItemSystem?.bindLevel?.({
+    scene: this.sceneSystem.scene,
+    level: this.levelSystem.level,
+  });
+
+  // Mall aquarium breach (horde centerpiece); no-ops when level has no tanks.
+  this.aquariumBreachSystem?.bindLevel?.({
+    scene: this.sceneSystem.scene,
+    level: this.levelSystem.level,
+  });
+
+  // Shootable propane pickups (inert on levels without level.propaneTanks).
+  this.propaneTankSystem?.bindLevel?.({
+    scene: this.sceneSystem.scene,
+    level: this.levelSystem.level,
+  });
+
   // Horde / Deathmatch: third-person arena with normal weapon switching. Apply
   // spawn yaw and the level's environment (no forced FP / gun / range systems).
   if (this.levelMode === 'horde' || this.levelMode === 'deathmatch') {
@@ -533,6 +461,24 @@ async function streamAssetsInBackground() {
       this.sceneSystem._sceneFog.far = far;
       if (Number.isFinite(arenaEnv.fogColor)) {
         this.sceneSystem._sceneFog.color?.setHex?.(arenaEnv.fogColor);
+      }
+    }
+
+    // Mall LightProbeGrid GI (docs/horde-gi-plan.md). Bake after first frames.
+    if (this.levelMode === 'horde') {
+      try {
+        this.hordeGi?.dispose?.();
+        this.hordeGi = createHordeGiController({
+          scene: this.sceneSystem.scene,
+          renderer: this.rendererSystem.renderer,
+          qualityPreset: this.qualityPreset,
+          levelGi: this.levelSystem.level?.hordeGi ?? null,
+        });
+        console.info('[HordeGi] controller created', this.hordeGi.getSnapshot());
+        this.hordeGi.scheduleBake();
+      } catch (err) {
+        console.warn('[GameRuntime] horde GI setup failed', err);
+        this.hordeGi = null;
       }
     }
   }
@@ -599,7 +545,7 @@ async function spawnPlayVehicles(host, character) {
     }
     return;
   }
-  if (host.levelMode === 'range' || host.levelMode === 'horde') {
+  if (host.levelMode === 'range' || host.levelMode === 'horde' || host.levelMode === 'sims' || host.levelMode === 'dog-park') {
     return;
   }
 

@@ -1,0 +1,101 @@
+{
+  "version": 2,
+  "source": "/assets/models/horse-rigged.glb",
+  "retarget": "world-space-rotation-delta",
+  "reference": "Rest Pose clip @ t=0",
+  "rootTranslationLocked": true,
+  "groundContactClips": [
+    "Idle",
+    "Idle Alert",
+    "Walk",
+    "Run",
+    "Sit",
+    "Sneak"
+  ],
+  "clips": [
+    {
+      "name": "Bark",
+      "file": "bark.json",
+      "duration": 2.799999952316284,
+      "tracks": 36
+    },
+    {
+      "name": "Bite",
+      "file": "bite.json",
+      "duration": 0.8666666746139526,
+      "tracks": 36
+    },
+    {
+      "name": "Death",
+      "file": "death.json",
+      "duration": 1.1666666269302368,
+      "tracks": 36
+    },
+    {
+      "name": "Fall",
+      "file": "fall.json",
+      "duration": 0.5,
+      "tracks": 36
+    },
+    {
+      "name": "Fetch",
+      "file": "fetch.json",
+      "duration": 1,
+      "tracks": 36
+    },
+    {
+      "name": "Howl",
+      "file": "howl.json",
+      "duration": 2.3333332538604736,
+      "tracks": 36
+    },
+    {
+      "name": "Idle",
+      "file": "idle.json",
+      "duration": 1.3333333730697632,
+      "tracks": 37
+    },
+    {
+      "name": "Idle Alert",
+      "file": "idle-alert.json",
+      "duration": 1.600000023841858,
+      "tracks": 37
+    },
+    {
+      "name": "Jump",
+      "file": "jump.json",
+      "duration": 2.200000047683716,
+      "tracks": 36
+    },
+    {
+      "name": "Rest Pose",
+      "file": "rest-pose.json",
+      "duration": 0.3333333432674408,
+      "tracks": 36
+    },
+    {
+      "name": "Run",
+      "file": "run.json",
+      "duration": 0.46666666865348816,
+      "tracks": 37
+    },
+    {
+      "name": "Sit",
+      "file": "sit.json",
+      "duration": 1.3333333730697632,
+      "tracks": 37
+    },
+    {
+      "name": "Sneak",
+      "file": "sneak.json",
+      "duration": 1.2999999523162842,
+      "tracks": 37
+    },
+    {
+      "name": "Walk",
+      "file": "walk.json",
+      "duration": 1,
+      "tracks": 37
+    }
+  ]
+}

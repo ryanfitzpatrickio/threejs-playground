@@ -1,0 +1,1097 @@
+{
+  "generatedAt": "2026-07-14T00:48:53.777Z",
+  "defaultBodySize": true,
+  "morphs": "all zero (neutral)",
+  "outfitVariant": "morph",
+  "outfitOnly": true,
+  "skeleton": "UBC → DEF-* (65 joints)",
+  "angles": [
+    "front",
+    "threequarter",
+    "side",
+    "back",
+    "threequarter-back"
+  ],
+  "shots": [
+    {
+      "file": "male-peasant-front.png",
+      "body": "male",
+      "outfitId": "fantasy-peasant",
+      "angle": "front",
+      "outfit": {
+        "id": "fantasy-peasant",
+        "body": "male",
+        "variant": "morph",
+        "meshes": 5,
+        "morphMeshes": 5,
+        "projectedTargets": 25,
+        "bodyHideMeshes": 1,
+        "necklineWindowMeshes": 0,
+        "visible": true,
+        "fit": {
+          "pushLocal": 0.004,
+          "selectedMorphs": {},
+          "regionScales": {
+            "torso": 1,
+            "upperArm": 1,
+            "thigh": 1
+          },
+          "outfitScale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          },
+          "outfitTuck": {
+            "drop": 0,
+            "width": 0.5
+          },
+          "shaderScale": [
+            1,
+            1,
+            1
+          ],
+          "mode": "projected-morph"
+        },
+        "bounds": {
+          "min": [
+            -0.3117813815098267,
+            0.015520168318435576,
+            -0.1771397020270171
+          ],
+          "max": [
+            0.31184462685573483,
+            1.512510916107852,
+            0.28394070364433377
+          ],
+          "height": 1.4969907477894164
+        }
+      }
+    },
+    {
+      "file": "male-peasant-threequarter.png",
+      "body": "male",
+      "outfitId": "fantasy-peasant",
+      "angle": "threequarter",
+      "outfit": {
+        "id": "fantasy-peasant",
+        "body": "male",
+        "variant": "morph",
+        "meshes": 5,
+        "morphMeshes": 5,
+        "projectedTargets": 25,
+        "bodyHideMeshes": 1,
+        "necklineWindowMeshes": 0,
+        "visible": true,
+        "fit": {
+          "pushLocal": 0.004,
+          "selectedMorphs": {},
+          "regionScales": {
+            "torso": 1,
+            "upperArm": 1,
+            "thigh": 1
+          },
+          "outfitScale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          },
+          "outfitTuck": {
+            "drop": 0,
+            "width": 0.5
+          },
+          "shaderScale": [
+            1,
+            1,
+            1
+          ],
+          "mode": "projected-morph"
+        },
+        "bounds": {
+          "min": [
+            -0.3117813815098267,
+            0.015520168318435576,
+            -0.1771397020270171
+          ],
+          "max": [
+            0.31184462685573483,
+            1.512510916107852,
+            0.28394070364433377
+          ],
+          "height": 1.4969907477894164
+        }
+      }
+    },
+    {
+      "file": "male-peasant-side.png",
+      "body": "male",
+      "outfitId": "fantasy-peasant",
+      "angle": "side",
+      "outfit": {
+        "id": "fantasy-peasant",
+        "body": "male",
+        "variant": "morph",
+        "meshes": 5,
+        "morphMeshes": 5,
+        "projectedTargets": 25,
+        "bodyHideMeshes": 1,
+        "necklineWindowMeshes": 0,
+        "visible": true,
+        "fit": {
+          "pushLocal": 0.004,
+          "selectedMorphs": {},
+          "regionScales": {
+            "torso": 1,
+            "upperArm": 1,
+            "thigh": 1
+          },
+          "outfitScale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          },
+          "outfitTuck": {
+            "drop": 0,
+            "width": 0.5
+          },
+          "shaderScale": [
+            1,
+            1,
+            1
+          ],
+          "mode": "projected-morph"
+        },
+        "bounds": {
+          "min": [
+            -0.3117813815098267,
+            0.015520168318435576,
+            -0.1771397020270171
+          ],
+          "max": [
+            0.31184462685573483,
+            1.512510916107852,
+            0.28394070364433377
+          ],
+          "height": 1.4969907477894164
+        }
+      }
+    },
+    {
+      "file": "male-peasant-back.png",
+      "body": "male",
+      "outfitId": "fantasy-peasant",
+      "angle": "back",
+      "outfit": {
+        "id": "fantasy-peasant",
+        "body": "male",
+        "variant": "morph",
+        "meshes": 5,
+        "morphMeshes": 5,
+        "projectedTargets": 25,
+        "bodyHideMeshes": 1,
+        "necklineWindowMeshes": 0,
+        "visible": true,
+        "fit": {
+          "pushLocal": 0.004,
+          "selectedMorphs": {},
+          "regionScales": {
+            "torso": 1,
+            "upperArm": 1,
+            "thigh": 1
+          },
+          "outfitScale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          },
+          "outfitTuck": {
+            "drop": 0,
+            "width": 0.5
+          },
+          "shaderScale": [
+            1,
+            1,
+            1
+          ],
+          "mode": "projected-morph"
+        },
+        "bounds": {
+          "min": [
+            -0.3117813815098267,
+            0.015520168318435576,
+            -0.1771397020270171
+          ],
+          "max": [
+            0.31184462685573483,
+            1.512510916107852,
+            0.28394070364433377
+          ],
+          "height": 1.4969907477894164
+        }
+      }
+    },
+    {
+      "file": "male-peasant-threequarter-back.png",
+      "body": "male",
+      "outfitId": "fantasy-peasant",
+      "angle": "threequarter-back",
+      "outfit": {
+        "id": "fantasy-peasant",
+        "body": "male",
+        "variant": "morph",
+        "meshes": 5,
+        "morphMeshes": 5,
+        "projectedTargets": 25,
+        "bodyHideMeshes": 1,
+        "necklineWindowMeshes": 0,
+        "visible": true,
+        "fit": {
+          "pushLocal": 0.004,
+          "selectedMorphs": {},
+          "regionScales": {
+            "torso": 1,
+            "upperArm": 1,
+            "thigh": 1
+          },
+          "outfitScale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          },
+          "outfitTuck": {
+            "drop": 0,
+            "width": 0.5
+          },
+          "shaderScale": [
+            1,
+            1,
+            1
+          ],
+          "mode": "projected-morph"
+        },
+        "bounds": {
+          "min": [
+            -0.3117813815098267,
+            0.015520168318435576,
+            -0.1771397020270171
+          ],
+          "max": [
+            0.31184462685573483,
+            1.512510916107852,
+            0.28394070364433377
+          ],
+          "height": 1.4969907477894164
+        }
+      }
+    },
+    {
+      "file": "male-ranger-front.png",
+      "body": "male",
+      "outfitId": "fantasy-ranger",
+      "angle": "front",
+      "outfit": {
+        "id": "fantasy-ranger",
+        "body": "male",
+        "variant": "morph",
+        "meshes": 10,
+        "morphMeshes": 10,
+        "projectedTargets": 50,
+        "bodyHideMeshes": 1,
+        "necklineWindowMeshes": 0,
+        "visible": true,
+        "fit": {
+          "pushLocal": 0.004,
+          "selectedMorphs": {},
+          "regionScales": {
+            "torso": 1,
+            "upperArm": 1,
+            "thigh": 1
+          },
+          "outfitScale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          },
+          "outfitTuck": {
+            "drop": 0,
+            "width": 0.5
+          },
+          "shaderScale": [
+            1,
+            1,
+            1
+          ],
+          "mode": "projected-morph"
+        },
+        "bounds": {
+          "min": [
+            -0.32909591198902327,
+            0.016257055252479738,
+            -0.20199954855855595
+          ],
+          "max": [
+            0.3245310183840124,
+            1.801597723988896,
+            0.27583404167830744
+          ],
+          "height": 1.7853406687364164
+        }
+      }
+    },
+    {
+      "file": "male-ranger-threequarter.png",
+      "body": "male",
+      "outfitId": "fantasy-ranger",
+      "angle": "threequarter",
+      "outfit": {
+        "id": "fantasy-ranger",
+        "body": "male",
+        "variant": "morph",
+        "meshes": 10,
+        "morphMeshes": 10,
+        "projectedTargets": 50,
+        "bodyHideMeshes": 1,
+        "necklineWindowMeshes": 0,
+        "visible": true,
+        "fit": {
+          "pushLocal": 0.004,
+          "selectedMorphs": {},
+          "regionScales": {
+            "torso": 1,
+            "upperArm": 1,
+            "thigh": 1
+          },
+          "outfitScale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          },
+          "outfitTuck": {
+            "drop": 0,
+            "width": 0.5
+          },
+          "shaderScale": [
+            1,
+            1,
+            1
+          ],
+          "mode": "projected-morph"
+        },
+        "bounds": {
+          "min": [
+            -0.32909591198902327,
+            0.016257055252479738,
+            -0.20199954855855595
+          ],
+          "max": [
+            0.3245310183840124,
+            1.801597723988896,
+            0.27583404167830744
+          ],
+          "height": 1.7853406687364164
+        }
+      }
+    },
+    {
+      "file": "male-ranger-side.png",
+      "body": "male",
+      "outfitId": "fantasy-ranger",
+      "angle": "side",
+      "outfit": {
+        "id": "fantasy-ranger",
+        "body": "male",
+        "variant": "morph",
+        "meshes": 10,
+        "morphMeshes": 10,
+        "projectedTargets": 50,
+        "bodyHideMeshes": 1,
+        "necklineWindowMeshes": 0,
+        "visible": true,
+        "fit": {
+          "pushLocal": 0.004,
+          "selectedMorphs": {},
+          "regionScales": {
+            "torso": 1,
+            "upperArm": 1,
+            "thigh": 1
+          },
+          "outfitScale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          },
+          "outfitTuck": {
+            "drop": 0,
+            "width": 0.5
+          },
+          "shaderScale": [
+            1,
+            1,
+            1
+          ],
+          "mode": "projected-morph"
+        },
+        "bounds": {
+          "min": [
+            -0.32909591198902327,
+            0.016257055252479738,
+            -0.20199954855855595
+          ],
+          "max": [
+            0.3245310183840124,
+            1.801597723988896,
+            0.27583404167830744
+          ],
+          "height": 1.7853406687364164
+        }
+      }
+    },
+    {
+      "file": "male-ranger-back.png",
+      "body": "male",
+      "outfitId": "fantasy-ranger",
+      "angle": "back",
+      "outfit": {
+        "id": "fantasy-ranger",
+        "body": "male",
+        "variant": "morph",
+        "meshes": 10,
+        "morphMeshes": 10,
+        "projectedTargets": 50,
+        "bodyHideMeshes": 1,
+        "necklineWindowMeshes": 0,
+        "visible": true,
+        "fit": {
+          "pushLocal": 0.004,
+          "selectedMorphs": {},
+          "regionScales": {
+            "torso": 1,
+            "upperArm": 1,
+            "thigh": 1
+          },
+          "outfitScale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          },
+          "outfitTuck": {
+            "drop": 0,
+            "width": 0.5
+          },
+          "shaderScale": [
+            1,
+            1,
+            1
+          ],
+          "mode": "projected-morph"
+        },
+        "bounds": {
+          "min": [
+            -0.32909591198902327,
+            0.016257055252479738,
+            -0.20199954855855595
+          ],
+          "max": [
+            0.3245310183840124,
+            1.801597723988896,
+            0.27583404167830744
+          ],
+          "height": 1.7853406687364164
+        }
+      }
+    },
+    {
+      "file": "male-ranger-threequarter-back.png",
+      "body": "male",
+      "outfitId": "fantasy-ranger",
+      "angle": "threequarter-back",
+      "outfit": {
+        "id": "fantasy-ranger",
+        "body": "male",
+        "variant": "morph",
+        "meshes": 10,
+        "morphMeshes": 10,
+        "projectedTargets": 50,
+        "bodyHideMeshes": 1,
+        "necklineWindowMeshes": 0,
+        "visible": true,
+        "fit": {
+          "pushLocal": 0.004,
+          "selectedMorphs": {},
+          "regionScales": {
+            "torso": 1,
+            "upperArm": 1,
+            "thigh": 1
+          },
+          "outfitScale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          },
+          "outfitTuck": {
+            "drop": 0,
+            "width": 0.5
+          },
+          "shaderScale": [
+            1,
+            1,
+            1
+          ],
+          "mode": "projected-morph"
+        },
+        "bounds": {
+          "min": [
+            -0.32909591198902327,
+            0.016257055252479738,
+            -0.20199954855855595
+          ],
+          "max": [
+            0.3245310183840124,
+            1.801597723988896,
+            0.27583404167830744
+          ],
+          "height": 1.7853406687364164
+        }
+      }
+    },
+    {
+      "file": "female-peasant-front.png",
+      "body": "female",
+      "outfitId": "fantasy-peasant",
+      "angle": "front",
+      "outfit": {
+        "id": "fantasy-peasant",
+        "body": "female",
+        "variant": "morph",
+        "meshes": 4,
+        "morphMeshes": 4,
+        "projectedTargets": 20,
+        "bodyHideMeshes": 1,
+        "necklineWindowMeshes": 0,
+        "visible": true,
+        "fit": {
+          "pushLocal": 0.004,
+          "selectedMorphs": {},
+          "regionScales": {
+            "torso": 1,
+            "upperArm": 1,
+            "thigh": 1
+          },
+          "outfitScale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          },
+          "outfitTuck": {
+            "drop": 0,
+            "width": 0.5
+          },
+          "shaderScale": [
+            1,
+            1,
+            1
+          ],
+          "mode": "projected-morph"
+        },
+        "bounds": {
+          "min": [
+            -0.26357679516365917,
+            0.012360083858121875,
+            -0.15034960981476353
+          ],
+          "max": [
+            0.323893206037125,
+            1.5132477222109404,
+            0.28465809114875334
+          ],
+          "height": 1.5008876383528185
+        }
+      }
+    },
+    {
+      "file": "female-peasant-threequarter.png",
+      "body": "female",
+      "outfitId": "fantasy-peasant",
+      "angle": "threequarter",
+      "outfit": {
+        "id": "fantasy-peasant",
+        "body": "female",
+        "variant": "morph",
+        "meshes": 4,
+        "morphMeshes": 4,
+        "projectedTargets": 20,
+        "bodyHideMeshes": 1,
+        "necklineWindowMeshes": 0,
+        "visible": true,
+        "fit": {
+          "pushLocal": 0.004,
+          "selectedMorphs": {},
+          "regionScales": {
+            "torso": 1,
+            "upperArm": 1,
+            "thigh": 1
+          },
+          "outfitScale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          },
+          "outfitTuck": {
+            "drop": 0,
+            "width": 0.5
+          },
+          "shaderScale": [
+            1,
+            1,
+            1
+          ],
+          "mode": "projected-morph"
+        },
+        "bounds": {
+          "min": [
+            -0.26357679516365917,
+            0.012360083858121875,
+            -0.15034960981476353
+          ],
+          "max": [
+            0.323893206037125,
+            1.5132477222109404,
+            0.28465809114875334
+          ],
+          "height": 1.5008876383528185
+        }
+      }
+    },
+    {
+      "file": "female-peasant-side.png",
+      "body": "female",
+      "outfitId": "fantasy-peasant",
+      "angle": "side",
+      "outfit": {
+        "id": "fantasy-peasant",
+        "body": "female",
+        "variant": "morph",
+        "meshes": 4,
+        "morphMeshes": 4,
+        "projectedTargets": 20,
+        "bodyHideMeshes": 1,
+        "necklineWindowMeshes": 0,
+        "visible": true,
+        "fit": {
+          "pushLocal": 0.004,
+          "selectedMorphs": {},
+          "regionScales": {
+            "torso": 1,
+            "upperArm": 1,
+            "thigh": 1
+          },
+          "outfitScale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          },
+          "outfitTuck": {
+            "drop": 0,
+            "width": 0.5
+          },
+          "shaderScale": [
+            1,
+            1,
+            1
+          ],
+          "mode": "projected-morph"
+        },
+        "bounds": {
+          "min": [
+            -0.26357679516365917,
+            0.012360083858121875,
+            -0.15034960981476353
+          ],
+          "max": [
+            0.323893206037125,
+            1.5132477222109404,
+            0.28465809114875334
+          ],
+          "height": 1.5008876383528185
+        }
+      }
+    },
+    {
+      "file": "female-peasant-back.png",
+      "body": "female",
+      "outfitId": "fantasy-peasant",
+      "angle": "back",
+      "outfit": {
+        "id": "fantasy-peasant",
+        "body": "female",
+        "variant": "morph",
+        "meshes": 4,
+        "morphMeshes": 4,
+        "projectedTargets": 20,
+        "bodyHideMeshes": 1,
+        "necklineWindowMeshes": 0,
+        "visible": true,
+        "fit": {
+          "pushLocal": 0.004,
+          "selectedMorphs": {},
+          "regionScales": {
+            "torso": 1,
+            "upperArm": 1,
+            "thigh": 1
+          },
+          "outfitScale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          },
+          "outfitTuck": {
+            "drop": 0,
+            "width": 0.5
+          },
+          "shaderScale": [
+            1,
+            1,
+            1
+          ],
+          "mode": "projected-morph"
+        },
+        "bounds": {
+          "min": [
+            -0.26357679516365917,
+            0.012360083858121875,
+            -0.15034960981476353
+          ],
+          "max": [
+            0.323893206037125,
+            1.5132477222109404,
+            0.28465809114875334
+          ],
+          "height": 1.5008876383528185
+        }
+      }
+    },
+    {
+      "file": "female-peasant-threequarter-back.png",
+      "body": "female",
+      "outfitId": "fantasy-peasant",
+      "angle": "threequarter-back",
+      "outfit": {
+        "id": "fantasy-peasant",
+        "body": "female",
+        "variant": "morph",
+        "meshes": 4,
+        "morphMeshes": 4,
+        "projectedTargets": 20,
+        "bodyHideMeshes": 1,
+        "necklineWindowMeshes": 0,
+        "visible": true,
+        "fit": {
+          "pushLocal": 0.004,
+          "selectedMorphs": {},
+          "regionScales": {
+            "torso": 1,
+            "upperArm": 1,
+            "thigh": 1
+          },
+          "outfitScale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          },
+          "outfitTuck": {
+            "drop": 0,
+            "width": 0.5
+          },
+          "shaderScale": [
+            1,
+            1,
+            1
+          ],
+          "mode": "projected-morph"
+        },
+        "bounds": {
+          "min": [
+            -0.26357679516365917,
+            0.012360083858121875,
+            -0.15034960981476353
+          ],
+          "max": [
+            0.323893206037125,
+            1.5132477222109404,
+            0.28465809114875334
+          ],
+          "height": 1.5008876383528185
+        }
+      }
+    },
+    {
+      "file": "female-ranger-front.png",
+      "body": "female",
+      "outfitId": "fantasy-ranger",
+      "angle": "front",
+      "outfit": {
+        "id": "fantasy-ranger",
+        "body": "female",
+        "variant": "morph",
+        "meshes": 10,
+        "morphMeshes": 10,
+        "projectedTargets": 50,
+        "bodyHideMeshes": 1,
+        "necklineWindowMeshes": 0,
+        "visible": true,
+        "fit": {
+          "pushLocal": 0.004,
+          "selectedMorphs": {},
+          "regionScales": {
+            "torso": 1,
+            "upperArm": 1,
+            "thigh": 1
+          },
+          "outfitScale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          },
+          "outfitTuck": {
+            "drop": 0,
+            "width": 0.5
+          },
+          "shaderScale": [
+            1,
+            1,
+            1
+          ],
+          "mode": "projected-morph"
+        },
+        "bounds": {
+          "min": [
+            -0.2662335132238145,
+            0.01577393141197221,
+            -0.20334133650437242
+          ],
+          "max": [
+            0.33540113016431944,
+            1.7753930038801364,
+            0.27566653339286273
+          ],
+          "height": 1.7596190724681642
+        }
+      }
+    },
+    {
+      "file": "female-ranger-threequarter.png",
+      "body": "female",
+      "outfitId": "fantasy-ranger",
+      "angle": "threequarter",
+      "outfit": {
+        "id": "fantasy-ranger",
+        "body": "female",
+        "variant": "morph",
+        "meshes": 10,
+        "morphMeshes": 10,
+        "projectedTargets": 50,
+        "bodyHideMeshes": 1,
+        "necklineWindowMeshes": 0,
+        "visible": true,
+        "fit": {
+          "pushLocal": 0.004,
+          "selectedMorphs": {},
+          "regionScales": {
+            "torso": 1,
+            "upperArm": 1,
+            "thigh": 1
+          },
+          "outfitScale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          },
+          "outfitTuck": {
+            "drop": 0,
+            "width": 0.5
+          },
+          "shaderScale": [
+            1,
+            1,
+            1
+          ],
+          "mode": "projected-morph"
+        },
+        "bounds": {
+          "min": [
+            -0.2662335132238145,
+            0.01577393141197221,
+            -0.20334133650437242
+          ],
+          "max": [
+            0.33540113016431944,
+            1.7753930038801364,
+            0.27566653339286273
+          ],
+          "height": 1.7596190724681642
+        }
+      }
+    },
+    {
+      "file": "female-ranger-side.png",
+      "body": "female",
+      "outfitId": "fantasy-ranger",
+      "angle": "side",
+      "outfit": {
+        "id": "fantasy-ranger",
+        "body": "female",
+        "variant": "morph",
+        "meshes": 10,
+        "morphMeshes": 10,
+        "projectedTargets": 50,
+        "bodyHideMeshes": 1,
+        "necklineWindowMeshes": 0,
+        "visible": true,
+        "fit": {
+          "pushLocal": 0.004,
+          "selectedMorphs": {},
+          "regionScales": {
+            "torso": 1,
+            "upperArm": 1,
+            "thigh": 1
+          },
+          "outfitScale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          },
+          "outfitTuck": {
+            "drop": 0,
+            "width": 0.5
+          },
+          "shaderScale": [
+            1,
+            1,
+            1
+          ],
+          "mode": "projected-morph"
+        },
+        "bounds": {
+          "min": [
+            -0.2662335132238145,
+            0.01577393141197221,
+            -0.20334133650437242
+          ],
+          "max": [
+            0.33540113016431944,
+            1.7753930038801364,
+            0.27566653339286273
+          ],
+          "height": 1.7596190724681642
+        }
+      }
+    },
+    {
+      "file": "female-ranger-back.png",
+      "body": "female",
+      "outfitId": "fantasy-ranger",
+      "angle": "back",
+      "outfit": {
+        "id": "fantasy-ranger",
+        "body": "female",
+        "variant": "morph",
+        "meshes": 10,
+        "morphMeshes": 10,
+        "projectedTargets": 50,
+        "bodyHideMeshes": 1,
+        "necklineWindowMeshes": 0,
+        "visible": true,
+        "fit": {
+          "pushLocal": 0.004,
+          "selectedMorphs": {},
+          "regionScales": {
+            "torso": 1,
+            "upperArm": 1,
+            "thigh": 1
+          },
+          "outfitScale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          },
+          "outfitTuck": {
+            "drop": 0,
+            "width": 0.5
+          },
+          "shaderScale": [
+            1,
+            1,
+            1
+          ],
+          "mode": "projected-morph"
+        },
+        "bounds": {
+          "min": [
+            -0.2662335132238145,
+            0.01577393141197221,
+            -0.20334133650437242
+          ],
+          "max": [
+            0.33540113016431944,
+            1.7753930038801364,
+            0.27566653339286273
+          ],
+          "height": 1.7596190724681642
+        }
+      }
+    },
+    {
+      "file": "female-ranger-threequarter-back.png",
+      "body": "female",
+      "outfitId": "fantasy-ranger",
+      "angle": "threequarter-back",
+      "outfit": {
+        "id": "fantasy-ranger",
+        "body": "female",
+        "variant": "morph",
+        "meshes": 10,
+        "morphMeshes": 10,
+        "projectedTargets": 50,
+        "bodyHideMeshes": 1,
+        "necklineWindowMeshes": 0,
+        "visible": true,
+        "fit": {
+          "pushLocal": 0.004,
+          "selectedMorphs": {},
+          "regionScales": {
+            "torso": 1,
+            "upperArm": 1,
+            "thigh": 1
+          },
+          "outfitScale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          },
+          "outfitTuck": {
+            "drop": 0,
+            "width": 0.5
+          },
+          "shaderScale": [
+            1,
+            1,
+            1
+          ],
+          "mode": "projected-morph"
+        },
+        "bounds": {
+          "min": [
+            -0.2662335132238145,
+            0.01577393141197221,
+            -0.20334133650437242
+          ],
+          "max": [
+            0.33540113016431944,
+            1.7753930038801364,
+            0.27566653339286273
+          ],
+          "height": 1.7596190724681642
+        }
+      }
+    }
+  ]
+}

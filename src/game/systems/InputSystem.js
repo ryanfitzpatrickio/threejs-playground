@@ -81,7 +81,12 @@ export class InputSystem {
     this.mousePrimaryHeld = false;
     this.mouseSecondaryHeld = false;
     this.mouseMiddleHeld = false;
+    this.mousePrimaryReleased = false;
     this.pointerLocked = false;
+    this.pointerLockEnabled = true;
+    this.pointerNdc = { x: 0, y: 0 };
+    this.pointerClickNdc = { x: 0, y: 0 };
+    this.mousePrimaryReleased = false;
     this.lastJumpPressTime = -Infinity;
     this.lastAbilityPressTime = -Infinity;
     this.abilityDoubleTapPending = false; // one-frame edge (dual-rope pull when swing equipped)
@@ -113,6 +118,13 @@ export class InputSystem {
     this.target.addEventListener('wheel', this.handleWheel, { passive: false });
     document.addEventListener('pointerlockchange', this.handlePointerLockChange);
     globalThis.addEventListener('blur', this.handleBlur);
+  }
+
+  setPointerLockEnabled(enabled) {
+    this.pointerLockEnabled = enabled !== false;
+    if (!this.pointerLockEnabled && document.pointerLockElement === this.target) {
+      document.exitPointerLock?.();
+    }
   }
 
   getState() {
@@ -197,12 +209,16 @@ export class InputSystem {
     const lookY = this.lookDelta.y;
     const zoomDelta = this.zoomDelta;
     const mouseMiddlePressed = this.mouseMiddlePressed;
+    const mousePrimaryReleased = this.mousePrimaryReleased;
+    const pointerNdc = { ...this.pointerNdc };
+    const pointerClickNdc = { ...this.pointerClickNdc };
     this.lookDelta.x = 0;
     this.lookDelta.y = 0;
     this.zoomDelta = 0;
     this.mousePrimaryPressed = false;
     this.mouseSecondaryPressed = false;
     this.mouseMiddlePressed = false;
+    this.mousePrimaryReleased = false;
 
     // Hold Q: A/D lean instead of strafe (and vehicle rear-view). W/S stay free.
     const leanModHeld = this.actions.has('leanMod');
@@ -252,6 +268,10 @@ export class InputSystem {
       mouseSecondaryHeld: this.mouseSecondaryHeld,
       mouseMiddleHeld: this.mouseMiddleHeld,
       mouseMiddlePressed,
+      mousePrimaryPressed: lightAttackPressed,
+      mousePrimaryReleased,
+      pointerNdc,
+      pointerClickNdc,
       // Hold C to crouch when not at slide speed (weapon-locomotion stance layer).
       crouchHeld: this.actions.has('crouch'),
       // Cover-peek: hold Q, then A/D lean left/right (armed). E stays pure use/interact.
@@ -304,6 +324,7 @@ export class InputSystem {
     this.mousePrimaryHeld = false;
     this.mouseSecondaryHeld = false;
     this.mouseMiddleHeld = false;
+    this.mousePrimaryReleased = false;
     this.wallRunJumpHold = false;
     this.abilityDoubleTapPending = false;
   }
@@ -393,19 +414,20 @@ export class InputSystem {
 
   handleMouseDown(event) {
     this.target.focus({ preventScroll: true });
+    this.updatePointerNdc(event);
 
     if (event.button === 0) {
       this.mousePrimaryPressed = true;
       this.mousePrimaryHeld = true;
 
-      if (document.pointerLockElement !== this.target) {
+      if (this.pointerLockEnabled && document.pointerLockElement !== this.target) {
         this.target.requestPointerLock?.();
       }
     } else if (event.button === 1) {
       this.mouseMiddlePressed = true;
       this.mouseMiddleHeld = true;
 
-      if (document.pointerLockElement !== this.target) {
+      if (this.pointerLockEnabled && document.pointerLockElement !== this.target) {
         this.target.requestPointerLock?.();
       }
     } else if (event.button === 2) {
@@ -417,7 +439,10 @@ export class InputSystem {
   }
 
   handleMouseUp(event) {
-    if (event.button === 0) this.mousePrimaryHeld = false;
+    if (event.button === 0) {
+      this.mousePrimaryHeld = false;
+      this.mousePrimaryReleased = true;
+    }
     else if (event.button === 1) this.mouseMiddleHeld = false;
     else if (event.button === 2) this.mouseSecondaryHeld = false;
   }
@@ -428,6 +453,7 @@ export class InputSystem {
   }
 
   handleMouseMove(event) {
+    this.updatePointerNdc(event);
     const pointerLocked = document.pointerLockElement === this.target;
     const dragging = event.buttons > 0 && event.target === this.target;
 
@@ -437,6 +463,16 @@ export class InputSystem {
 
     this.lookDelta.x += event.movementX;
     this.lookDelta.y += event.movementY;
+  }
+
+  updatePointerNdc(event) {
+    const rect = this.target.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    this.pointerNdc.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    this.pointerNdc.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    if (event.type === 'mousedown' && event.button === 0) {
+      this.pointerClickNdc = { ...this.pointerNdc };
+    }
   }
 
   handleWheel(event) {

@@ -5,6 +5,11 @@ import { StatsPanel } from './components/StatsPanel.jsx';
 import { ControlsGuide } from './components/ControlsGuide.jsx';
 import { CutTestCanvas } from './components/CutTestCanvas.jsx';
 import { HordeRobotViewerCanvas } from './components/HordeRobotViewerCanvas.jsx';
+import { SimHumanViewerCanvas } from './components/SimHumanViewerCanvas.jsx';
+import { PsxHouseholdViewerCanvas } from './components/PsxHouseholdViewerCanvas.jsx';
+import { DogSimCanvas } from './components/DogSimCanvas.jsx';
+import { DogParkHud } from './components/DogParkHud.jsx';
+import { SimCreatorScene } from './components/SimCreatorScene.jsx';
 import { Minimap } from './components/Minimap.jsx';
 import { PhotoModeControls } from './components/PhotoModeControls.jsx';
 import { GarageScene } from './components/GarageScene.jsx';
@@ -45,7 +50,7 @@ import { createDevTools, BodyshopScene, GunsmithScene } from 'virtual:dreamfall-
 import { mountShaderDebugPane } from 'virtual:dreamfall-shader-debug';
 import { loadGarageChassisOptions } from '../game/vehicles/bodyshopChassisRegistry.js';
 
-const LEVELS = new Set(['city', 'world', 'wilds', 'rally', 'range', 'horde', 'highway', 'deathmatch']);
+const LEVELS = new Set(['city', 'world', 'wilds', 'rally', 'range', 'horde', 'highway', 'deathmatch', 'sims', 'dog-park']);
 
 /** Resolve experience id from a remount key like `range:3` or `world:id:rev:1`. */
 function levelModeFromGameKey(key) {
@@ -72,7 +77,11 @@ function isTruthyParam(v) {
 function resolveBootView(params) {
   const view = params.get('view');
   if (view === 'horde-robots' || view === 'hordeRobots') return 'hordeRobots';
+  if (view === 'simhuman' || view === 'sim-human') return 'simHuman';
+  if (view === 'sim-creator' || view === 'simCreator') return 'simCreator';
+  if (view === 'psx-household' || view === 'household-props' || view === 'psx-props') return 'psxHousehold';
   if (view === 'cut-test' || view === 'cutTest') return 'cutTest';
+  if (view === 'dog-sim' || view === 'dog' || view === 'dogsim') return 'dogSim';
   return null;
 }
 
@@ -125,7 +134,7 @@ export function App() {
   const initialLevel = bootIntent.forcedLevel ?? bootIntent.preferredLevel;
   const initialView = bootIntent.bootView ?? 'game';
 
-  const [viewMode, setViewMode] = createSignal(initialView); // 'game' | 'garage' | 'bodyshop' | 'gunsmith' | 'hordeRobots' | 'cutTest' | dev-tool views
+  const [viewMode, setViewMode] = createSignal(initialView); // 'game' | 'garage' | 'simCreator' | editor/dev-tool views
   const [appPhase, setAppPhase] = createSignal(
     bootIntent.bootView
       ? 'menu'
@@ -264,6 +273,10 @@ export function App() {
   const isGunsmith = () => viewMode() === 'gunsmith';
   const isCutTest = () => viewMode() === 'cutTest';
   const isHordeRobots = () => viewMode() === 'hordeRobots';
+  const isSimHuman = () => viewMode() === 'simHuman';
+  const isPsxHousehold = () => viewMode() === 'psxHousehold';
+  const isDogSim = () => viewMode() === 'dogSim';
+  const isSimCreator = () => viewMode() === 'simCreator';
 
   const gameKey = createMemo(() => {
     const mode = levelMode();
@@ -440,6 +453,12 @@ export function App() {
       returnToMenu();
       return;
     }
+    if (e.key === 'Escape' && viewMode() === 'dogSim') {
+      e.preventDefault();
+      switchTo('game');
+      setAppPhase('menu');
+      return;
+    }
     if (e.key === 'Escape' && showSettings()) {
       e.preventDefault();
       setShowSettings(false);
@@ -542,6 +561,10 @@ export function App() {
           setShowSettings(false);
           switchTo('garage');
         }}
+        onOpenSimCreator={() => {
+          setShowSettings(false);
+          switchTo('simCreator');
+        }}
         onQualityChange={handleQualityChange}
         onToneMappingChange={handleToneMappingChange}
         onPostEffectChange={handlePostEffectChange}
@@ -568,7 +591,13 @@ export function App() {
         <MainMenu
           preferredLevel={bootIntent.preferredLevel}
           lastLevel={bootIntent.preferredLevel}
-          onSelectExperience={(id) => enterExperience(id)}
+          onSelectExperience={(id) => {
+            if (id === 'dog') {
+              enterExperience('dog-park');
+              return;
+            }
+            enterExperience(id);
+          }}
           onContinue={() => enterExperience(bootIntent.preferredLevel)}
         />
       </Show>
@@ -608,8 +637,14 @@ export function App() {
               </>
             )}
           </Show>
-          {hudVisible() && isPlaying() && <StatsPanel snapshot={gameSnapshot()} />}
-          {hudVisible() && isPlaying() && <Hud snapshot={gameSnapshot()} />}
+          {hudVisible() && isPlaying() && levelMode() !== 'dog-park' && <StatsPanel snapshot={gameSnapshot()} />}
+          {hudVisible() && isPlaying() && levelMode() !== 'dog-park' && <Hud snapshot={gameSnapshot()} />}
+          <Show when={hudVisible() && isPlaying() && levelMode() === 'dog-park'}>
+            <DogParkHud
+              snapshot={gameSnapshot()?.dogPark}
+              onStudio={() => switchTo('dogSim')}
+            />
+          </Show>
           <Show when={isPlaying() && showDeathmatchRoom()}>
             <DeathmatchRoomOverlay
               snapshot={dmSnapshot()}
@@ -653,6 +688,20 @@ export function App() {
 
       {isCutTest() && <CutTestCanvas />}
       {isHordeRobots() && <HordeRobotViewerCanvas />}
+      {isSimHuman() && <SimHumanViewerCanvas />}
+      {isPsxHousehold() && <PsxHouseholdViewerCanvas />}
+      {isDogSim() && (
+        <DogSimCanvas
+          onBack={() => {
+            switchTo('game');
+            setAppPhase('menu');
+          }}
+        />
+      )}
+
+      {isSimCreator() && (
+        <SimCreatorScene onPlayLot={() => enterExperience('sims')} />
+      )}
 
       {isGarage() && (
         <GarageScene

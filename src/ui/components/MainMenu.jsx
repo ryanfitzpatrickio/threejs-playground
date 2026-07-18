@@ -35,6 +35,18 @@ const EXPERIENCES = [
     accent: true,
   },
   {
+    id: 'sims',
+    label: 'Household',
+    blurb: 'A residential lot with selectable Sims and point-and-click play.',
+    accent: true,
+  },
+  {
+    id: 'dog',
+    label: 'Dog',
+    blurb: 'Run a procedural dog through a sunny lakeside park.',
+    accent: true,
+  },
+  {
     id: 'deathmatch',
     label: 'Deathmatch',
     blurb: 'Rail Crucible arena — solo route preview (multiplayer WIP).',
@@ -148,5 +160,6 @@ export function MainMenu(props) {
 }
 
 function labelFor(id) {
+  if (id === 'dog-park') return 'Dog Park';
   return EXPERIENCES.find((x) => x.id === id)?.label ?? id;
 }

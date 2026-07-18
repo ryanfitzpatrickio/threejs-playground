@@ -41,6 +41,7 @@ export function attachHordeRuntimeSnapshot(target) {
       return {
         enabled: this.isHordePlaygroundActive(),
         nativeHordeLevel: this.levelMode === 'horde',
+        gi: this.hordeGi?.getSnapshot?.() ?? null,
         cap: HORDE_MAX_ENEMY_COUNT,
         defaultGate: HORDE_DEFAULT_ENEMY_COUNT,
         spectaclePreset: this._hordeSpectaclePresetId ?? 'default',
@@ -75,6 +76,7 @@ export function attachHordeRuntimeSnapshot(target) {
         geometrySource: proxies?.geometrySource ?? null,
         proxyDrawCalls: proxies?.drawCalls ?? 0,
         combatGrid: proxies?.combatGrid ?? null,
+        navMesh: proxies?.navMesh ?? null,
         spatial: this.enemySystem?.spatialSnapshot?.() ?? null,
       };
     },

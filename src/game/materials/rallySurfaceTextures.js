@@ -320,6 +320,11 @@ export function createRallySurfaceMaterial(maps, {
   // Practical hex tiling. It takes precedence over POM because POM's samples
   // must all use one coherent height field and cannot share rotated tile UVs.
   hextile = null,
+  // Optional sRGB albedo multiply (e.g. sand-tinted dirt, painted concrete).
+  // Applied after map/hex sample and before mud/wet treatments.
+  albedoTint = null,
+  // Multiplier on sampled roughness (sand piles, dry dirt).
+  roughnessScale = 1,
 } = {}) {
   const uv = positionWorld.xz.mul(float(tilesPerMetre));
   const material = new MeshStandardNodeMaterial();
@@ -412,6 +417,13 @@ export function createRallySurfaceMaterial(maps, {
   let baseNormalNode = maps?.normalMap
     ? normalMap(pomEnabled ? makePom().sample(maps.normalMap).rgb : (hexNormal ? hexNormal(maps.normalMap) : texture(maps.normalMap, uv).rgb))
     : null;
+
+  if (albedoTint != null) {
+    baseColorNode = baseColorNode.mul(color(albedoTint));
+  }
+  if (Number.isFinite(roughnessScale) && roughnessScale !== 1) {
+    baseRoughnessNode = clamp(baseRoughnessNode.mul(float(roughnessScale)), float(0.05), float(1));
+  }
 
   // Base mud treatment: wet-mud brown over the dirt albedo. Matte + sun-facing
   // compression keep clear-sky noon from blowing the ribbon out to pale sand.
@@ -527,10 +539,19 @@ export function createRallySurfaceMaterial(maps, {
     // Strong enough that tracks still read even if vertex sink fails to compile.
     // Gated by `present` so un-stamped road just shows the base mud look.
     const darken = mix(float(1), float(0.32), rut.mul(present))
-      .mul(mix(float(1), float(0.55), tread.mul(present).mul(tyreStamp)));
+      .mul(mix(float(1), float(0.55), tread.mul(present).mul(tyreStamp)))
+      // Paw/human prints do not have a tread atlas. Give their oriented pad/
+      // sole mask its own dark, wet compression so small stamps remain legible
+      // beside a broad body splash instead of disappearing into base mud.
+      .mul(mix(float(1), float(0.38), tread.mul(present).mul(footStamp)));
     baseColorNode = baseColorNode.mul(darken);
     // Churned mud is rougher than the surrounding wet skin (matte, not slick).
     baseRoughnessNode = mix(baseRoughnessNode, float(0.88), rut.mul(present).mul(tyreStamp));
+    baseRoughnessNode = mix(
+      baseRoughnessNode,
+      float(0.76),
+      rut.mul(present).mul(footStamp),
+    );
 
     if (rutAtlas != null && orientationTexture != null) {
       // Decode the heading written by each wheel stamp. Projecting world XZ onto

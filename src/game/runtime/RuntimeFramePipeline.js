@@ -8,7 +8,7 @@ import {
 } from '../config/hordePerformanceConfig.js';
 import { getOnFootFirstPerson } from '../config/cameraComfort.js';
 import { resolveJacketMode } from '../characters/mara/jacketConfig.js';
-import { isRootMotionCameraSmoothingActive } from './runtimeHelpers.js';
+import { updateRuntimeCameraFrame } from './updateRuntimeCameraFrame.js';
 
 /**
  * Executes the ordered frame update. Host provides systems and feature methods.
@@ -84,6 +84,8 @@ function frameUpdate(timeMs) {
       gunSlotPressed: null,
     };
   }
+  input = this.simsFeature.prepareInput(input);
+  input = this.dogParkFeature.prepareInput(input);
   if (
     this.inputEnabled
     && !this._forestAmbienceAwake
@@ -200,9 +202,11 @@ function frameUpdate(timeMs) {
     const mountedHorse = this.mountSystem?.state !== 'idle'
       ? this.horseSystem?.group
       : null;
-    const streamingFocus = this.vehicleSystem?.activeVehicle?.group?.position
-      ?? mountedHorse?.position
-      ?? character.group.position;
+    const streamingFocus = this.simsFeature.active
+      ? this.simCameraSystem.target
+      : this.dogParkFeature.active
+        ? this.dogParkFeature.dog?.root?.position ?? character.group.position
+        : this.vehicleSystem?.activeVehicle?.group?.position ?? mountedHorse?.position ?? character.group.position;
     const viewPos = this.cameraSystem?.camera?.position ?? streamingFocus;
     const streamingChanges = this.levelSystem.updateStreaming(streamingFocus, {
       viewPosition: viewPos,
@@ -268,8 +272,8 @@ function frameUpdate(timeMs) {
   });
   this.frameStats.endSection();
 
-  // Hand off to combat animation when the cut system wants to start the swing
-  // (V release after aiming). This was previously not wired, breaking the aim cut.
+  // The arc cut has already committed on V release; the sword animation is
+  // immediate impact feedback and no longer gates the geometry operation.
   if (cutMode?.startSwing) {
     this.combatSystem.beginAimCut({
       combat: character.combat,
@@ -277,21 +281,12 @@ function frameUpdate(timeMs) {
     });
   }
 
-  // 1. Detect transition to committed cuts and set the slow-mo timer
+  // Cut state is an edge for diagnostics only. Sword cuts no longer alter time.
   if (this.enemyCutSystem.justCut) {
     this.enemyCutSystem.justCut = false;
-    this.postCutSlowMoTimer = 2.5; // real-world seconds
   }
 
-  // 2. Decrement the slow-motion timer
-  if (this.postCutSlowMoTimer > 0) {
-    this.postCutSlowMoTimer -= delta;
-    if (this.postCutSlowMoTimer < 0) {
-      this.postCutSlowMoTimer = 0;
-    }
-  }
-
-  // 3. Calculate time scale: cut aim, post-cut ramp, or M3 car-leap bullet-time.
+  // Calculate time scale solely from M3 car-leap bullet-time.
   // Bullet-time meter drains on real frame delta so hold feel stays stable.
   const leapBt = this.carLeapSystem?.updateBulletTime?.({
     delta,
@@ -301,24 +296,16 @@ function frameUpdate(timeMs) {
     vehicleSystem: this.vehicleSystem,
   }) ?? { timeScale: 1, aiming: false };
 
-  let timeScale = 1.0;
-  if (this.enemyCutSystem.state === 'aiming') {
-    timeScale = 0.05; // 5% speed
-  } else if (this.postCutSlowMoTimer > 0) {
-    const t = this.postCutSlowMoTimer / 2.5;
-    timeScale = 0.05 + 0.95 * (1 - t);
-  } else if (leapBt.timeScale < 1) {
-    timeScale = leapBt.timeScale;
-  }
+  const timeScale = leapBt.timeScale < 1 ? leapBt.timeScale : 1;
 
   const scaledDelta = delta * timeScale;
 
-  // 4. Plan this frame's fixed physics steps from the REAL frame delta, so sim
-  //    speed no longer depends on the display refresh rate (a 120 Hz monitor
-  //    runs steps every other frame; a 30 fps stall catches up with extra
-  //    steps). Slow-mo scales time entering the accumulator while the solver
-  //    step remains fixed. Nothing steps before the movement
-  //    system, so planning here (after timeScale is known) is safe.
+  // Plan this frame's fixed physics steps from the REAL frame delta, so sim
+  // speed no longer depends on the display refresh rate (a 120 Hz monitor runs
+  // steps every other frame; a 30 fps stall catches up with extra steps).
+  // Car-leap slow-mo scales time entering the accumulator while the solver step
+  // remains fixed. Nothing steps before the movement system, so planning here
+  // (after timeScale is known) is safe.
   this.physicsSystem.beginFrame({
     delta,
     timeScale,
@@ -333,7 +320,7 @@ function frameUpdate(timeMs) {
     physics: this.physicsSystem,
   });
 
-  // 5. Construct gameplay input: lock locomotion/combat when aiming, but allow rotating/positioning the plane
+  // Construct gameplay input: lock locomotion/combat while choosing the live arc angle.
   let gameplayInput = input;
   if (this.cameraSystem.photoMode && this.cameraSystem.photoModeLive) {
     // Already locked at frame start; keep a hard lock after any later input mutation.
@@ -412,6 +399,8 @@ function frameUpdate(timeMs) {
   }) ?? gameplayInput;
 
   this.horseSystem.update({ delta: scaledDelta });
+  this.simsFeature.updateActors(scaledDelta);
+  this.dogParkFeature.updateDog(scaledDelta);
 
   // Level-local interactables (e.g. horde boxcar sliding doors on E).
   // Highway: wraps recycled road visuals + slides the physics road slab.
@@ -419,13 +408,25 @@ function frameUpdate(timeMs) {
     const highwayFocus = this.vehicleSystem?.activeVehicle?.group?.position
       ?? character?.group?.position
       ?? null;
-    this.levelSystem.level?.update?.({
+    const levelUpdate = this.levelSystem.level?.update?.({
       delta: scaledDelta,
       character,
       input: gameplayInput,
       physics: this.physicsSystem,
       focusPosition: highwayFocus,
     });
+    // Horde boxcar doors: restamp dynamic nav obstacles + flow when open/close
+    // crosses the blocking threshold (static nav bake keeps bays open).
+    if (
+      levelUpdate?.doorsChanged
+      && this.isHordePlaygroundActive()
+      && this.hordeProxySystem?.ready
+    ) {
+      this.hordeProxySystem.syncDoorObstacles?.({
+        doors: this.levelSystem.level?.boxcarDoors ?? null,
+        colliders: this.levelSystem.level?.colliders ?? null,
+      });
+    }
   }
 
   // Highway traffic window recycle (recover/park only — never spawn here).
@@ -479,6 +480,12 @@ function frameUpdate(timeMs) {
     player: character,
     level: this.levelSystem,
     platforms: this.platformRidingSystem,
+    // Tip full-actors clamp to the same navcat mesh as proxies (horde only).
+    navClamp: this.isHordePlaygroundActive() && this.hordeProxySystem?.navQuery
+      ? (fromX, fromZ, toX, toZ, y) => this.hordeProxySystem.clampMoveToNav(
+        fromX, fromZ, toX, toZ, y,
+      )
+      : null,
   });
   this.physicsSystem.syncEnemyColliders(this.getCutTargets());
   this.frameStats.endSection();
@@ -537,6 +544,15 @@ function frameUpdate(timeMs) {
       level: this.levelSystem,
     });
   }
+
+  // Carry pickups (propane tank, etc.) — E near item / E to drop. Sets
+  // character.carrying so AnimationStateSystem layers the hold pose.
+  this.carryItemSystem?.update?.({
+    character,
+    input: gameplayInput,
+    movement,
+    weaponSystem: this.weaponSystem,
+  });
 
   // FP weapon stance gates traversal intent before the router / combat consume it.
   // Only active when the loadout firearm is drawn (not sword / not holstered).
@@ -685,6 +701,14 @@ function frameUpdate(timeMs) {
     delta: scaledDelta,
   });
 
+  // Carried props attach after mixer/IK settle so the tank rides the spine and
+  // both hands can IK onto its grip markers.
+  this.carryItemSystem?.postAnimation?.({
+    character,
+    firstPersonWeaponSystem: this.firstPersonWeaponSystem,
+    delta: scaledDelta,
+  });
+
   // Bone-driven visuals read final bone poses after animation has settled.
   this.frameStats.start('wingsuit');
   this.wingsuitSystem.update({ delta: scaledDelta, character });
@@ -705,6 +729,7 @@ function frameUpdate(timeMs) {
       }
     }
   }
+  this.simsFeature.updateGarments(scaledDelta);
 
   // Telekinesis after animation (to read fresh hand bone), before physics step.
   // Phase 1: basic grab + orbit on loose cut chunks. Input consumed internally.
@@ -776,48 +801,25 @@ function frameUpdate(timeMs) {
     animationController: character.animationController,
   });
 
-  const cameraInput = { ...input };
-  const inVehicle = Boolean(this.vehicleSystem?.activeVehicle);
-  cameraInput.rearViewHeld = inVehicle && Boolean(input.rearViewHeld || input.wingsuitHeld);
-  if (this.enemyCutSystem.state === 'aiming' || inVehicle) {
-    cameraInput.lookX = 0;
-    cameraInput.lookY = 0;
-  }
-
-  // Photo-mode free-fly is applied earlier this frame; skip follow/vehicle camera.
-  if (!this.cameraSystem.photoMode) {
-    if (this.rallyCinematicDemo?.active) {
-      this.rallyCinematicDemo.update(scaledDelta, {
-        vehicle: this.vehicleSystem?.activeVehicle,
-        camera: this.cameraSystem.camera,
-        level: this.levelSystem,
-      });
-    } else {
-      this.cameraSystem.update({
-        delta: scaledDelta,
-        target: character.group.position,
-        viewport: this.rendererSystem.getViewport(),
-        input: cameraInput,
-        rootMotionActive: isRootMotionCameraSmoothingActive(character),
-        character,
-        vehicle: this.vehicleSystem?.activeVehicle ?? null,
-      });
-    }
-  }
-
-  // FP body yaw after look input: turn torso past neck limit so the camera
-  // never stares into chest/shoulder interiors; forward move straightens body.
-  // Skip in photo mode — freecam must not rotate the player; gameplay yaw stays frozen.
-  if (!this.cameraSystem.photoMode) {
-    this.firstPersonWeaponSystem.postCamera({
-      character,
-      cameraSystem: this.cameraSystem,
-      input: cameraInput,
-      delta: scaledDelta,
-    });
-  }
+  updateRuntimeCameraFrame(this, scaledDelta, input, character);
 
   // M5–M7 hitscan fire / ADS / damage after camera so the ray matches look.
+  // Propane updates first so the hitscan callback has current damage/carry/
+  // camera seams; a bullet-triggered detonation still resolves this same frame.
+  this.propaneTankSystem?.update?.({
+    delta: scaledDelta,
+    camera: this.cameraSystem.camera,
+    character,
+    playerDamageSystem: this.playerDamageSystem,
+    cameraSystem: this.cameraSystem,
+    carryItemSystem: this.carryItemSystem,
+    enemyCutSystem: this.enemyCutSystem,
+    physicsSystem: this.physicsSystem,
+    applyHordeExplosion: this.isHordePlaygroundActive()
+      ? (options) => this.applyHordeExplosion(options)
+      : null,
+  });
+
   this.frameStats.start('weapon');
   this.weaponSystem.update({
     delta: scaledDelta,
@@ -832,6 +834,8 @@ function frameUpdate(timeMs) {
     vehicleDamageSystem: this.vehicleDamageSystem,
     vehicleSystem: this.vehicleSystem,
     shootingRangeSystem: this.shootingRangeSystem,
+    aquariumBreachSystem: this.aquariumBreachSystem,
+    propaneTankSystem: this.propaneTankSystem,
     hordeProxySystem: this.isHordePlaygroundActive() ? this.hordeProxySystem : null,
     resolveHordeTarget: this.isHordePlaygroundActive()
       ? (target, opts) => this.resolveHordeCombatTarget(target, opts)
@@ -853,6 +857,15 @@ function frameUpdate(timeMs) {
       cameraSystem: this.cameraSystem,
     });
   }
+
+  // Aquarium breach drain + jets / glass shatter (inert without level.aquarium).
+  this.aquariumBreachSystem?.update?.({
+    delta: scaledDelta,
+    level: this.levelSystem.level,
+    camera: this.cameraSystem?.camera,
+    scene: this.sceneSystem?.scene,
+    physicsSystem: this.physicsSystem,
+  });
 
   this.rendererSystem.resizeIfNeeded((viewport) => {
     this.cameraSystem.resize(viewport);

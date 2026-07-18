@@ -38,6 +38,12 @@ import {
   applyMeleeDebugSocket,
 } from '../weapons/meleeDebugSocket.js';
 import {
+  bumpPropaneCarryDebugSocket,
+  logPropaneCarryDebugSocket,
+  propaneCarryDebugSocket,
+  resetPropaneCarryDebugSocket,
+} from '../items/propaneCarryDebugSocket.js';
+import {
   HORDE_ARCHETYPES,
   hordeDebugState,
   snapshotHordeDebug,
@@ -116,6 +122,8 @@ export function registerRuntimeDebug(runtime = null) {
   registerShaderDebugFolder('Rally', { expanded: false });
   registerShaderDebugFolder('Overlays', { expanded: false });
   registerShaderDebugFolder('Horde', { expanded: true });
+  registerShaderDebugFolder('Melee', { expanded: false });
+  registerShaderDebugFolder('Propane Tank', { expanded: true });
 
   registerHordeDebug(runtime);
 
@@ -1363,6 +1371,212 @@ export function registerRuntimeDebug(runtime = null) {
   registerMeleeFloat({ id: 'runtime.meleeSheathScale', label: 'Sheath scale', key: 'sheathScale', min: 0.25, max: 2.5, step: 0.01, help: 'Multiplier on the authored back-sheath scale.' });
   registerShaderDebugParam({ id: 'runtime.meleeResetSocket', label: 'Reset melee socket', folder: 'Melee', type: 'action', pinPolicy: 'allow', get: () => null, action: () => { resetMeleeDebugSocket(); relayoutMelee(); console.info('[melee-debug] socket reset'); } });
   registerShaderDebugParam({ id: 'runtime.meleeLogSocket', label: 'Log melee socket values', folder: 'Melee', type: 'action', pinPolicy: 'allow', get: () => null, action: () => logMeleeDebugSocket() });
+
+  // --- Propane Tank (carry socket + grip IK; arms follow grips) ---
+  const registerPropaneVec3 = ({ id, label, key, min, max, step, help }) => {
+    registerShaderDebugParam({
+      id, label, folder: 'Propane Tank', type: 'vec3', min, max, step, pinPolicy: 'allow', help,
+      get: () => [...propaneCarryDebugSocket[key]],
+      set: ([x, y, z]) => {
+        propaneCarryDebugSocket[key] = [Number(x) || 0, Number(y) || 0, Number(z) || 0];
+        bumpPropaneCarryDebugSocket();
+      },
+    });
+  };
+  const registerPropaneFloat = ({ id, label, key, min, max, step, help }) => {
+    registerShaderDebugParam({
+      id, label, folder: 'Propane Tank', type: 'float', min, max, step, pinPolicy: 'allow', help,
+      get: () => propaneCarryDebugSocket[key],
+      set: (value) => {
+        const next = Number(value);
+        if (!Number.isFinite(next)) return;
+        propaneCarryDebugSocket[key] = next;
+        bumpPropaneCarryDebugSocket();
+      },
+    });
+  };
+  const registerPropaneBool = ({ id, label, key, help }) => {
+    registerShaderDebugParam({
+      id, label, folder: 'Propane Tank', type: 'bool', pinPolicy: 'allow', help,
+      get: () => propaneCarryDebugSocket[key],
+      set: (value) => {
+        propaneCarryDebugSocket[key] = Boolean(value);
+        bumpPropaneCarryDebugSocket();
+      },
+    });
+  };
+
+  registerPropaneVec3({
+    id: 'runtime.propaneSocketPosition',
+    label: 'Socket offset (m)',
+    key: 'socketPosition',
+    min: -0.8,
+    max: 0.8,
+    step: 0.005,
+    help: 'Tank mid-body relative to spine socket (metres). Arms IK to grips, so they follow.',
+  });
+  registerPropaneVec3({
+    id: 'runtime.propaneSocketRotation',
+    label: 'Socket rotation °',
+    key: 'socketRotationDeg',
+    min: -180,
+    max: 180,
+    step: 0.5,
+    help: 'Euler XYZ degrees on the tank under the spine socket.',
+  });
+  registerPropaneFloat({
+    id: 'runtime.propaneSocketScale',
+    label: 'Socket scale',
+    key: 'socketScale',
+    min: 0.25,
+    max: 2.5,
+    step: 0.01,
+    help: 'Visual size multiplier (1 = real-world propane tank).',
+  });
+
+  registerPropaneVec3({
+    id: 'runtime.propaneLeftGripPosition',
+    label: 'Left grip pos (m)',
+    key: 'leftGripPosition',
+    min: -0.5,
+    max: 0.5,
+    step: 0.005,
+    help: 'Left hand IK target in tank-local space.',
+  });
+  registerPropaneVec3({
+    id: 'runtime.propaneLeftGripRotation',
+    label: 'Left grip rot °',
+    key: 'leftGripRotationDeg',
+    min: -180,
+    max: 180,
+    step: 0.5,
+    help: 'Palm orientation for the left grip target.',
+  });
+  registerPropaneVec3({
+    id: 'runtime.propaneRightGripPosition',
+    label: 'Right grip pos (m)',
+    key: 'rightGripPosition',
+    min: -0.5,
+    max: 0.5,
+    step: 0.005,
+    help: 'Right hand IK target in tank-local space.',
+  });
+  registerPropaneVec3({
+    id: 'runtime.propaneRightGripRotation',
+    label: 'Right grip rot °',
+    key: 'rightGripRotationDeg',
+    min: -180,
+    max: 180,
+    step: 0.5,
+    help: 'Palm orientation for the right grip target.',
+  });
+
+  registerPropaneBool({
+    id: 'runtime.propaneLeftIkEnabled',
+    label: 'Left arm IK',
+    key: 'leftIkEnabled',
+    help: 'Pull left hand onto the left grip marker.',
+  });
+  registerPropaneBool({
+    id: 'runtime.propaneRightIkEnabled',
+    label: 'Right arm IK',
+    key: 'rightIkEnabled',
+    help: 'Pull right hand onto the right grip marker.',
+  });
+  registerPropaneFloat({
+    id: 'runtime.propaneLeftIkHandBlend',
+    label: 'Left palm blend',
+    key: 'leftIkHandBlend',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    help: 'How hard the left palm snaps to grip orientation.',
+  });
+  registerPropaneFloat({
+    id: 'runtime.propaneRightIkHandBlend',
+    label: 'Right palm blend',
+    key: 'rightIkHandBlend',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    help: 'How hard the right palm snaps to grip orientation.',
+  });
+  registerPropaneVec3({
+    id: 'runtime.propaneLeftIkElbowPole',
+    label: 'Left elbow pole',
+    key: 'leftIkElbowPole',
+    min: -2,
+    max: 2,
+    step: 0.05,
+    help: 'Body-local direction for the left elbow plane.',
+  });
+  registerPropaneVec3({
+    id: 'runtime.propaneRightIkElbowPole',
+    label: 'Right elbow pole',
+    key: 'rightIkElbowPole',
+    min: -2,
+    max: 2,
+    step: 0.05,
+    help: 'Body-local direction for the right elbow plane.',
+  });
+  registerPropaneFloat({
+    id: 'runtime.propaneLeftIkElbowSwing',
+    label: 'Left elbow swing °',
+    key: 'leftIkElbowSwingDeg',
+    min: -180,
+    max: 180,
+    step: 1,
+    help: 'Rotate left elbow pole around shoulder→grip.',
+  });
+  registerPropaneFloat({
+    id: 'runtime.propaneRightIkElbowSwing',
+    label: 'Right elbow swing °',
+    key: 'rightIkElbowSwingDeg',
+    min: -180,
+    max: 180,
+    step: 1,
+    help: 'Rotate right elbow pole around shoulder→grip.',
+  });
+  registerPropaneFloat({
+    id: 'runtime.propaneLeftIkElbowBend',
+    label: 'Left elbow bend °',
+    key: 'leftIkElbowBendDeg',
+    min: 0,
+    max: 170,
+    step: 1,
+    help: 'Preferred interior bend for the left arm.',
+  });
+  registerPropaneFloat({
+    id: 'runtime.propaneRightIkElbowBend',
+    label: 'Right elbow bend °',
+    key: 'rightIkElbowBendDeg',
+    min: 0,
+    max: 170,
+    step: 1,
+    help: 'Preferred interior bend for the right arm.',
+  });
+
+  registerShaderDebugParam({
+    id: 'runtime.propaneResetSocket',
+    label: 'Reset propane socket',
+    folder: 'Propane Tank',
+    type: 'action',
+    pinPolicy: 'allow',
+    get: () => null,
+    action: () => {
+      resetPropaneCarryDebugSocket();
+      console.info('[propane-carry-debug] socket reset');
+    },
+  });
+  registerShaderDebugParam({
+    id: 'runtime.propaneLogSocket',
+    label: 'Log propane socket values',
+    folder: 'Propane Tank',
+    type: 'action',
+    pinPolicy: 'allow',
+    get: () => null,
+    action: () => logPropaneCarryDebugSocket(),
+  });
 
   // --- Reload (left-hand IK path along the magazine-change track) ---
   registerShaderDebugParam({

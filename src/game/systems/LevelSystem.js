@@ -7,6 +7,8 @@ import { createShootingRangeLevel } from '../world/createShootingRangeLevel.js';
 import { createHordeModeLevel } from '../world/createHordeModeLevel.js';
 import { createDeathmatchArenaLevel } from '../world/createDeathmatchArenaLevel.js';
 import { createMatrixHighwayLevel } from '../world/createMatrixHighwayLevel.js';
+import { createSimLotLevel } from '../world/createSimLotLevel.js';
+import { createDogParkLevel } from '../world/createDogParkLevel.js';
 import { getActiveWorldMap, getRallyWorldMap } from '../../world/worldMap/worldMapScenes.js';
 
 const ledgeNormal = new THREE.Vector3();
@@ -98,7 +100,7 @@ export class LevelSystem {
 
   async loadBaseLevel(scene, qualityPreset = {}, mode = 'city', renderer = null) {
     this.status = 'loading';
-    this.mode = ['world', 'wilds', 'rally', 'range', 'horde', 'highway', 'deathmatch'].includes(mode) ? mode : 'city';
+    this.mode = ['world', 'wilds', 'rally', 'range', 'horde', 'highway', 'deathmatch', 'sims', 'dog-park'].includes(mode) ? mode : 'city';
     if (this.mode === 'wilds') {
       this.level = createWildsLevel(qualityPreset);
     } else if (this.mode === 'range') {
@@ -109,6 +111,10 @@ export class LevelSystem {
       this.level = createDeathmatchArenaLevel(qualityPreset);
     } else if (this.mode === 'highway') {
       this.level = createMatrixHighwayLevel(qualityPreset);
+    } else if (this.mode === 'sims') {
+      this.level = createSimLotLevel(qualityPreset);
+    } else if (this.mode === 'dog-park') {
+      this.level = createDogParkLevel(qualityPreset, { renderer });
     } else if (this.mode === 'world' || this.mode === 'rally') {
       const worldMap = this.mode === 'rally' ? await getRallyWorldMap() : await getActiveWorldMap();
       const hasCity = (worldMap?.zones ?? []).some((zone) => zone.type === 'city');

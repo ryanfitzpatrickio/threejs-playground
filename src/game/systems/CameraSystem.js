@@ -346,7 +346,7 @@ export class CameraSystem {
       // On-foot FP keeps the body visible (head hide is owned by FirstPersonWeaponSystem).
       // Only hide the whole character for vehicle cockpit FP.
       this._setCharacterHiddenForFirstPerson(character, false);
-      if (character?.group) character.group.visible = true;
+      if (character?.group && !character.hiddenForSims) character.group.visible = true;
       // Turn body before sampling the neck so the eye point stays on the skeleton
       // when look yaw exceeds the neck range (avoids peering into chest/shoulders).
       // Forward movement straightens any stand-still neck offset onto look yaw.
@@ -841,6 +841,12 @@ export class CameraSystem {
     if (!character?.group) {
       return;
     }
+    // Household/sims parks the open-world player permanently off-lot.
+    if (character.hiddenForSims) {
+      character.group.visible = false;
+      this._firstPersonHidCharacter = false;
+      return;
+    }
     if (hidden === this._firstPersonHidCharacter) {
       return;
     }
@@ -850,6 +856,11 @@ export class CameraSystem {
 
   _restoreCharacterVisibility(character) {
     if (!this._firstPersonHidCharacter || !character?.group) {
+      return;
+    }
+    if (character.hiddenForSims) {
+      character.group.visible = false;
+      this._firstPersonHidCharacter = false;
       return;
     }
     character.group.visible = true;

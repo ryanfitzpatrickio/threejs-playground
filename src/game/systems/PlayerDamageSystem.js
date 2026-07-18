@@ -26,7 +26,9 @@ export class PlayerDamageSystem {
     player.lastHitTime = this.clock;
 
     // Heavy reaction on heavy hits, or once badly hurt. Otherwise a light stagger.
-    const heavy = kind === 'heavy' || player.health <= cfg.lowHealthHeavyThreshold;
+    const heavy = kind === 'heavy'
+      || kind === 'explosion'
+      || player.health <= cfg.lowHealthHeavyThreshold;
     player.hitReaction = heavy ? 'heavy' : 'light';
     player.hitReactionTimer = heavy ? cfg.heavyHitReactionSeconds : cfg.lightHitReactionSeconds;
 

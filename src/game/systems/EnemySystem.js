@@ -635,7 +635,7 @@ export class EnemySystem {
     }
   }
 
-  update({ delta, player, level, platforms = null }) {
+  update({ delta, player, level, platforms = null, navClamp = null } = {}) {
     if (this.status !== 'ready') {
       return;
     }
@@ -643,6 +643,8 @@ export class EnemySystem {
     // Available to moveToward / separation helpers this frame (M5 platforms).
     this.platformsThisFrame = platforms;
     _snapPlatformsFrame = platforms;
+    // Horde navclamp: (fromX, fromZ, toX, toZ, y) => {x,z,y,ok} or null.
+    this.navClampThisFrame = typeof navClamp === 'function' ? navClamp : null;
 
     this.updatePlayerSlots(player);
     const playerPosition = player?.group?.position ?? null;
@@ -782,8 +784,11 @@ export class EnemySystem {
     if (!kb) {
       return;
     }
+    const fromX = enemy.model.position.x;
+    const fromZ = enemy.model.position.z;
     enemy.model.position.x += kb.x * delta;
     enemy.model.position.z += kb.z * delta;
+    applyNavClampToEnemy(enemy, fromX, fromZ, this.navClampThisFrame);
     const decay = Math.exp(-5 * delta);
     kb.x *= decay;
     kb.z *= decay;
@@ -1729,6 +1734,7 @@ function chasePlayer({ system, enemy, player, level, delta }) {
     speed: resolveSoldierLocomotionSpeed(enemy, ENEMY_RUN_SPEED) * speedScale,
     level,
     delta,
+    navClamp: system.navClampThisFrame,
   });
 }
 
@@ -1941,10 +1947,11 @@ function patrol({ system, enemy, level, delta }) {
     speed: resolveSoldierLocomotionSpeed(enemy, ENEMY_WALK_SPEED) * speedScale,
     level,
     delta,
+    navClamp: system?.navClampThisFrame,
   });
 }
 
-function moveToward({ enemy, target, speed, level, delta }) {
+function moveToward({ enemy, target, speed, level, delta, navClamp = null }) {
   if (!target) {
     return;
   }
@@ -1959,8 +1966,22 @@ function moveToward({ enemy, target, speed, level, delta }) {
 
   enemyMoveDirection.multiplyScalar(1 / distance);
   faceDirection({ enemy, direction: enemyMoveDirection, delta });
+  const fromX = enemy.model.position.x;
+  const fromZ = enemy.model.position.z;
   enemy.model.position.addScaledVector(enemyMoveDirection, Math.min(distance, speed * delta));
+  applyNavClampToEnemy(enemy, fromX, fromZ, navClamp);
   snapEnemyToGround({ enemy, level, platforms: _snapPlatformsFrame });
+}
+
+function applyNavClampToEnemy(enemy, fromX, fromZ, navClamp) {
+  const clamp = navClamp ?? null;
+  if (typeof clamp !== 'function' || !enemy?.model?.position) return;
+  const pos = enemy.model.position;
+  const result = clamp(fromX, fromZ, pos.x, pos.z, pos.y);
+  if (result?.ok) {
+    pos.x = result.x;
+    pos.z = result.z;
+  }
 }
 
 function faceTarget({ enemy, target, delta }) {

@@ -1,0 +1,44 @@
+{
+  "generatedAt": "2026-07-16T15:21:52.029Z",
+  "model": "/assets/simhuman/human5.glb",
+  "outputDir": "/assets/animations-rigify",
+  "fps": 30,
+  "retargetSpace": "world-bind-delta",
+  "animations": [
+    {
+      "name": "idle",
+      "sourceUrl": "/assets/animation-packs/locomotion-pack-2/idle.fbx",
+      "clipUrl": "/assets/animations-rigify/idle.json",
+      "duration": 8.3333,
+      "tracks": 53
+    },
+    {
+      "name": "walking",
+      "sourceUrl": "/assets/animation-packs/locomotion-pack-2/walking.fbx",
+      "clipUrl": "/assets/animations-rigify/walking.json",
+      "duration": 1.0333,
+      "tracks": 53
+    },
+    {
+      "name": "running",
+      "sourceUrl": "/assets/animation-packs/locomotion-pack-2/running.fbx",
+      "clipUrl": "/assets/animations-rigify/running.json",
+      "duration": 0.7,
+      "tracks": 53
+    },
+    {
+      "name": "left turn",
+      "sourceUrl": "/assets/animation-packs/locomotion-pack-2/left%20turn.fbx",
+      "clipUrl": "/assets/animations-rigify/left-turn.json",
+      "duration": 1.6333,
+      "tracks": 53
+    },
+    {
+      "name": "right turn",
+      "sourceUrl": "/assets/animation-packs/locomotion-pack-2/right%20turn.fbx",
+      "clipUrl": "/assets/animations-rigify/right-turn.json",
+      "duration": 1.6333,
+      "tracks": 53
+    }
+  ]
+}

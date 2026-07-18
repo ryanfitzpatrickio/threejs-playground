@@ -438,6 +438,8 @@ export class WeaponSystem {
     vehicleDamageSystem = null,
     vehicleSystem = null,
     shootingRangeSystem = null,
+    aquariumBreachSystem = null,
+    propaneTankSystem = null,
     hordeProxySystem = null,
     resolveHordeTarget = null,
     maxDetailedRagdolls = Infinity,
@@ -583,6 +585,8 @@ export class WeaponSystem {
         vehicleDamageSystem,
         vehicleSystem,
         shootingRangeSystem,
+        aquariumBreachSystem,
+        propaneTankSystem,
         hordeProxySystem,
         resolveHordeTarget,
       });
@@ -637,6 +641,8 @@ export class WeaponSystem {
     vehicleDamageSystem,
     vehicleSystem,
     shootingRangeSystem = null,
+    aquariumBreachSystem = null,
+    propaneTankSystem = null,
     hordeProxySystem = null,
     resolveHordeTarget = null,
   }) {
@@ -695,6 +701,7 @@ export class WeaponSystem {
 
     const dirs = buildPelletDirections(this._fwdScratch, pelletCount, spread);
     const rangeHits = shootingRangeSystem?.getHitEntities?.() ?? [];
+    const propaneHits = propaneTankSystem?.getHitEntities?.() ?? [];
     // Spatial proxy candidates near the camera aim (M4) — avoid scanning all 250.
     let proxyTargets = [];
     if (hordeProxySystem?.getHitTargetsNear) {
@@ -706,12 +713,19 @@ export class WeaponSystem {
     // Capsule hitscan treats range targets like enemies (same vertical cylinder).
     // Horde proxies are included so a direct aim promotes (or lightweight-damages).
     const baseEnemies = enemySystem?.enemies ?? [];
-    const enemies = rangeHits.length || proxyTargets.length
-      ? [...baseEnemies, ...rangeHits, ...proxyTargets]
+    const enemies = rangeHits.length || proxyTargets.length || propaneHits.length
+      ? [...baseEnemies, ...rangeHits, ...propaneHits, ...proxyTargets]
       : baseEnemies;
-    // City/world raycasts remain opt-in, but the compact shooting range exists
-    // specifically to exercise surface response and has a small fixed collider set.
-    const physics = (USE_WORLD_RAY || shootingRangeSystem?.enabled) ? physicsSystem : null;
+    // City/world raycasts remain opt-in (dense streamed cities are expensive).
+    // Compact authored arenas opt in: shooting range (surface response) and
+    // horde aquarium breach (glass tanks need world hits for holes + jets).
+    // wantsWorldRay covers the pre-bind frame; enabled is the steady state.
+    const physics = (
+      USE_WORLD_RAY
+      || shootingRangeSystem?.enabled
+      || aquariumBreachSystem?.enabled
+      || aquariumBreachSystem?.wantsWorldRay
+    ) ? physicsSystem : null;
 
     let hitSummary = null;
     let impactAudioPlayed = false;
@@ -759,7 +773,10 @@ export class WeaponSystem {
         }
       }
 
-      if (result.kind === 'enemy' && result.enemy?.rangeTarget) {
+      if (result.kind === 'enemy' && result.enemy?.propaneTank) {
+        this.totalHits += 1;
+        propaneTankSystem?.onTankHit?.(result.enemy, result);
+      } else if (result.kind === 'enemy' && result.enemy?.rangeTarget) {
         this.totalHits += 1;
         shootingRangeSystem?.onTargetHit?.(result.enemy, {
           region: result.region,
@@ -801,13 +818,17 @@ export class WeaponSystem {
           vehicleSystem,
           vehicleDamageSystem,
         });
+        // Aquarium glass pillars (and any future world-hit consumers).
+        aquariumBreachSystem?.onWorldHit?.(result);
       }
 
       if (!hitSummary) {
         hitSummary = {
-          kind: result.enemy?.rangeTarget
-            ? (result.enemy.friendly ? 'friendly' : 'target')
-            : result.kind,
+          kind: result.enemy?.propaneTank
+            ? 'propaneTank'
+            : result.enemy?.rangeTarget
+              ? (result.enemy.friendly ? 'friendly' : 'target')
+              : result.kind,
           damage: result.damage,
           region: result.region,
           distance: result.distance,
@@ -1518,6 +1539,7 @@ export class WeaponSystem {
 
 function canToggleHolster(character) {
   if (!character) return false;
+  if (character.carrying) return false;
   if (character.vehicle?.active || character.vehicle) return false;
   if (character.hang?.active || character.wallRun?.active || character.wallClimb?.active
     || character.vault?.active || character.slide?.active || character.rope?.active

@@ -30,13 +30,19 @@ function createCommands() {
       const enemies = this.enemySystem?.enemies ?? [];
       const origin = character?.group?.position ?? new THREE.Vector3();
 
+      // Accept classic soldiers and mixamo-humanoid horde bots (faceless/tessy/cyclop).
+      const isCuttable = (enemy) => Boolean(
+        enemy?.model
+        && (enemy.archetype === 'soldier' || enemy.limbLossProfile === 'mixamo-humanoid'),
+      );
+
       let target = null;
       if (enemyId != null) {
-        target = enemies.find((e) => e?.id === enemyId && e?.archetype === 'soldier' && e.model) ?? null;
+        target = enemies.find((e) => e?.id === enemyId && isCuttable(e)) ?? null;
       } else {
         let nearestDistSq = Infinity;
         for (const enemy of enemies) {
-          if (enemy?.archetype !== 'soldier' || !enemy.model) continue;
+          if (!isCuttable(enemy)) continue;
           const distSq = enemy.model.position.distanceToSquared(origin);
           if (distSq < nearestDistSq) {
             nearestDistSq = distSq;
@@ -70,10 +76,12 @@ function createCommands() {
       return {
         cut: !!ok,
         enemyId: target.id,
+        archetype: target.archetype ?? null,
         position: { x: Number(target.model.position.x.toFixed(2)), y: Number(target.model.position.y.toFixed(2)), z: Number(target.model.position.z.toFixed(2)) },
         normal: [Number(n.x.toFixed(2)), Number(n.y.toFixed(2)), Number(n.z.toFixed(2))],
         constant: Number(constant.toFixed(2)),
         result: this.enemyCutSystem.lastResult,
+        timing: this.enemyCutSystem.lastCutMs,
       };
     },
     gunSeverNearest: ({ region = 'armL', enemyId = null } = {}) => {

@@ -1,0 +1,45 @@
+{
+  "$comment": "Allowlist + verify contract for the standalone dog product (docs/dog-park-standalone-deploy-plan.md). Cloudflare project: dog-park (wrangler.dog.jsonc). Consumed by vite/dogDeployAssetsPlugin.mjs (build-time copy) and scripts/verify-dog-bundle.mjs / verify-dog-asset-manifest.mjs (verify).",
+  "product": "dog-park",
+  "phase": "studio",
+  "budgets": {
+    "maxFileBytes": 26214400,
+    "maxTotalBytes": 16777216,
+    "maxJsChunkBytes": 8000000,
+    "unit": "raw-on-disk"
+  },
+  "verify": {
+    "forbidJsSubstrings": [
+      "GameRuntime",
+      "createRuntimeKernel",
+      "simoutfits",
+      "DeathmatchNetworkSystem",
+      "PartySocket",
+      "partykit",
+      "createInfiniteCityLevel",
+      "webgpu_generator_city",
+      "GunsmithScene",
+      "BodyshopScene",
+      "/assets/guns/",
+      "pine-ridge-rally"
+    ],
+    "requireJsSubstrings": ["dog-sim-shell", "golden-retriever"],
+    "forbidModulePaths": ["src/ui/App.jsx", "src/game/core/GameRuntime.js"]
+  },
+  "include": [
+    { "from": "public/_headers", "to": "_headers" },
+    { "from": "public/og-image-dog.png", "to": "og-image-dog.png", "optional": true },
+    { "from": "public/og-image-dog.png", "to": "og-image.png", "optional": true },
+    { "from": "public/favicon.ico", "to": "favicon.ico", "optional": true }
+  ],
+  "includeGlobs": [
+    { "from": "public/assets/dog-ref/**", "toPrefix": "assets/dog-ref/" }
+  ],
+  "excludeGlobs": [
+    "**/.DS_Store"
+  ],
+  "notes": {
+    "studio": "Procedural dog needs no GLB. dog-ref INCLUDED (compare on by default); _headers for cache/security parity with the main playground deploy.",
+    "park": "Phase P (not yet promoted): add forest species dirs (exact IDs from createDogParkLevel), forest-leaves subset, dog-anims/; dog-ref optional drop. Do not flip \"phase\" to \"park\" until docs/dog-park-standalone-deploy-plan.md §4.3.1 checklist L1-L9 is green."
+  }
+}

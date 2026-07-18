@@ -19,13 +19,11 @@ import {
   mergeLimbLoss,
 } from './soldierPartialCut.js';
 
-const CUT_TARGET_RANGE = 8.5;
-const CUT_AIM_RANGE_X = 1.2;
-const CUT_AIM_RANGE_Y = 1.1;
-const CUT_AIM_LOOK_SCALE = 0.006;
+const CUT_ARC_RADIUS = 8.5;
+const CUT_ARC_HALF_HEIGHT = 3.5;
 const CUT_ROTATE_SPEED = 2.2;
-const CUT_SLASH_LENGTH = 3.1;
-const CUT_PLANE_SIZE = 3.8;
+const CUT_PLANE_SIZE = CUT_ARC_RADIUS * 2.05;
+const CUT_ARC_BAND_WIDTH = 0.13;
 const CHUNK_SEPARATION = 0.32;
 const PROP_MIN_HALF_EXTENT = 0.035;
 const RAGDOLL_BASE_HEIGHT = 2.7;
@@ -59,7 +57,9 @@ const RIGID_MAX_COMPONENTS_PER_HALF = 4;
 let STATIC_CUT_PROP_LIFETIME = 9;
 let RIG_RAGDOLL_PROP_LIFETIME = 24;
 const CUT_PROP_FADE_DURATION = 1.2;
-const CUT_PROP_FALL_CLEANUP_Y = -36;
+// Absolute world-Y cleanup is wrong for office interiors (built at
+// INTERIOR_BASE_Y = -1000). Fall cleanup is relative to each prop's spawn Y.
+const CUT_PROP_FALL_DROP = 40;
 const DEFAULT_COLLISION_GROUP = 0x0001;
 const CUT_RAGDOLL_COLLISION_GROUP = 0x0002;
 const CUT_RAGDOLL_WORLD_ONLY_GROUPS = (
@@ -157,6 +157,8 @@ const aimCenter = new THREE.Vector3();
 const aimTangent = new THREE.Vector3();
 const aimNormal = new THREE.Vector3();
 const targetCenter = new THREE.Vector3();
+const arcOrigin = new THREE.Vector3();
+const arcTargetPosition = new THREE.Vector3();
 const guideMatrix = new THREE.Matrix4();
 const targetBounds = new THREE.Box3();
 const tempWorldPosition = new THREE.Vector3();
@@ -487,10 +489,7 @@ export class EnemyCutSystem {
   constructor() {
     this.scene = null;
     this.state = 'idle';
-    this.targetEnemy = null;
     this.aim = {
-      x: 0,
-      y: 0,
       angle: Math.PI * 0.5,
     };
     this.cutPlane = new THREE.Plane();
@@ -501,6 +500,8 @@ export class EnemyCutSystem {
     this.justCut = false;
     this.cutCommitted = false;
     this.swingOrientation = null;
+    this.lastArcTargetCount = 0;
+    this.lastArcCutCount = 0;
     this.planeGuide = null;
     this.slashGuide = null;
     // Filled cyan plane (only when CUT_DEBUG). "cut trigger plane" for direct cuts.
@@ -539,11 +540,16 @@ export class EnemyCutSystem {
     this.scene.add(this.planeGuide);
 
     this.slashGuide = new THREE.Mesh(
-      new THREE.BoxGeometry(CUT_SLASH_LENGTH, 0.035, 0.045),
+      new THREE.RingGeometry(
+        CUT_ARC_RADIUS - CUT_ARC_BAND_WIDTH,
+        CUT_ARC_RADIUS,
+        96,
+      ),
       new THREE.MeshBasicMaterial({
         color: 0xfff0a6,
         transparent: true,
-        opacity: 0.9,
+        opacity: 0.62,
+        side: THREE.DoubleSide,
         depthWrite: false,
       }),
     );
@@ -596,7 +602,6 @@ export class EnemyCutSystem {
       this.enterCutMode({
         character,
         camera,
-        enemies,
       });
     }
 
@@ -614,14 +619,6 @@ export class EnemyCutSystem {
       };
     }
 
-    if (!this.targetEnemy || !enemies.includes(this.targetEnemy)) {
-      this.cancelCutMode();
-      return {
-        active: false,
-        consumeGameplay: false,
-      };
-    }
-
     if (input.cutCancelPressed) {
       this.cancelCutMode();
       return {
@@ -630,14 +627,16 @@ export class EnemyCutSystem {
       };
     }
 
-    this.updateAim({ delta, input, camera });
-
-    if (input.cutCommitPressed) {
-      this.queueCurrentCut();
-    }
+    this.updateAim({ delta, input, character, camera });
 
     if (input.cutModeReleased) {
-      if (this.beginCutSwing()) {
+      if (this.beginCutSwing({
+        character,
+        enemies,
+        enemySystem,
+        propSystem,
+        physicsSystem,
+      })) {
         return {
           active: true,
           consumeGameplay: true,
@@ -759,7 +758,7 @@ export class EnemyCutSystem {
 
     return {
       state: this.state,
-      target: this.targetEnemy?.id ?? null,
+      target: null,
       props: this.props.length,
       staticProps: stats.staticProps,
       rigRagdollProps: stats.rigRagdollProps,
@@ -774,11 +773,14 @@ export class EnemyCutSystem {
       detailedRagdolls: this.countDetailedRagdolls(),
       recuttableProps: this.props.filter((prop) => prop.recuttable).length,
       queuedCuts: this.queuedCuts.length,
+      arcRadius: CUT_ARC_RADIUS,
+      arcTargets: this.lastArcTargetCount,
+      arcCuts: this.lastArcCutCount,
       lastResult: this.lastResult,
       lastCutMs: this.lastCutMs ?? null,
       collider: this.lastColliderType,
       colliderMode: CUT_COLLIDER_MODE,
-      cutStyle: resolveCutStyle(this.targetEnemy),
+      cutStyle: null,
       aimAngle: Number(THREE.MathUtils.radToDeg(this.aim.angle).toFixed(1)),
       aimSlashOrientation: this.swingOrientation,
       cutCommitted: this.cutCommitted,
@@ -836,36 +838,23 @@ export class EnemyCutSystem {
     this.propCapMaterial?.dispose?.();
     this.propCapMaterial = null;
     this.scene = null;
-    this.targetEnemy = null;
     this.state = 'disposed';
   }
 
-  enterCutMode({ character, camera, enemies }) {
-    const target = findNearestEnemy({
-      character,
-      enemies,
-    });
-
-    if (!target) {
-      this.lastResult = 'no-target';
-      return false;
-    }
-
-    this.targetEnemy = target;
+  enterCutMode({ character, camera }) {
     this.state = 'aiming';
     this.queuedCuts = [];
-    this.aim.x = 0;
-    this.aim.y = 0;
     this.aim.angle = Math.PI * 0.5;
+    this.lastArcTargetCount = 0;
+    this.lastArcCutCount = 0;
     this.lastResult = 'aiming';
     this.setGuideVisible(true);
-    this.updateCutPlane(camera);
+    this.updateCutPlane(character, camera);
     return true;
   }
 
   cancelCutMode() {
     this.state = 'idle';
-    this.targetEnemy = null;
     this.queuedCuts = [];
     this.cutCommitted = false;
     this.swingOrientation = null;
@@ -873,70 +862,83 @@ export class EnemyCutSystem {
     this.setGuideVisible(false);
   }
 
-  // V release: queue the current plane (if needed), pick H/V from the slash guide,
-  // hide guides, and hand off to CombatSystem for the synced slash animation.
-  beginCutSwing() {
+  // V release snapshots every target in the world-space radius and cuts all of
+  // them immediately. The animation starts afterward as impact feedback; it no
+  // longer gates the geometry operation on a later animation-frame trigger.
+  beginCutSwing({ character, enemies, enemySystem, propSystem, physicsSystem }) {
     if (this.state !== 'aiming') {
       return false;
     }
 
-    if (this.queuedCuts.length === 0) {
-      this.queueCurrentCut();
-    }
-
-    if (this.queuedCuts.length === 0) {
-      this.cancelCutMode();
-      this.lastResult = 'no-cuts';
-      return false;
-    }
-
+    this.queueCurrentCut();
     this.swingOrientation = resolveAimSlashOrientation(this.aim.angle);
-    this.cutCommitted = false;
     this.state = 'executing';
     this.setGuideVisible(false);
-    this.lastResult = `swing-${this.swingOrientation}`;
+    this.commitArcCuts({
+      character,
+      enemies,
+      enemySystem,
+      propSystem,
+      physicsSystem,
+    });
     return true;
   }
 
   finishCutSwing() {
     this.state = 'idle';
-    this.targetEnemy = null;
     this.queuedCuts = [];
     this.cutCommitted = false;
     this.swingOrientation = null;
     this.setGuideVisible(false);
   }
 
-  commitPendingCuts({ enemySystem, propSystem, physicsSystem }) {
-    if (this.state !== 'executing' || this.cutCommitted) {
-      return false;
-    }
+  commitArcCuts({ character, enemies, enemySystem, propSystem, physicsSystem }) {
+    const targets = collectWorldArcTargets({ character, targets: enemies });
+    const sourceCuts = this.queuedCuts;
+    let cutCount = 0;
+    let pieceCount = 0;
 
-    const enemy = this.targetEnemy;
-    const cuts = this.queuedCuts;
-
-    if (!enemy || cuts.length === 0) {
-      return false;
-    }
-
+    this.lastArcTargetCount = targets.length;
     this.cutCommitted = true;
-    const cutResult = this.executeCuts({ enemy, cuts, physicsSystem });
 
-    if (!cutResult?.props?.length) {
-      this.lastResult = 'cut-failed';
-      return false;
+    for (const enemy of targets) {
+      const center = getCutTargetCenter(enemy, targetCenter);
+      const cuts = sourceCuts.map((cut) => ({
+        ...cut,
+        plane: new THREE.Plane().setFromNormalAndCoplanarPoint(cut.normal, center),
+      }));
+      const result = this.commitTargetCuts({
+        enemy,
+        cuts,
+        enemySystem,
+        propSystem,
+        physicsSystem,
+      });
+      if (!result) continue;
+      cutCount += 1;
+      pieceCount += result.props.length;
     }
+
+    this.lastArcCutCount = cutCount;
+    this.justCut = cutCount > 0;
+    this.lastResult = cutCount > 0
+      ? `arc-cut-${cutCount}-targets-${pieceCount}-pieces`
+      : targets.length > 0
+        ? `arc-cut-nonviable-${targets.length}-targets`
+        : 'arc-miss';
+    return cutCount;
+  }
+
+  commitTargetCuts({ enemy, cuts, enemySystem, propSystem, physicsSystem }) {
+    const cutResult = this.executeCuts({ enemy, cuts, physicsSystem });
+    if (!cutResult?.props?.length) return null;
 
     const { props, keepEnemy, outcome } = cutResult;
-    this.justCut = true;
-
-    let didKeep = keepEnemy;
     if (keepEnemy) {
       if (outcome?.severedThisCut?.head) {
-        enemySystem.applySoldierHeadPartialDeath(enemy, outcome, physicsSystem);
-        didKeep = false;
+        enemySystem?.applySoldierHeadPartialDeath?.(enemy, outcome, physicsSystem);
       } else {
-        enemySystem.applySoldierPartialCut(enemy, outcome);
+        enemySystem?.applySoldierPartialCut?.(enemy, outcome);
       }
     } else {
       enemySystem?.markDefeated?.(enemy, 'sword-cut');
@@ -949,44 +951,26 @@ export class EnemyCutSystem {
       });
     }
 
-    const propStats = cutPropStats(props);
-    this.lastResult = didKeep
-      ? `partial-cut-${outcome?.reason ?? 'limb'}-${props.length}-chunks`
-      : propStats.rigRagdollProps > 0
-        ? `cut-${cuts.length}-planes-${propStats.rigRagdollProps}-rig-${propStats.staticProps}-static`
-        : `cut-${cuts.length}-planes-${props.length}-pieces`;
-    return true;
+    applyPlatformVelocityToCutProps(enemy, props);
+    return cutResult;
   }
 
-  updateAim({ delta, input, camera }) {
-    this.aim.x = THREE.MathUtils.clamp(
-      this.aim.x + input.lookX * CUT_AIM_LOOK_SCALE,
-      -CUT_AIM_RANGE_X,
-      CUT_AIM_RANGE_X,
-    );
-    this.aim.y = THREE.MathUtils.clamp(
-      this.aim.y - input.lookY * CUT_AIM_LOOK_SCALE,
-      -CUT_AIM_RANGE_Y,
-      CUT_AIM_RANGE_Y,
-    );
-
+  updateAim({ delta, input, character, camera }) {
     if (input.moveX) {
       this.aim.angle += input.moveX * CUT_ROTATE_SPEED * delta;
     }
 
-    this.updateCutPlane(camera);
+    this.updateCutPlane(character, camera);
   }
 
-  updateCutPlane(camera) {
-    if (!this.targetEnemy?.model) {
+  updateCutPlane(character, camera) {
+    if (!character?.group) {
       return;
     }
 
-    this.resolveTargetCenter();
     resolveCameraBasis(camera);
-    aimCenter.copy(targetCenter)
-      .addScaledVector(cameraRight, this.aim.x)
-      .addScaledVector(cameraUp, this.aim.y);
+    character.group.getWorldPosition(aimCenter);
+    aimCenter.y += 1.25;
     aimTangent.copy(cameraRight)
       .multiplyScalar(Math.cos(this.aim.angle))
       .addScaledVector(cameraUp, Math.sin(this.aim.angle))
@@ -1006,12 +990,11 @@ export class EnemyCutSystem {
       return false;
     }
 
-    this.queuedCuts.push({
+    this.queuedCuts = [{
       plane: this.cutPlane.clone(),
       normal: this.cutPlane.normal.clone(),
       angle: this.aim.angle,
-    });
-    this.lastResult = `queued-${this.queuedCuts.length}`;
+    }];
     return true;
   }
 
@@ -1023,6 +1006,10 @@ export class EnemyCutSystem {
   // Returns { props, keepEnemy, outcome? }. keepEnemy=true when a soldier survives
   // a partial (non-head) limb cut and keeps patrolling on a disability animation.
   // Head partial sets keepEnemy but we kill immediately after.
+  //
+  // Squishy single-plane cuts intentionally avoid the full posed bake until the
+  // hybrid fallback: horde bots are ~43–49k verts / ~80k tris, and bake+CSG on
+  // that density several times in one frame is a multi-hundred-ms hitch.
   executeCuts({ enemy, cuts, physicsSystem }) {
     if (!enemy || !physicsSystem?.world || !physicsSystem?.RAPIER) {
       return null;
@@ -1030,12 +1017,6 @@ export class EnemyCutSystem {
 
     // Per-stage timing (event-driven — only runs on a cut, so cheap to keep on).
     const t0 = performance.now();
-    const baked = bakeSkinnedModelGeometry(enemy.model);
-    const sourceGeometry = baked?.geometry;
-    const tBake = performance.now();
-    if (!sourceGeometry) {
-      return null;
-    }
 
     // Flesh-and-bone enemies, single clean plane: slice into TWO skinned ragdoll
     // halves, each clipped along the actual cut plane (capped face). This is the
@@ -1049,11 +1030,10 @@ export class EnemyCutSystem {
         enemy,
         plane: cuts[0].plane,
         physicsSystem,
-        baked,
+        baked: null,
       });
 
       if (partial) {
-        sourceGeometry.dispose();
         this.props.push(...partial.props);
         for (const prop of partial.props) {
           this.scene.add(prop.mesh);
@@ -1062,12 +1042,13 @@ export class EnemyCutSystem {
         const tSpawn = performance.now();
         this.lastCutMs = {
           total: Number((tSpawn - t0).toFixed(2)),
-          bake: Number((tBake - t0).toFixed(2)),
+          bake: 0,
           clip: 0,
           split: 0,
-          spawn: Number((tSpawn - tBake).toFixed(2)),
+          spawn: Number((tSpawn - t0).toFixed(2)),
           pieces: partial.props.length,
-          vertices: baked?.vertexCount ?? null,
+          vertices: estimateEnemyRenderVerts(enemy),
+          path: partial.path ?? 'partial',
         };
 
         if (CUT_DEBUG) {
@@ -1084,29 +1065,33 @@ export class EnemyCutSystem {
       const ragdollProps = this.createSkinnedRagdollCutProps({
         enemy,
         plane: cuts[0].plane,
-        sourceGeometry,
+        sourceGeometry: null,
         physicsSystem,
       });
 
       if (ragdollProps) {
-        // createSkinnedRagdollCutProps reads but never consumes sourceGeometry
-        // (baked.geometry is owned here); the hybrid path would have disposed it
-        // via applyQueuedCuts, so dispose it ourselves on this early return.
-        sourceGeometry.dispose();
         this.props.push(...ragdollProps);
         for (const prop of ragdollProps) {
-          this.scene.add(prop.root);
+          if (prop.type === 'rigRagdoll') {
+            this.scene.add(prop.root);
+          } else if (prop.mesh) {
+            this.scene.add(prop.mesh);
+          }
         }
 
         const tSpawn = performance.now();
+        const path = ragdollProps.every((prop) => prop.type === 'rigRagdoll')
+          ? 'skinned-halves'
+          : 'static-halves';
         this.lastCutMs = {
           total: Number((tSpawn - t0).toFixed(2)),
-          bake: Number((tBake - t0).toFixed(2)),
+          bake: 0,
           clip: 0,
           split: 0,
-          spawn: Number((tSpawn - tBake).toFixed(2)),
+          spawn: Number((tSpawn - t0).toFixed(2)),
           pieces: ragdollProps.length,
-          vertices: baked?.vertexCount ?? null,
+          vertices: estimateEnemyRenderVerts(enemy),
+          path,
         };
 
         if (CUT_DEBUG) {
@@ -1120,7 +1105,14 @@ export class EnemyCutSystem {
         };
       }
       // Not viable as a clean two-half cut (plane only grazes the mesh, etc.) —
-      // fall through to the hybrid path with sourceGeometry still intact.
+      // fall through to the hybrid path with a posed bake.
+    }
+
+    const baked = bakeSkinnedModelGeometry(enemy.model);
+    const sourceGeometry = baked?.geometry;
+    const tBake = performance.now();
+    if (!sourceGeometry) {
+      return null;
     }
 
     const clipped = applyQueuedCuts({
@@ -1159,6 +1151,7 @@ export class EnemyCutSystem {
       spawn: Number((tSpawn - tSplit).toFixed(2)),
       pieces: props.length,
       vertices: baked?.vertexCount ?? null,
+      path: 'hybrid',
     };
 
     if (CUT_DEBUG) {
@@ -1181,6 +1174,54 @@ export class EnemyCutSystem {
     const cutCount = enemy.cutCount ?? 0;
     let outcome = decideSoldierCutOutcome({ enemy, plane, limbLoss, cutCount });
 
+    // Bone analysis already knows this cannot be a survivable partial (core
+    // bisect, multi-region, cut limit). applySeveranceFromProps will not upgrade
+    // these reasons — skip the full-mesh posed CSG probe that used to run on
+    // every heavy swing and hitch horde frames for hundreds of ms.
+    const blockedRagdollReasons = new Set(['core-bisect', 'cut-limit', 'too-many-limbs', 'multi-region']);
+    if (outcome.mode === 'ragdoll' && blockedRagdollReasons.has(outcome.reason)) {
+      return null;
+    }
+
+    // Lethal non-head partials must fall through to full ragdoll. Decide that
+    // before any geometry work when bone analysis already classified a limb cut.
+    if (
+      (enemy.health ?? 1) <= 0
+      && outcome.mode === 'partial'
+      && outcome.locomotion !== 'head'
+    ) {
+      return null;
+    }
+
+    const highPoly = estimateEnemyRenderVerts(enemy) >= HIGH_POLY_CUT_VERT_THRESHOLD;
+
+    // Dense horde meshes: fingertip CSG recovery is not worth a frame hitch.
+    // Bone analysis already returned no-severance/fallback → full ragdoll.
+    if (outcome.mode === 'ragdoll' && highPoly) {
+      return null;
+    }
+
+    // Dense meshes: reuse the firearm region partition (skin-weight triangles,
+    // no posed CSG). Exact plane caps matter less than staying under a frame on
+    // 80k-tri bots. If region partition fails, fall through to full static/ragdoll
+    // rather than running live-mesh CSG (that path is a multi-frame hitch).
+    if (outcome.mode === 'partial' && highPoly) {
+      const region = singleSeveredLimbRegion(outcome.severedThisCut);
+      if (region) {
+        const regionCut = this.tryRegionPartialCut({
+          enemy,
+          region,
+          plane,
+          physicsSystem,
+          outcome,
+        });
+        if (regionCut) {
+          return regionCut;
+        }
+      }
+      return null;
+    }
+
     // Clip the live mesh into kept/severed halves WITHOUT committing yet. We only
     // commit the kept half onto the live mesh (and spawn props) if this is actually
     // a survivable partial cut. Committing early — and creating props early — used
@@ -1195,7 +1236,7 @@ export class EnemyCutSystem {
       return null;
     }
 
-    const boneNames = baked?.boneNames;
+    const boneNames = baked?.boneNames ?? collectEnemyBoneNames(enemy.model);
     // Region-classify EVERY severed chunk, including tiny slivers. The bone-based
     // analysis in decideSoldierCutOutcome can't see a clip past the last limb bone
     // (there is no fingertip/toetip bone), so a small finger nick used to register
@@ -1239,7 +1280,7 @@ export class EnemyCutSystem {
     // for the viable severed chunks.
     clipResult.commitKept();
 
-    const bodyMaterial = cloneCutBodyMaterial(baked?.material);
+    const bodyMaterial = cloneCutBodyMaterial(baked?.material ?? getEnemyPrimaryMaterial(enemy.model));
     const props = [];
     for (let index = 0; index < clipResult.entries.length; index += 1) {
       const geometry = clipResult.entries[index].severedGeometry;
@@ -1263,7 +1304,63 @@ export class EnemyCutSystem {
       }
     }
 
-    return { props, outcome };
+    return { props, outcome, path: 'partial-csg' };
+  }
+
+  // Skin-weight region sever for high-poly partial sword cuts (same geometry path
+  // as firearms). Caller has already decided the survivable outcome + region.
+  tryRegionPartialCut({ enemy, region, plane, physicsSystem, outcome }) {
+    if (!enemy?.model || !region || !plane || !physicsSystem?.world) {
+      return null;
+    }
+
+    const props = [];
+    const replacements = [];
+    enemy.model.updateMatrixWorld(true);
+
+    enemy.model.traverse((child) => {
+      if (!child.isSkinnedMesh || !child.geometry || !child.skeleton) {
+        return;
+      }
+
+      const pair = partitionSkinnedGeometryByRegion({
+        geometry: child.geometry,
+        mesh: child,
+        enemy,
+        region,
+      });
+      if (!pair) {
+        return;
+      }
+
+      replacements.push({ child, geometry: pair.kept });
+      const material = Array.isArray(child.material) ? child.material[0] : child.material;
+      props.push(this.createDynamicProp({
+        geometry: pair.severed,
+        sideSign: -1,
+        splitPlane: plane,
+        region: { primary: region, weights: { [region]: 1 } },
+        bodyMaterial: cloneCutBodyMaterial(material),
+        physicsSystem,
+        lifetime: resolveCutPieceLifetime(enemy),
+        colliderMode: 'containment',
+      }));
+    });
+
+    if (!props.length) {
+      for (const replacement of replacements) replacement.geometry.dispose();
+      return null;
+    }
+
+    for (const replacement of replacements) {
+      if (replacement.child.userData.geometryOwned) {
+        replacement.child.geometry.dispose();
+      }
+      replacement.child.geometry = replacement.geometry;
+      replacement.child.userData.geometryOwned = true;
+    }
+
+    return { props, outcome, path: `partial-region-${region}` };
   }
 
   // Clips each live mesh by the plane into a kept half (keepSign side) and a
@@ -1342,62 +1439,6 @@ export class EnemyCutSystem {
         }
       },
     };
-  }
-
-  commitQueuedCuts({ enemySystem, propSystem, physicsSystem }) {
-    const enemy = this.targetEnemy;
-    const cuts = this.queuedCuts;
-
-    const resetAimState = () => {
-      this.state = 'idle';
-      this.targetEnemy = null;
-      this.queuedCuts = [];
-      this.setGuideVisible(false);
-    };
-
-    if (cuts.length === 0) {
-      resetAimState();
-      this.lastResult = 'no-cuts';
-      return false;
-    }
-
-    const cutResult = this.executeCuts({ enemy, cuts, physicsSystem });
-    resetAimState();
-
-    if (!cutResult?.props?.length) {
-      this.lastResult = 'cut-failed';
-      return false;
-    }
-
-    const { props, keepEnemy, outcome } = cutResult;
-    this.justCut = true;
-
-    let didKeep = keepEnemy;
-    if (keepEnemy) {
-      if (outcome?.severedThisCut?.head) {
-        enemySystem.applySoldierHeadPartialDeath(enemy, outcome, physicsSystem);
-        didKeep = false;
-      } else {
-        enemySystem.applySoldierPartialCut(enemy, outcome);
-      }
-    } else {
-      enemySystem?.markDefeated?.(enemy, 'sword-cut');
-      removeCutTarget({
-        target: enemy,
-        physicsSystem,
-        enemySystem,
-        propSystem,
-        cutSystem: this,
-      });
-    }
-
-    const propStats = cutPropStats(props);
-    this.lastResult = didKeep
-      ? `partial-cut-${outcome?.reason ?? 'limb'}-${props.length}-chunks`
-      : propStats.rigRagdollProps > 0
-        ? `cut-${cuts.length}-planes-${propStats.rigRagdollProps}-rig-${propStats.staticProps}-static`
-        : `cut-${cuts.length}-planes-${props.length}-pieces`;
-    return true;
   }
 
   // Entry point for real-time combat: apply a single cut plane derived from a
@@ -1880,34 +1921,49 @@ export class EnemyCutSystem {
   createSkinnedRagdollCutProps({
     enemy,
     plane,
-    sourceGeometry,
+    sourceGeometry = null,
     physicsSystem,
   }) {
     if (!enemy?.model || !physicsSystem?.world || !physicsSystem?.RAPIER) {
       return null;
     }
 
-    if (!planeCutsGeometry(sourceGeometry, plane)) {
+    // Optional baked geometry is only a cheap intersection gate when present.
+    // Do NOT full-pair-clip it for viability — that used to throw away two CSG
+    // results and then re-clip the live skinned meshes twice more.
+    if (sourceGeometry && !planeCutsGeometry(sourceGeometry, plane)) {
       return null;
     }
 
-    const halves = clipGeometryPairByPlane(sourceGeometry, plane);
+    enemy.model.updateMatrixWorld(true);
+    const modelBounds = new THREE.Box3().setFromObject(enemy.model);
+    if (!planeIntersectsBox(plane, modelBounds)) {
+      return null;
+    }
+
+    // Pose-expand + clip each live mesh ONCE for both sides. Previously each
+    // half re-ran toNonIndexed + applyBoneTransform over every vertex.
+    // Always full-res + cut caps — the high-poly static/stride path looked
+    // crushed (Swiss-cheese decimation). Perf wins stay in the clipper itself
+    // (indexed single-pass, unique-vert pose, no throwaway bake/probe).
+    const pairClips = precomputeSkinnedCutPairGeometries(enemy.model, plane, {
+      includeCap: true,
+      outputWorld: false,
+    });
     const viabilityOptions = resolveCutGeometryViabilityOptions(enemy);
-    const positiveViable = Boolean(halves?.positive)
-      && isViableCutGeometry(halves.positive, viabilityOptions);
-    const negativeViable = Boolean(halves?.negative)
-      && isViableCutGeometry(halves.negative, viabilityOptions);
+    const positiveViable = pairClips.positive.some(
+      (geometry) => geometry && isViableCutGeometry(geometry, viabilityOptions),
+    );
+    const negativeViable = pairClips.negative.some(
+      (geometry) => geometry && isViableCutGeometry(geometry, viabilityOptions),
+    );
 
     if (!positiveViable && !negativeViable) {
-      halves?.positive?.dispose();
-      halves?.negative?.dispose();
+      disposeGeometryList(pairClips.positive);
+      disposeGeometryList(pairClips.negative);
       return null;
     }
 
-    halves.positive?.dispose();
-    halves.negative?.dispose();
-
-    const modelBounds = new THREE.Box3().setFromObject(enemy.model);
     const modelSize = modelBounds.getSize(new THREE.Vector3());
     const radiusScale = Number.isFinite(modelSize.y) && modelSize.y > 0
       ? Math.max(0.65, modelSize.y / RAGDOLL_BASE_HEIGHT)
@@ -1921,11 +1977,15 @@ export class EnemyCutSystem {
         sideSign: 1,
         physicsSystem,
         radiusScale,
+        preclippedGeometries: pairClips.positive,
       });
       if (positive) {
         ragdollProps.push(positive);
       }
     }
+    // Ownership moves into the shard (entries nulled); dispose any leftovers.
+    disposeGeometryList(pairClips.positive);
+
     if (negativeViable) {
       const negative = this.createSkinnedRagdollHalf({
         enemy,
@@ -1933,11 +1993,13 @@ export class EnemyCutSystem {
         sideSign: -1,
         physicsSystem,
         radiusScale,
+        preclippedGeometries: pairClips.negative,
       });
       if (negative) {
         ragdollProps.push(negative);
       }
     }
+    disposeGeometryList(pairClips.negative);
 
     if (!ragdollProps.length) {
       return null;
@@ -1953,6 +2015,7 @@ export class EnemyCutSystem {
     sideSign,
     physicsSystem,
     radiusScale,
+    preclippedGeometries = null,
   }) {
     return this.createSkinnedRagdollShard({
       enemy,
@@ -1962,6 +2025,7 @@ export class EnemyCutSystem {
       physicsSystem,
       radiusScale,
       label: sideSign > 0 ? `${enemy.id}-positive-ragdoll-half` : `${enemy.id}-negative-ragdoll-half`,
+      preclippedGeometries,
     });
   }
 
@@ -1974,8 +2038,9 @@ export class EnemyCutSystem {
     physicsSystem,
     radiusScale,
     label,
+    preclippedGeometries = null,
   }) {
-    if (!constraints?.length) {
+    if (!constraints?.length && !preclippedGeometries) {
       return null;
     }
 
@@ -1984,6 +2049,7 @@ export class EnemyCutSystem {
     const ownedMaterials = [];
     const ownedGeometries = [];
     const clippedSkinnedMeshes = [];
+    let meshIndex = 0;
 
     root.name = label;
     rigRoot.visible = true;
@@ -1994,35 +2060,44 @@ export class EnemyCutSystem {
       }
 
       let clippedGeometry = null;
-      let currentGeometry = child.geometry;
-      let ownsCurrentGeometry = false;
 
-      for (const constraint of constraints) {
-        // The shard's geometry must stay in BIND space so the skeleton can
-        // deform it, but the player aims the cut at the POSED (animated) mesh.
-        // clipSkinnedGeometryByPosedPlane keeps the geometry in bind space while
-        // deciding each vertex by its current skinned world position, so the
-        // slice lands where it was aimed. Static/unskinned meshes fall back to
-        // the node-space clip (their geometry already matches matrixWorld).
-        const nextGeometry = clipSkinnedGeometryByPosedPlane({
-          geometry: currentGeometry,
-          mesh: child,
-          worldPlane: constraint.plane,
-          sideSign: constraint.sideSign,
-        });
+      if (preclippedGeometries) {
+        // Traversal order matches precomputeSkinnedCutPairGeometries on the live
+        // model. Ownership transfers into this shard.
+        clippedGeometry = preclippedGeometries[meshIndex] ?? null;
+        preclippedGeometries[meshIndex] = null;
+        meshIndex += 1;
+      } else {
+        let currentGeometry = child.geometry;
+        let ownsCurrentGeometry = false;
 
-        if (ownsCurrentGeometry) {
-          currentGeometry.dispose();
+        for (const constraint of constraints) {
+          // The shard's geometry must stay in BIND space so the skeleton can
+          // deform it, but the player aims the cut at the POSED (animated) mesh.
+          // clipSkinnedGeometryByPosedPlane keeps the geometry in bind space while
+          // deciding each vertex by its current skinned world position, so the
+          // slice lands where it was aimed. Static/unskinned meshes fall back to
+          // the node-space clip (their geometry already matches matrixWorld).
+          const nextGeometry = clipSkinnedGeometryByPosedPlane({
+            geometry: currentGeometry,
+            mesh: child,
+            worldPlane: constraint.plane,
+            sideSign: constraint.sideSign,
+          });
+
+          if (ownsCurrentGeometry) {
+            currentGeometry.dispose();
+          }
+
+          if (!nextGeometry) {
+            clippedGeometry = null;
+            break;
+          }
+
+          clippedGeometry = nextGeometry;
+          currentGeometry = nextGeometry;
+          ownsCurrentGeometry = true;
         }
-
-        if (!nextGeometry) {
-          clippedGeometry = null;
-          break;
-        }
-
-        clippedGeometry = nextGeometry;
-        currentGeometry = nextGeometry;
-        ownsCurrentGeometry = true;
       }
 
       if (!clippedGeometry) {
@@ -2093,6 +2168,19 @@ export class EnemyCutSystem {
 
     const ragdollDrivenOrder = buildRagdollDrivenOrder(ragdoll.bodies, ragdollFollowers);
 
+    // Spawn reference for relative fall cleanup (office interiors live at y≈-1000).
+    const spawnCenter = new THREE.Vector3();
+    if (ragdoll.bodies[0]?.body?.translation) {
+      try {
+        const t = ragdoll.bodies[0].body.translation();
+        spawnCenter.set(t.x, t.y, t.z);
+      } catch {
+        rigRoot.getWorldPosition(spawnCenter);
+      }
+    } else {
+      rigRoot.getWorldPosition(spawnCenter);
+    }
+
     return {
       type: 'rigRagdoll',
       cutStyle: resolveCutStyle(enemy),
@@ -2107,6 +2195,7 @@ export class EnemyCutSystem {
       ownedGeometries,
       physicsWorld: physicsSystem.world,
       cutSeparation: isSquishy ? createCutSeparationState(impulsePlane, impulseSideSign) : null,
+      spawnCenter,
       age: 0,
       lifetime: RIG_RAGDOLL_PROP_LIFETIME,
     };
@@ -2420,16 +2509,6 @@ export class EnemyCutSystem {
     }
   }
 
-  resolveTargetCenter() {
-    targetBounds.setFromObject(this.targetEnemy.model);
-    targetBounds.getCenter(targetCenter);
-
-    if (!Number.isFinite(targetCenter.x)) {
-      targetCenter.copy(this.targetEnemy.model.position);
-      targetCenter.y += 1.3;
-    }
-  }
-
   positionGuide() {
     const guideUp = aimNormal.clone().cross(aimTangent).normalize();
 
@@ -2442,35 +2521,76 @@ export class EnemyCutSystem {
 
     if (this.slashGuide) {
       this.slashGuide.position.copy(aimCenter);
-      this.slashGuide.quaternion.setFromRotationMatrix(guideMatrix);
+      this.slashGuide.rotation.set(-Math.PI * 0.5, 0, 0);
     }
   }
 }
 
-function findNearestEnemy({ character, enemies }) {
-  const origin = character?.group?.position;
+export function collectWorldArcTargets({
+  character,
+  targets,
+  radius = CUT_ARC_RADIUS,
+  halfHeight = CUT_ARC_HALF_HEIGHT,
+}) {
+  const group = character?.group;
 
-  if (!origin) {
-    return null;
+  if (!group) {
+    return [];
   }
 
-  let nearest = null;
-  let nearestDistanceSq = CUT_TARGET_RANGE * CUT_TARGET_RANGE;
+  const origin = group.getWorldPosition
+    ? group.getWorldPosition(arcOrigin)
+    : group.position;
+  const matches = [];
+  const seen = new Set();
 
-  for (const enemy of enemies ?? []) {
-    if (!enemy?.model?.visible) {
+  for (const target of targets ?? []) {
+    if (
+      !target?.model?.visible
+      || target.defeated
+      || target.pendingCorpse
+      || seen.has(target)
+    ) {
       continue;
     }
 
-    const distanceSq = enemy.model.position.distanceToSquared(origin);
-
-    if (distanceSq < nearestDistanceSq) {
-      nearest = enemy;
-      nearestDistanceSq = distanceSq;
-    }
+    const position = target.model.getWorldPosition
+      ? target.model.getWorldPosition(arcTargetPosition)
+      : target.model.position;
+    if (!position) continue;
+    const targetRadius = Math.max(0, target.collisionRadius ?? 0);
+    const dx = position.x - origin.x;
+    const dz = position.z - origin.z;
+    if (dx * dx + dz * dz > (radius + targetRadius) ** 2) continue;
+    if (Math.abs(position.y - origin.y) > halfHeight) continue;
+    seen.add(target);
+    matches.push(target);
   }
 
-  return nearest;
+  return matches;
+}
+
+function getCutTargetCenter(target, out) {
+  if (target?.model?.isObject3D) {
+    targetBounds.setFromObject(target.model);
+    if (targetBounds.isEmpty()) {
+      target.model.getWorldPosition(out);
+      out.y += (target.collisionHeight ?? 2.6) * 0.5;
+    } else {
+      targetBounds.getCenter(out);
+    }
+  } else if (target?.model?.position) {
+    out.copy(target.model.position);
+    out.y += (target.collisionHeight ?? 2.6) * 0.5;
+  } else {
+    out.set(0, 0, 0);
+  }
+
+  if (!Number.isFinite(out.x)) {
+    out.copy(target.model.position);
+    out.y += (target.collisionHeight ?? 2.6) * 0.5;
+  }
+  return out;
 }
 
 function applyQueuedCuts({ sourceGeometry, cuts, viabilityOptions = {} }) {
@@ -2851,6 +2971,132 @@ function classifyCutGeometryRegion(geometry, boneNames = [], enemy = null) {
   };
 }
 
+// Horde full actors land ~43–49k verts. Above this, sword cuts prefer region
+// partition for limb partials and skip throwaway CSG probes.
+const HIGH_POLY_CUT_VERT_THRESHOLD = 28_000;
+
+function estimateEnemyRenderVerts(enemy) {
+  let count = 0;
+  enemy?.model?.traverse?.((child) => {
+    if (!child.isMesh && !child.isSkinnedMesh) return;
+    const position = child.geometry?.getAttribute?.('position');
+    if (position) count += position.count;
+  });
+  return count;
+}
+
+function singleSeveredLimbRegion(severedThisCut = {}) {
+  const regions = ['head', 'armL', 'armR', 'legL', 'legR'];
+  let found = null;
+  for (const region of regions) {
+    if (!severedThisCut[region]) continue;
+    if (found) return null;
+    found = region;
+  }
+  return found;
+}
+
+function collectEnemyBoneNames(model) {
+  const names = [];
+  model?.traverse?.((child) => {
+    if (child.isSkinnedMesh && child.skeleton?.bones?.length && names.length === 0) {
+      for (const bone of child.skeleton.bones) {
+        names.push(bone.name);
+      }
+    }
+  });
+  return names;
+}
+
+function getEnemyPrimaryMaterial(model) {
+  let material = null;
+  model?.traverse?.((child) => {
+    if (material || (!child.isMesh && !child.isSkinnedMesh)) return;
+    material = Array.isArray(child.material) ? child.material[0] : child.material;
+  });
+  return material;
+}
+
+function disposeGeometryList(list) {
+  if (!list) return;
+  for (let index = 0; index < list.length; index += 1) {
+    list[index]?.dispose?.();
+    list[index] = null;
+  }
+}
+
+function planeIntersectsBox(plane, box) {
+  if (!plane || !box || box.isEmpty()) return false;
+  // THREE.Plane does not expose intersectsBox in all builds we care about —
+  // signed distances of the 8 corners crossing zero means intersection.
+  let min = Infinity;
+  let max = -Infinity;
+  const { min: bmin, max: bmax } = box;
+  for (let ix = 0; ix < 2; ix += 1) {
+    for (let iy = 0; iy < 2; iy += 1) {
+      for (let iz = 0; iz < 2; iz += 1) {
+        const x = ix ? bmax.x : bmin.x;
+        const y = iy ? bmax.y : bmin.y;
+        const z = iz ? bmax.z : bmin.z;
+        const d = plane.normal.x * x + plane.normal.y * y + plane.normal.z * z + plane.constant;
+        if (d < min) min = d;
+        if (d > max) max = d;
+      }
+    }
+  }
+  return min <= 0 && max >= 0;
+}
+
+// Pose-expand each live mesh once, then clip both sides. Caller owns the arrays.
+function precomputeSkinnedCutPairGeometries(model, worldPlane, options = {}) {
+  const positive = [];
+  const negative = [];
+  const outputWorld = Boolean(options.outputWorld);
+  model.traverse((child) => {
+    if (!child.isMesh && !child.isSkinnedMesh) return;
+    if (!child.geometry) return;
+    const pair = clipSkinnedGeometryPairByPosedPlane({
+      geometry: child.geometry,
+      mesh: child,
+      worldPlane,
+      includeCap: options.includeCap,
+      outputWorld,
+    });
+    positive.push(pair?.positive ?? null);
+    negative.push(pair?.negative ?? null);
+  });
+  return { positive, negative };
+}
+
+// Clip a skinned mesh's BIND-space geometry by a WORLD-space plane for BOTH
+// sides, sharing the expensive bone-transform pass (unique verts only when indexed).
+function clipSkinnedGeometryPairByPosedPlane({
+  geometry,
+  mesh,
+  worldPlane,
+  includeCap = true,
+  outputWorld = false,
+}) {
+  const hasSkin = geometry.getAttribute('skinIndex') && geometry.getAttribute('skinWeight');
+
+  if (!hasSkin || !mesh?.skeleton) {
+    const localPlane = getPlaneInObjectSpace(worldPlane, mesh);
+    return clipGeometryPairByPlane(geometry, localPlane, { includeCap });
+  }
+
+  const prepared = prepareSkinnedCutWorkingGeometry(geometry, mesh, { outputWorld });
+  if (!prepared) return null;
+
+  const { working } = prepared;
+  const pair = clipGeometryPairByPlane(working, worldPlane, {
+    includeCap,
+    testPositionsAttribute: outputWorld ? undefined : 'cutTest',
+    preserveSource: true,
+  });
+  working.dispose();
+  return pair;
+}
+
 // Clip a skinned mesh's BIND-space geometry by a WORLD-space plane, deciding
 // each vertex's side from its POSED (skinned) world position. This is the key to
 // cutting an animated skinned ragdoll where the player aimed: the geometry that
@@ -2858,54 +3104,76 @@ function classifyCutGeometryRegion(geometry, boneNames = [], enemy = null) {
 // surface is nowhere near its bind pose, so a plain node-space clip slices the
 // wrong place. We tag each vertex with its posed world position and let the
 // clipper test against that while interpolating the bind-space attributes.
-function clipSkinnedGeometryByPosedPlane({ geometry, mesh, worldPlane, sideSign, outputWorld = false }) {
+function clipSkinnedGeometryByPosedPlane({
+  geometry,
+  mesh,
+  worldPlane,
+  sideSign,
+  outputWorld = false,
+  includeCap = true,
+}) {
   const hasSkin = geometry.getAttribute('skinIndex') && geometry.getAttribute('skinWeight');
 
   if (!hasSkin || !mesh?.skeleton) {
     // Unskinned/static accessory: its bind geometry already matches matrixWorld,
     // so the original node-space clip is correct.
     const localPlane = getPlaneInObjectSpace(worldPlane, mesh);
-    return clipGeometryByPlane(geometry, localPlane, sideSign, { includeCap: true });
+    return clipGeometryByPlane(geometry, localPlane, sideSign, { includeCap });
   }
 
-  // Own copy — never mutate the SHARED source geometry (cloneSkeleton shares it
-  // across every live enemy). toNonIndexed expands skin attrs + cutTest together.
-  const working = geometry.index ? geometry.toNonIndexed() : geometry.clone();
-  const posed = computePosedWorldPositions(working, mesh);
+  const prepared = prepareSkinnedCutWorkingGeometry(geometry, mesh, { outputWorld });
+  if (!prepared) return null;
+  const { working } = prepared;
 
   if (outputWorld) {
-    // Bake the posed WORLD positions into the geometry so the clipped output is a
-    // posed-world mesh — the right location AND shape for a STATIC prop, which has
-    // no skeleton to deform bind-space geometry. (Without this, a partial-cut prop
-    // spawned at the geometry's bind-space bbox center — near the world origin —
-    // instead of at the enemy, so it looked like the piece "disappeared".) Skin
-    // attributes are preserved for region classification; normals are recomputed
-    // from the world positions so the static prop lights correctly.
-    working.setAttribute('position', new THREE.Float32BufferAttribute(posed, 3));
-    working.deleteAttribute('cutTest');
+    // Posed WORLD positions already written into `position` by prepare.
     const worldClipped = clipGeometryByPlane(working, worldPlane, sideSign, {
-      includeCap: true,
+      includeCap,
+      preserveSource: true,
     });
     working.dispose();
-    worldClipped.computeVertexNormals();
+    worldClipped?.computeVertexNormals?.();
     return worldClipped;
   }
 
-  working.setAttribute('cutTest', new THREE.Float32BufferAttribute(posed, 3));
-
   const clipped = clipGeometryByPlane(working, worldPlane, sideSign, {
-    includeCap: true,
+    includeCap,
     testPositionsAttribute: 'cutTest',
+    preserveSource: true,
   });
-
   working.dispose();
   return clipped;
+}
+
+/**
+ * Build an owned working geometry for CSG with posed world positions attached.
+ * Keeps the index buffer when present so pair-clip can walk ~80k tris against
+ * ~43k unique verts instead of expanding to ~240k corners first.
+ */
+function prepareSkinnedCutWorkingGeometry(geometry, mesh, { outputWorld = false } = {}) {
+  const posedUnique = computePosedWorldPositions(geometry, mesh);
+  if (!posedUnique) return null;
+
+  // Clone keeps index + unique attrs. Never mutate the shared source geometry.
+  const working = geometry.clone();
+
+  if (outputWorld) {
+    working.setAttribute('position', new THREE.Float32BufferAttribute(posedUnique, 3));
+    working.deleteAttribute('cutTest');
+  } else {
+    working.setAttribute('cutTest', new THREE.Float32BufferAttribute(posedUnique, 3));
+  }
+
+  return { working };
 }
 
 // Posed world position of every vertex in `geometry` under `mesh`'s skeleton.
 // Uses a throwaway probe so three's own skinning math drives it (the live mesh
 // may already carry different/clipped geometry mid-loop).
 function computePosedWorldPositions(geometry, mesh) {
+  const position = geometry.getAttribute('position');
+  if (!position) return null;
+
   const probe = new THREE.SkinnedMesh(geometry);
   probe.bindMode = mesh.bindMode;
   probe.bindMatrix.copy(mesh.bindMatrix);
@@ -2913,7 +3181,6 @@ function computePosedWorldPositions(geometry, mesh) {
   probe.skeleton = mesh.skeleton;
   mesh.skeleton.update();
 
-  const position = geometry.getAttribute('position');
   const out = new Float32Array(position.count * 3);
 
   for (let index = 0; index < position.count; index += 1) {
@@ -3369,7 +3636,18 @@ function offsetForConstraints({
   return offset.normalize().multiplyScalar(CHUNK_SEPARATION);
 }
 
+function cutPropSpawnY(prop) {
+  if (Number.isFinite(prop?.spawnCenter?.y)) return prop.spawnCenter.y;
+  if (Number.isFinite(prop?.mesh?.position?.y)) return prop.mesh.position.y;
+  if (Number.isFinite(prop?.root?.position?.y)) return prop.root.position.y;
+  return 0;
+}
+
 function cutPropIsBelowCleanupY(prop) {
+  // Dropped far below where the piece was spawned (void / fell through floor).
+  // Must be relative — office WFC interiors are at INTERIOR_BASE_Y (-1000).
+  const floor = cutPropSpawnY(prop) - CUT_PROP_FALL_DROP;
+
   if (prop.type === 'rigRagdoll') {
     return (prop.ragdollBodies ?? []).every((record) => {
       try {
@@ -3379,7 +3657,7 @@ function cutPropIsBelowCleanupY(prop) {
           try { const f = w.bodies.get(record.body.handle); if (f) t = f.translation(); } catch {}
         }
         if (!t) t = record.body?.translation?.();
-        return t ? t.y < CUT_PROP_FALL_CLEANUP_Y : false;
+        return t ? t.y < floor : false;
       } catch {
         return false;
       }
@@ -3393,7 +3671,7 @@ function cutPropIsBelowCleanupY(prop) {
       try { const f = w.bodies.get(prop.body.handle); if (f) t = f.translation(); } catch {}
     }
     if (!t) t = prop.body?.translation?.();
-    return t ? t.y < CUT_PROP_FALL_CLEANUP_Y : false;
+    return t ? t.y < floor : false;
   } catch {
     return false;
   }
@@ -4062,9 +4340,15 @@ function setBoneWorldTransform({ bone, position, quaternion }) {
 
 function resolveCameraBasis(camera) {
   camera.updateMatrixWorld(true);
-  cameraRight.setFromMatrixColumn(camera.matrixWorld, 0).normalize();
-  cameraUp.setFromMatrixColumn(camera.matrixWorld, 1).normalize();
   camera.getWorldDirection(cameraForward).normalize();
+  cameraForward.y = 0;
+  if (cameraForward.lengthSq() < 0.0001) {
+    cameraForward.set(0, 0, -1);
+  } else {
+    cameraForward.normalize();
+  }
+  cameraUp.set(0, 1, 0);
+  cameraRight.crossVectors(cameraForward, cameraUp).normalize();
 }
 
 function cloneCutBodyMaterial(material) {

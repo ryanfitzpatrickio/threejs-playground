@@ -376,7 +376,26 @@ export function attachHordeSpawnController(target) {
         || (!replacingProxy && this._hordeVisibleEnemyCount() >= HORDE_MAX_ENEMY_COUNT)
       ) return false;
       this.enemySystem.status = 'ready';
-      const enemy = this.enemySystem.spawnEnemy(descriptor.archetype, descriptor.position, {
+
+      // Snap tip spawns onto the nav surface (same bake as proxies).
+      let spawnPos = descriptor.position;
+      const nav = this.hordeProxySystem?.projectToNav?.(
+        spawnPos?.x,
+        spawnPos?.z,
+        spawnPos?.y ?? 0,
+      );
+      if (nav?.ok) {
+        if (spawnPos?.clone) {
+          spawnPos = spawnPos.clone();
+          spawnPos.x = nav.x;
+          spawnPos.z = nav.z;
+          if (Number.isFinite(nav.y)) spawnPos.y = nav.y;
+        } else if (spawnPos) {
+          spawnPos = { x: nav.x, y: nav.y ?? spawnPos.y ?? 0, z: nav.z };
+        }
+      }
+
+      const enemy = this.enemySystem.spawnEnemy(descriptor.archetype, spawnPos, {
         yaw: descriptor.yaw,
         id: descriptor.id ?? null,
       });

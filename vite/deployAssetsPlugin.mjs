@@ -24,6 +24,15 @@ const LOCAL_ONLY_BASENAMES = new Set([
   '_bodyshop-cleaned.glb',
 ]);
 
+/** Outfit Import Studio drafts under assets/simoutfits/_import (except empty manifest). */
+function isLocalOnlyOutfitImport(filePath, distRoot) {
+  const rel = path.relative(distRoot, filePath).replace(/\\/g, '/');
+  if (!rel.includes('assets/simoutfits/_import/')) return false;
+  const base = path.basename(filePath);
+  if (base === 'manifest.json') return false;
+  return base.endsWith('.glb') || base.endsWith('.raw.glb');
+}
+
 function walkFiles(dir, out = []) {
   if (!fs.existsSync(dir)) return out;
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -41,9 +50,11 @@ function formatMiB(bytes) {
 export function stripLocalOnlyAssets(distRoot = DIST) {
   const removed = [];
   for (const filePath of walkFiles(distRoot)) {
-    if (!LOCAL_ONLY_BASENAMES.has(path.basename(filePath))) continue;
-    fs.rmSync(filePath, { force: true });
-    removed.push(path.relative(distRoot, filePath));
+    const base = path.basename(filePath);
+    if (LOCAL_ONLY_BASENAMES.has(base) || isLocalOnlyOutfitImport(filePath, distRoot)) {
+      fs.rmSync(filePath, { force: true });
+      removed.push(path.relative(distRoot, filePath));
+    }
   }
   return removed;
 }

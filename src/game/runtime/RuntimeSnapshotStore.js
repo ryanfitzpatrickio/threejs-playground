@@ -56,9 +56,9 @@ export class RuntimeSnapshotStore {
         prewarm: this._cityPrewarmProgress,
         hordeScale: this.hordeScaleSnapshot(),
         hordeProxies: this.hordeProxySystem.snapshot(),
-        deathmatch: this.deathmatchFeature?.snapshot?.()
-          ?? this.modeController?.snapshot?.()
-          ?? null,
+        deathmatch: this.deathmatchFeature?.snapshot?.() ?? null,
+        sims: this.levelMode === 'sims' ? this.modeController?.snapshot?.() ?? null : null,
+        dogPark: this.levelMode === 'dog-park' ? this.modeController?.snapshot?.() ?? null : null,
         frame: this.frameStats.summary(),
         allocation: this.allocationSampler.status(),
         player: playerObj
@@ -73,6 +73,8 @@ export class RuntimeSnapshotStore {
         weapon: this.weaponSystem.snapshot(),
         ability: this.abilitySystem.snapshot(),
         shootingRange: this.shootingRangeSystem.snapshot(),
+        aquariumBreach: this.aquariumBreachSystem?.snapshot?.() ?? null,
+        propaneTanks: this.propaneTankSystem?.snapshot?.() ?? null,
         character: this.characterSystem.snapshot(),
         vehicles: this.vehicleSystem.snapshot(
           this.characterSystem.character,
@@ -95,9 +97,9 @@ export class RuntimeSnapshotStore {
       prewarm: this._cityPrewarmProgress,
       hordeScale: this.hordeScaleSnapshot(),
       hordeProxies: this.hordeProxySystem.snapshot(),
-      deathmatch: this.deathmatchFeature?.snapshot?.()
-        ?? this.modeController?.snapshot?.()
-        ?? null,
+      deathmatch: this.deathmatchFeature?.snapshot?.() ?? null,
+      sims: this.levelMode === 'sims' ? this.modeController?.snapshot?.() ?? null : null,
+      dogPark: this.levelMode === 'dog-park' ? this.modeController?.snapshot?.() ?? null : null,
       frame: this.frameStats.summary(),
       allocation: this.allocationSampler.status(),
       player: playerObj
@@ -123,6 +125,8 @@ export class RuntimeSnapshotStore {
       firstPersonWeapon: this.firstPersonWeaponSystem.snapshot(),
       weapon: this.weaponSystem.snapshot(),
       shootingRange: this.shootingRangeSystem.snapshot(),
+      aquariumBreach: this.aquariumBreachSystem?.snapshot?.() ?? null,
+      propaneTanks: this.propaneTankSystem?.snapshot?.() ?? null,
       character: this.characterSystem.snapshot(),
       crowd: this.crowdSystem?.snapshot?.() ?? null,
       spectatorCrowd: this.levelSystem.level?.spectatorCrowd?.snapshot?.() ?? null,
@@ -143,6 +147,7 @@ export class RuntimeSnapshotStore {
       viewport: this.rendererSystem.getViewport(),
       timing: this.timingSnapshot(),
       telekinesis: this.telekinesisSystem.snapshot(),
+      carryItem: this.carryItemSystem?.snapshot?.() ?? null,
       rallyCinematic: this.rallyCinematicDemo?.snapshot?.() ?? { active: false },
     };
     this._lastFullSnapshot = result;

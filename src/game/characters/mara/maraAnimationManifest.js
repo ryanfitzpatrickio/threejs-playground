@@ -1550,8 +1550,8 @@ export const MARA_ANIMATION_MANIFEST = {
       hitWindow: { start: 0.4, end: 0.72 },
     },
   },
-  // Aim-mode finisher (V release): slash guide orientation picks the clip; the mesh
-  // cut fires at cutTrigger (not blade hit-cast — the plane was already aimed).
+  // Arc-cut follow-through (V release): slash guide orientation picks the clip.
+  // Geometry commits immediately on release; this clip supplies the impact pose.
   aimCutVertical: {
     url: '/assets/animation-packs/great sword slash.fbx',
     loop: false,
@@ -1563,8 +1563,6 @@ export const MARA_ANIMATION_MANIFEST = {
     combat: {
       attackKind: 'aimCut',
       comboChain: [],
-      hitWindow: { start: 0.28, end: 0.52 },
-      cutTrigger: 0.38,
     },
   },
   aimCutHorizontal: {
@@ -1580,8 +1578,6 @@ export const MARA_ANIMATION_MANIFEST = {
     combat: {
       attackKind: 'aimCut',
       comboChain: [],
-      hitWindow: { start: 0.25, end: 0.55 },
-      cutTrigger: 0.38,
     },
   },
   // --- Unarmed hand-to-hand (Phase A). Available when the sword is sheathed.

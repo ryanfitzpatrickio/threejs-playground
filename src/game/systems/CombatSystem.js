@@ -162,6 +162,11 @@ export class CombatSystem {
       return input;
     }
 
+    // Hands full (propane tank, etc.) — no melee/unarmed specials until drop.
+    if (character?.carrying) {
+      return this.patchInputForCombat({ input, combat });
+    }
+
     // Firearm drawn (FP gun stance) owns LMB/RMB — no sword attacks.
     // Z holster is owned by WeaponSystem.processLoadout (unified sword + guns).
     if (combat.fpWeaponStance) {
@@ -314,15 +319,8 @@ export class CombatSystem {
     if (combat.attack) {
       const attackEntry = MARA_ANIMATION_MANIFEST[combat.attack.name];
       if (attackEntry?.combat?.attackKind === 'aimCut') {
-        this.updateAimCut({
-          character,
-          combat,
-          enemyCutSystem,
-          enemySystem,
-          propSystem,
-          physicsSystem,
-          resolveHordeTarget,
-        });
+        // EnemyCutSystem committed the entire world-space arc on the input
+        // frame. This attack is presentation-only follow-through.
       } else if (attackEntry?.combat?.hitShape === 'body') {
         this.castBody({
           character,
@@ -404,37 +402,6 @@ export class CombatSystem {
     this.beginAttack({ combat, state });
     combat.attack.aimCut = true;
     combat.lockMovement = true;
-  }
-
-  updateAimCut({
-    character,
-    combat,
-    enemyCutSystem,
-    enemySystem,
-    propSystem,
-    physicsSystem,
-  }) {
-    const attack = combat.attack;
-    if (!attack?.aimCut || !enemyCutSystem) {
-      return;
-    }
-
-    const entry = MARA_ANIMATION_MANIFEST[attack.name];
-    const window = entry?.combat?.hitWindow;
-    const trigger = entry?.combat?.cutTrigger
-      ?? (window ? (window.start + window.end) * 0.5 : 0.35);
-    const controller = character?.animationController;
-    const t = typeof controller?.getUpperBodyNormalizedTime === 'function'
-      ? controller.getUpperBodyNormalizedTime()
-      : 0;
-
-    if (!enemyCutSystem.cutCommitted && t >= trigger) {
-      enemyCutSystem.commitPendingCuts({
-        enemySystem,
-        propSystem,
-        physicsSystem,
-      });
-    }
   }
 
   // --- weapon draw / sheathe -------------------------------------------------

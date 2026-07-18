@@ -4,6 +4,11 @@ import { initFileStore } from './store/fileStore.js';
 import './styles/base.css';
 
 export async function bootDreamfall({ rootId = 'app' } = {}) {
+  if (import.meta.env.DEV) {
+    const { installCrashTrap } = await import('./dev/crashTrap.js');
+    installCrashTrap();
+  }
+
   const root = document.getElementById(rootId);
 
   if (!root) {

@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "meshy-ai-rose-gold-sequin-dres-071622141",
+      "name": "Meshy AI Rose Gold Sequin Dres 0716221416 Texture",
+      "description": "Imported draft (female)",
+      "imported": true,
+      "bake": {
+        "poseFormat": "bone-world-delta-v1",
+        "poseBoneCount": 48
+      },
+      "bodies": {
+        "female": {
+          "standard": "/assets/simoutfits/_import/meshy-ai-rose-gold-sequin-dres-071622141.glb?v=1784245940193",
+          "morph": "/assets/simoutfits/_import/meshy-ai-rose-gold-sequin-dres-071622141.morph.glb?v=1784245940193"
+        }
+      }
+    }
+  ]
+}

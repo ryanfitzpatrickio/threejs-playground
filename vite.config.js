@@ -6,12 +6,13 @@ import solidPlugin from 'vite-plugin-solid';
 import { WebSocketServer } from 'ws';
 import { dreamfallStorePlugin } from './vite/dreamfall-store-plugin.mjs';
 import { bodyshopPlugin } from './vite/bodyshopPlugin.mjs';
+import { outfitPreparePlugin } from './vite/outfitPreparePlugin.mjs';
 import { deployAssetsPlugin } from './vite/deployAssetsPlugin.mjs';
 import { forestLeavesPlugin } from './vite/forest-leaves-plugin.mjs';
 import { grokBridgePlugin } from './vite/grokBridge.mjs';
+import { createThreeAliases } from './vite/sharedViteResolve.mjs';
+import { shaderDebugPlugin } from './vite/shaderDebugPlugin.mjs';
 
-const threeModule = fileURLToPath(new URL('./node_modules/three/build/three.webgpu.js', import.meta.url));
-const threeTslModule = fileURLToPath(new URL('./node_modules/three/build/three.tsl.js', import.meta.url));
 const mainHtml = fileURLToPath(new URL('./index.html', import.meta.url));
 const cityGiExampleHtml = fileURLToPath(new URL('./webgpu_generator_city.html', import.meta.url));
 const devToolsModule = fileURLToPath(new URL('./src/dev/devTools.jsx', import.meta.url));
@@ -19,11 +20,6 @@ const bodyshopModule = fileURLToPath(new URL('./src/dev/BodyshopScene.jsx', impo
 const gunsmithModule = fileURLToPath(new URL('./src/dev/GunsmithScene.jsx', import.meta.url));
 const devToolsPublicId = 'virtual:dreamfall-dev-tools';
 const devToolsResolvedId = `\0${devToolsPublicId}`;
-
-const shaderDebugPaneModule = fileURLToPath(new URL('./src/game/debug/shaderDebugPane.js', import.meta.url));
-const shaderDebugRegisterModule = fileURLToPath(new URL('./src/game/debug/registerBuiltinShaderDebug.js', import.meta.url));
-const shaderDebugPublicId = 'virtual:dreamfall-shader-debug';
-const shaderDebugResolvedId = `\0${shaderDebugPublicId}`;
 
 function devToolsPlugin(enabled) {
   return {
@@ -52,29 +48,6 @@ function devToolsPlugin(enabled) {
         }
         export function BodyshopScene() { return null; }
         export function GunsmithScene() { return null; }
-      `;
-    },
-  };
-}
-
-/** Sibling of dreamfall-dev-tools: DEV exports real pane/register; PROD inert stubs (no tweakpane). */
-function shaderDebugPlugin(enabled) {
-  return {
-    name: 'dreamfall-shader-debug',
-    resolveId(id) {
-      return id === shaderDebugPublicId ? shaderDebugResolvedId : null;
-    },
-    load(id) {
-      if (id !== shaderDebugResolvedId) return null;
-      if (enabled) {
-        return `
-          export { mountShaderDebugPane } from ${JSON.stringify(shaderDebugPaneModule)};
-          export { registerBuiltinShaderDebug } from ${JSON.stringify(shaderDebugRegisterModule)};
-        `;
-      }
-      return `
-        export async function mountShaderDebugPane() { return null; }
-        export function registerBuiltinShaderDebug() {}
       `;
     },
   };
@@ -343,19 +316,25 @@ export default defineConfig(({ command, isPreview }) => {
       dreamfallStorePlugin(),
       forestLeavesPlugin(),
       deployAssetsPlugin(),
-      ...(isDevServer ? [codexBridgePlugin(), grokBridgePlugin(), bodyshopPlugin()] : []),
+      ...(isDevServer ? [codexBridgePlugin(), grokBridgePlugin(), bodyshopPlugin(), outfitPreparePlugin()] : []),
     ],
     resolve: {
-      alias: [
-        { find: /^three$/, replacement: threeModule },
-        { find: /^three\/webgpu$/, replacement: threeModule },
-        { find: /^three\/tsl$/, replacement: threeTslModule },
-      ],
+      alias: createThreeAliases(),
       dedupe: ['three'],
     },
     server: {
       host: '127.0.0.1',
       port: 5173,
+      // Outfit bake + bodyshop write large GLBs under public/ during long
+      // requests. Watching them can bounce the client mid-fetch (Failed to fetch).
+      watch: {
+        ignored: [
+          '**/public/assets/simoutfits/_import/**',
+          '**/public/assets/models/_bodyshop-*.glb',
+          '**/data/**',
+          '**/.codex-tmp/**',
+        ],
+      },
     },
     preview: {
       host: '127.0.0.1',

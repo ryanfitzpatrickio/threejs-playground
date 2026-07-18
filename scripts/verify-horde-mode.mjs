@@ -63,6 +63,8 @@ function collectProbe() {
       hordeGates: s.level?.hordeGates ?? 0,
       grounded: s.character?.grounded === true,
       charY: s.character?.position?.y ?? s.character?.y ?? null,
+      charX: s.character?.position?.x ?? null,
+      charZ: s.character?.position?.z ?? null,
       player: s.player,
       enemyCount: s.enemies?.count ?? 0,
       enemyIds: (s.enemies?.enemies ?? []).map((e) => e.id),
@@ -93,6 +95,7 @@ console.log('snap1', {
 assert.equal(snap1.stage, 'running');
 assert.equal(snap1.levelName, 'Horde Arena');
 assert.equal(snap1.grounded, true);
+assert.ok(snap1.charX < -70 && Math.abs(snap1.charZ) < 2, `player should start in mall center (${snap1.charX}, ${snap1.charZ})`);
 assert.ok(snap1.hordeGates >= 6 && snap1.hordeGates <= 8, `gates ${snap1.hordeGates}`);
 assert.ok(snap1.enemyCount >= 12, `expected a test pack of bots, got ${snap1.enemyCount}`);
 const uniqueArchetypes = [...new Set(snap1.enemyArchetypes)].sort();

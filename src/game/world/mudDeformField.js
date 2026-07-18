@@ -23,12 +23,14 @@ import { uniform } from 'three/tsl';
 
 const EPSILON = 1e-4;
 
-// stampKind values: foot 0.5, preworn 0.75, vehicle 1.0
+// stampKind values: dog paw 0.4, human foot 0.5, preworn 0.75, vehicle 1.0
+const KIND_DOG_PAW = 0.4;
 const KIND_FOOT = 0.5;
 const KIND_PREWORN = 0.75;
 const KIND_VEHICLE = 1.0;
 
 function kindValue(kind) {
+  if (kind === 'dog-paw') return KIND_DOG_PAW;
   if (kind === 'foot') return KIND_FOOT;
   if (kind === 'preworn') return KIND_PREWORN;
   return KIND_VEHICLE;
@@ -69,6 +71,7 @@ export function createMudDeformField({
   const footprintId = new Uint32Array(N);
   const footprintQueue = [];
   let nextFootprintId = 1;
+  let dogPawStampCount = 0;
   // Owner world-cell coords per slot; NaN = never written (empty).
   const ownerX = new Float32Array(N).fill(NaN);
   const ownerZ = new Float32Array(N).fill(NaN);
@@ -261,14 +264,14 @@ export function createMudDeformField({
       directionZ[i] = dz;
       lateralPhase[i] = _lateralPhase ?? fract01((x * -dz + z * dx) / 1.4);
       stampKind[i] = kv;
-      footprintId[i] = kind === 'foot' ? _footprintId : 0;
+      footprintId[i] = kind === 'foot' || kind === 'dog-paw' ? _footprintId : 0;
     }
     depth[i] = Math.min(maxDepth, Math.max(depth[i], d) + add);
     wetness[i] = Math.max(wetness[i], w);
     tread[i] = Math.max(tread[i], t);
     active.add(i);
     pendingClear.delete(i); // re-stamped before its clear was flushed
-    return kind === 'foot' && footprintId[i] === _footprintId ? i : -1;
+    return (kind === 'foot' || kind === 'dog-paw') && footprintId[i] === _footprintId ? i : -1;
   }
 
   // Stamp a round brush (radius in metres, linear falloff to the edge) so a tyre
@@ -370,6 +373,73 @@ export function createMudDeformField({
 
     if (cells.size > 0) footprintQueue.push({ id, cells });
     return id;
+  }
+
+  // Stamp a compact, oriented dog pad. The central pad is followed by three
+  // shallow toe lobes so filtered dog-park mud still reads as a paw rather than
+  // a miniature human shoe. `directionX/Z` points toward the toes.
+  function stampDogPaw(x, z, {
+    depth: d = 0,
+    wetness: w = 0,
+    tread: t = 0,
+    directionX: headingX = 0,
+    directionZ: headingZ = -1,
+    side = 1,
+  } = {}) {
+    let dx = Number(headingX) || 0;
+    let dz = Number(headingZ);
+    if (!Number.isFinite(dz)) dz = -1;
+    const directionLength = Math.hypot(dx, dz) || 1;
+    dx /= directionLength;
+    dz /= directionLength;
+    const rightX = -dz;
+    const rightZ = dx;
+    const id = nextFootprintId++;
+    const cells = new Set();
+    // Slightly exaggerated for a chase camera: still paw-scale in world space,
+    // but large enough to survive texture filtering and remain visible after a
+    // nearby torso splash.
+    const reach = 0.25;
+    const minWx = Math.floor((x - reach) * invCell - 0.5);
+    const maxWx = Math.ceil((x + reach) * invCell - 0.5);
+    const minWz = Math.floor((z - reach) * invCell - 0.5);
+    const maxWz = Math.ceil((z + reach) * invCell - 0.5);
+    const sideSign = Math.sign(side || 1);
+
+    for (let wz = minWz; wz <= maxWz; wz += 1) {
+      for (let wx = minWx; wx <= maxWx; wx += 1) {
+        const px = (wx + 0.5) * cellSize;
+        const pz = (wz + 0.5) * cellSize;
+        const ox = px - x;
+        const oz = pz - z;
+        const along = ox * dx + oz * dz;
+        const across = ox * rightX + oz * rightZ;
+        const pad = ellipseFalloff(along + 0.03, across, 0.14, 0.12);
+        let toes = 0;
+        for (const toeOffset of [-0.072, 0, 0.072]) {
+          const splay = toeOffset + sideSign * 0.008;
+          toes = Math.max(toes, ellipseFalloff(along - 0.12, across - splay, 0.07, 0.048));
+        }
+        const fall = Math.max(pad, toes * 0.82);
+        if (!(fall > 0)) continue;
+        const stampedSlot = stamp(px, pz, {
+          depth: d * fall,
+          wetness: w * fall,
+          tread: t * fall,
+          directionX: dx,
+          directionZ: dz,
+          kind: 'dog-paw',
+          _footprintId: id,
+        });
+        if (stampedSlot >= 0) cells.add(stampedSlot);
+      }
+    }
+
+    if (cells.size > 0) {
+      footprintQueue.push({ id, cells });
+      dogPawStampCount += 1;
+    }
+    return cells.size > 0 ? id : 0;
   }
 
   // CPU decay sweep over live cells only. Two timescales melt tread before the
@@ -528,6 +598,7 @@ export function createMudDeformField({
     stamp,
     stampBrush,
     stampFootprint,
+    stampDogPaw,
     sampleAt,
     sampleDepthAt,
     decay,
@@ -542,6 +613,7 @@ export function createMudDeformField({
     get orientationTexture() { return orientationTexture; },
     // Introspection for verify scripts / texture upload (M2).
     get activeCount() { return active.size; },
+    get dogPawStampCount() { return dogPawStampCount; },
     _buffers: {
       depth, wetness, tread, directionX, directionZ, lateralPhase, stampKind, footprintId,
       ownerX, ownerZ, resolution: R,

@@ -1,0 +1,1 @@
+export { buildColliderSnapshotFromCollisionAvatar } from './AvatarCollisionRegistry'

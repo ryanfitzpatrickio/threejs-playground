@@ -48,17 +48,64 @@ function createCommands() {
     fillHordeToCount: (count, opts) => this.fillHordeToCount(count, opts ?? {}),
     applyHordeSpectaclePreset: (id) => this.applyHordeSpectaclePreset(id),
     applyHordeExplosion: (opts) => this.applyHordeExplosion(opts ?? {}),
+    propaneTanks: () => this.propaneTankSystem?.snapshot?.() ?? { enabled: false },
+    ignitePropaneTank: ({ id = null } = {}) => this.propaneTankSystem?.igniteTank?.(
+      id,
+      this.characterSystem?.character?.group?.position ?? null,
+    ) ?? { ok: false, reason: 'no-system' },
+    detonatePropaneTank: ({ id = null } = {}) => this.propaneTankSystem?.detonateTank?.(
+      id,
+      this.characterSystem?.character?.group?.position ?? null,
+    ) ?? { ok: false, reason: 'no-system' },
+    spawnPropaneTank: ({ x = null, y = null, z = null, seed = Date.now() } = {}) => {
+      const player = this.characterSystem?.character?.group?.position;
+      return this.propaneTankSystem?.spawnTank?.({
+        x: Number.isFinite(x) ? x : (player?.x ?? 0) + 1.5,
+        y: Number.isFinite(y) ? y : player?.y ?? 0,
+        z: Number.isFinite(z) ? z : player?.z ?? 0,
+        seed,
+      }) ?? { ok: false, reason: 'no-system' };
+    },
     clearHordeEnemies: () => this.clearHordeEnemies(),
     applyHordeHealthScale: () => this.applyHordeHealthScale(),
     hordeScaleSnapshot: () => this.hordeScaleSnapshot(),
+    /** Mall LightProbeGrid GI status (docs/horde-gi-plan.md). */
+    getHordeGi: () => this.hordeGi?.getSnapshot?.() ?? { status: 'none', hint: 'not horde or GI not constructed' },
+    setHordeGiHelper: (on = true) => this.hordeGi?.setHelperVisible?.(Boolean(on))
+      ?? { ok: false, reason: 'no-horde-gi' },
+    setHordeGiEnabled: (on = true) => this.hordeGi?.setContribEnabled?.(Boolean(on))
+      ?? { ok: false, reason: 'no-horde-gi' },
+    setHordeGiIntensity: (v = 1) => this.hordeGi?.setIntensity?.(v)
+      ?? { ok: false, reason: 'no-horde-gi' },
+    rebakeHordeGi: () => {
+      this.hordeGi?.rebake?.();
+      return this.hordeGi?.getSnapshot?.() ?? { ok: false, reason: 'no-horde-gi' };
+    },
     getHordeDebug: () => ({
       ...(this.enemySystem?.behaviorMods ?? {}),
       enemyCount: this._hordeVisibleEnemyCount(),
       ...this.hordeScaleSnapshot(),
+      gi: this.hordeGi?.getSnapshot?.() ?? null,
       levelMode: this.levelMode,
       playgroundReady: this.isHordePlaygroundActive(),
       proxyReady: this.hordeProxySystem?.ready === true,
+      navMesh: this.hordeProxySystem?.snapshot?.()?.navMesh ?? null,
     }),
+    setHordeNavMeshVisible: async (visible = true) => {
+      const scene = this.sceneSystem?.scene;
+      const result = await this.hordeProxySystem?.setNavMeshDebugVisible?.(
+        Boolean(visible),
+        scene,
+      );
+      return result ?? { ok: false, reason: 'no-proxy-system' };
+    },
+    projectHordeNav: ({ x, z, y = 0 } = {}) => {
+      if (!Number.isFinite(x) || !Number.isFinite(z)) {
+        return { ok: false, reason: 'need-x-z' };
+      }
+      return this.hordeProxySystem?.projectToNav?.(x, z, y)
+        ?? { ok: false, reason: 'no-proxy-system' };
+    },
     dumpMudRuts: () => this._mudRutsSnapshot(),
     forceMudRut: (depth = 0.18, radius = 0.45) => {
       const field = this.levelSystem?.mudField ?? this.levelSystem?.level?.mudField ?? null;

@@ -1141,7 +1141,9 @@ export class FirstPersonWeaponSystem {
     if (!root) return;
     setHeadHidden(root, true);
     this._headHidden = true;
-    if (character.group) character.group.visible = true;
+    // Sims / household mode parks Mara off-lot and must stay non-rendered.
+    // Forcing the group visible here was re-showing her in the distance.
+    if (character.group && !character.hiddenForSims) character.group.visible = true;
   }
 
   _restoreHead(character) {

@@ -31,6 +31,11 @@ import {
 } from '../config/hordePerformanceConfig.js';
 import { createGltfLoader } from '../utils/createGltfLoader.js';
 import { HordeFlowField } from './HordeFlowField.js';
+import {
+  bakeHordeNavMesh,
+  HordeNavQuery,
+  DynamicNavObstacles,
+} from './HordeNavMesh.js';
 import { HordeSuppressionField } from './HordeSuppressionField.js';
 import { UniformSpatialGrid } from './UniformSpatialGrid.js';
 import { stepFlockSteering, DEFAULT_FLOCK_WEIGHTS } from './hordeFlockSteering.js';
@@ -40,6 +45,15 @@ import {
   sectorIndexAt,
   sectorMeshKey,
 } from './hordeProxySectors.js';
+
+/** Lazy-loaded so pure-node verify scripts never pull three/webgpu. */
+let _createNavMeshHelper = null;
+async function getCreateNavMeshHelper() {
+  if (_createNavMeshHelper) return _createNavMeshHelper;
+  const mod = await import('navcat/three');
+  _createNavMeshHelper = mod.createNavMeshHelper;
+  return _createNavMeshHelper;
+}
 
 /**
  * M5: sector-culled InstancedMesh batches + GPU walk blend (VAT-lite).
@@ -112,6 +126,17 @@ export class HordeProxySystem {
     // Flow-mob steering (M1). Field + broadphase are built at load() once the
     // level colliders/bounds are threaded in via setLevelContext().
     this.flowField = null;
+    /** @type {HordeNavQuery|null} navcat query over arena bake (walk clamp + flow mask). */
+    this.navQuery = null;
+    this._navBake = null;
+    /** @type {import('navcat').NavMesh|null} raw bake for debug draw */
+    this._navMesh = null;
+    /** Closed doors as dynamic AABB obstacles (not in static bake). */
+    this._dynamicObstacles = new DynamicNavObstacles();
+    this._navDebugHelper = null;
+    this._navDebugVisible = false;
+    this._navDebugScene = null;
+    this._doorObstacleSig = '';
     // Suppression field (M3) — same bounds/cellSize as flowField so gradients
     // align cell-for-cell with the flow direction.
     this.suppressionField = null;
@@ -202,6 +227,8 @@ export class HordeProxySystem {
     if (!this._levelColliders || !this._levelBounds) {
       this.flowField = null;
       this.suppressionField = null;
+      this.navQuery = null;
+      this._navBake = null;
       return;
     }
     this.flowField = new HordeFlowField({
@@ -217,11 +244,189 @@ export class HordeProxySystem {
       bounds: this._levelBounds,
       cellSize: FLOW_CELL_SIZE,
     });
+
+    // Bake navcat solo navmesh and intersect flow walkability with it.
+    this._rebuildNavMesh();
+
     // Prime the field so the first tick has a usable integration field.
-    this.flowField.update(this._flowGoal.x, this._flowGoal.z);
+    // Snap the goal onto nav first so Dijkstra starts from a walkable cell.
+    const goal = this.projectToNav(this._flowGoal.x, this._flowGoal.z);
+    this.flowField.update(goal.x, goal.z);
     this._flowUpdateTimer = 0;
-    this._flowLastGoalX = this._flowGoal.x;
-    this._flowLastGoalZ = this._flowGoal.z;
+    this._flowLastGoalX = goal.x;
+    this._flowLastGoalZ = goal.z;
+  }
+
+  _rebuildNavMesh() {
+    this._disposeNavDebug();
+    this.navQuery = null;
+    this._navBake = null;
+    this._navMesh = null;
+    if (!this._levelColliders || !this._levelBounds) return;
+
+    const bake = bakeHordeNavMesh({
+      colliders: this._levelColliders,
+      bounds: this._levelBounds,
+      floorY: 0,
+      agentRadius: 0.35,
+      agentHeight: 1.8,
+      cellSize: 0.3,
+    });
+    this._navBake = {
+      ok: bake.ok,
+      reason: bake.reason ?? null,
+      obstacleCount: bake.obstacleCount ?? 0,
+      triangleCount: bake.triangleCount ?? 0,
+      vertexCount: bake.vertexCount ?? 0,
+      error: bake.error ?? null,
+    };
+    if (!bake.ok || !bake.navMesh) {
+      console.warn('[HordeProxySystem] navmesh bake failed', this._navBake);
+      return;
+    }
+
+    this._navMesh = bake.navMesh;
+    // Seed dynamic obstacles from current door colliders (closed only).
+    this._dynamicObstacles.setFromDoorColliders(this._levelColliders ?? []);
+    this.navQuery = new HordeNavQuery(bake.navMesh, {
+      halfExtents: [1.2, 2.0, 1.2],
+      floorY: 0,
+      dynamicObstacles: this._dynamicObstacles,
+    });
+    this._restampFlowWalkability();
+    this._navBake.dynamicDoorObstacles = this._dynamicObstacles.boxes.length;
+    this._navBake.skippedDoors = bake.skippedDoors ?? 0;
+    this._navBake.mode = bake.mode ?? 'tiled';
+    this._doorObstacleSig = this._doorSignatureFromColliders(this._levelColliders);
+
+    if (this._navDebugVisible && this._navDebugScene) {
+      void this.setNavMeshDebugVisible(true, this._navDebugScene);
+    }
+  }
+
+  _restampFlowWalkability() {
+    if (!this.flowField || !this.navQuery) return 0;
+    // Rebuild flow from colliders first so door open/close is reflected, then
+    // intersect with nav+dynamic-obstacle walkability.
+    this.flowField = new HordeFlowField({
+      colliders: this._levelColliders ?? [],
+      bounds: this._levelBounds,
+      cellSize: FLOW_CELL_SIZE,
+      agentRadius: 0.35,
+      agentHeight: 1.8,
+      floorY: 0,
+    });
+    const added = this.flowField.restrictToWalkable((x, z) => this.navQuery.isWalkable(x, z));
+    if (this._navBake) this._navBake.flowCellsBlockedByNav = added;
+    // Re-prime integration toward last goal.
+    this.flowField.update(this._flowGoal.x, this._flowGoal.z);
+    return added;
+  }
+
+  _doorSignatureFromColliders(colliders) {
+    const parts = [];
+    for (const c of colliders ?? []) {
+      if (!c || !/\bDoor\b/i.test(String(c.name ?? ''))) continue;
+      parts.push(
+        `${c.name}:${c.disabled ? 1 : 0}:${Number(c.minX).toFixed(2)},${Number(c.minZ).toFixed(2)}`,
+      );
+    }
+    parts.sort();
+    return parts.join('|');
+  }
+
+  /**
+   * Call when boxcar doors slide. Updates dynamic door obstacles + flow mask
+   * without a full nav re-bake (static mesh has open bays).
+   * @param {Array<object>} [doors] level.boxcarDoors
+   * @param {Array<object>} [colliders] live colliders (optional refresh)
+   */
+  syncDoorObstacles({ doors = null, colliders = null } = {}) {
+    if (colliders) this._levelColliders = colliders;
+    const list = this._levelColliders ?? [];
+    // Prefer doors array to drive signature (openAmount), fall back to colliders.
+    let sig;
+    if (Array.isArray(doors) && doors.length) {
+      sig = doors.map((d) => {
+        const open = d.openAmount > 0.85 || d.open ? 1 : 0;
+        return `${d.id}:${open}`;
+      }).sort().join('|');
+    } else {
+      sig = this._doorSignatureFromColliders(list);
+    }
+    if (sig === this._doorObstacleSig && this.navQuery) {
+      return { changed: false, obstacles: this._dynamicObstacles.boxes.length };
+    }
+    this._doorObstacleSig = sig;
+    const n = this._dynamicObstacles.setFromDoorColliders(list);
+    this.navQuery?.setDynamicObstacles?.(this._dynamicObstacles);
+    this._restampFlowWalkability();
+    if (this._navBake) this._navBake.dynamicDoorObstacles = n;
+    return { changed: true, obstacles: n };
+  }
+
+  _disposeNavDebug() {
+    if (this._navDebugHelper) {
+      this._navDebugHelper.object?.removeFromParent?.();
+      this._navDebugHelper.dispose?.();
+      this._navDebugHelper = null;
+    }
+  }
+
+  /**
+   * Toggle navcat navmesh overlay (debug). Async because three helpers load on demand.
+   * @param {boolean} visible
+   * @param {THREE.Scene|THREE.Object3D} [scene]
+   */
+  async setNavMeshDebugVisible(visible, scene = null) {
+    this._navDebugVisible = Boolean(visible);
+    if (scene) this._navDebugScene = scene;
+    const host = this._navDebugScene ?? this.group?.parent ?? null;
+
+    if (!this._navDebugVisible) {
+      this._disposeNavDebug();
+      return { ok: true, visible: false };
+    }
+    if (!this._navMesh || !host) {
+      return { ok: false, visible: false, reason: !this._navMesh ? 'no-navmesh' : 'no-scene' };
+    }
+
+    this._disposeNavDebug();
+    try {
+      const createHelper = await getCreateNavMeshHelper();
+      this._navDebugHelper = createHelper(this._navMesh);
+      if (this._navDebugHelper?.object) {
+        this._navDebugHelper.object.name = 'Horde NavMesh Debug';
+        this._navDebugHelper.object.renderOrder = 50;
+        host.add(this._navDebugHelper.object);
+      }
+      return { ok: true, visible: true };
+    } catch (error) {
+      console.warn('[HordeProxySystem] navmesh debug helper failed', error);
+      return { ok: false, visible: false, error: String(error?.message ?? error) };
+    }
+  }
+
+  /**
+   * Snap an XZ point onto the navmesh (or return input if bake missing).
+   * @returns {{x:number,z:number,y:number,ok:boolean}}
+   */
+  projectToNav(x, z, y = 0) {
+    if (!this.navQuery) return { x, z, y, ok: false };
+    const p = this.navQuery.project(x, z, y);
+    if (!p.ok) return { x, z, y, ok: false };
+    return { x: p.x, z: p.z, y: p.y, ok: true };
+  }
+
+  /**
+   * Constrain a proposed move onto the nav surface (small deltas).
+   * @returns {{x:number,z:number,y:number,ok:boolean}}
+   */
+  clampMoveToNav(fromX, fromZ, toX, toZ, y = 0) {
+    if (!this.navQuery) return { x: toX, z: toZ, y, ok: false };
+    const m = this.navQuery.moveAlong(fromX, fromZ, toX, toZ, y);
+    if (!m.ok) return { x: toX, z: toZ, y, ok: false };
+    return { x: m.x, z: m.z, y: m.y, ok: true };
   }
 
   async load(scene, { enemySystem, colliders = null, getGroundHeightAt = null, bounds = null } = {}) {
@@ -467,6 +672,13 @@ export class HordeProxySystem {
     const position = positionSource.clone
       ? positionSource.clone()
       : new THREE.Vector3(positionSource.x, positionSource.y ?? 0, positionSource.z);
+    // Snap spawn onto nav so agents never start inside cover volume.
+    const onNav = this.projectToNav(position.x, position.z, position.y ?? 0);
+    if (onNav.ok) {
+      position.x = onNav.x;
+      position.z = onNav.z;
+      if (Number.isFinite(onNav.y)) position.y = onNav.y;
+    }
 
     const bounds = this._levelBounds ?? defaultArenaBounds();
     const preferred = sectorIndexAt(position.x, position.z, bounds, this.sectorGrid);
@@ -498,6 +710,8 @@ export class HordeProxySystem {
       ringOffset: Number.isFinite(descriptor.ringOffset)
         ? descriptor.ringOffset
         : (ordinal % 7) * PROXY_RING_SPACING,
+      _navPrevX: position.x,
+      _navPrevZ: position.z,
       matrixDirty: true,
       animAttrDirty: true,
     };
@@ -844,9 +1058,10 @@ export class HordeProxySystem {
           suppression: this.suppressionField,
           weights: this.flockWeights,
         });
-        // Conform to ground, migrate sectors, mark instance matrices dirty.
+        // Conform to ground, clamp to navmesh, migrate sectors, mark dirty.
         for (const agent of this.agents) {
           if (agent.health <= 0 || agent.anim === 'fallen') continue;
+          this._clampAgentToNav(agent);
           this._conformAgentToGround(agent);
           this._migrateAgentSector(agent);
           agent.matrixDirty = true;
@@ -891,16 +1106,46 @@ export class HordeProxySystem {
    */
   _updateFlowField(playerPosition, step) {
     if (!this.flowField) return;
-    this._flowGoal.x = playerPosition.x;
-    this._flowGoal.z = playerPosition.z;
+    // Goal on the nav surface so integration doesn't start inside cover.
+    const goal = this.projectToNav(playerPosition.x, playerPosition.z, playerPosition.y ?? 0);
+    this._flowGoal.x = goal.ok ? goal.x : playerPosition.x;
+    this._flowGoal.z = goal.ok ? goal.z : playerPosition.z;
     this._flowUpdateTimer -= step;
-    const movedFar = Math.abs(playerPosition.x - this._flowLastGoalX) > FLOW_PLAYER_MOVE_EPS
-      || Math.abs(playerPosition.z - this._flowLastGoalZ) > FLOW_PLAYER_MOVE_EPS;
+    const movedFar = Math.abs(this._flowGoal.x - this._flowLastGoalX) > FLOW_PLAYER_MOVE_EPS
+      || Math.abs(this._flowGoal.z - this._flowLastGoalZ) > FLOW_PLAYER_MOVE_EPS;
     if (this._flowUpdateTimer > 0 && !movedFar) return;
-    this.flowField.update(playerPosition.x, playerPosition.z);
+    this.flowField.update(this._flowGoal.x, this._flowGoal.z);
     this._flowUpdateTimer = FLOW_UPDATE_INTERVAL;
-    this._flowLastGoalX = playerPosition.x;
-    this._flowLastGoalZ = playerPosition.z;
+    this._flowLastGoalX = this._flowGoal.x;
+    this._flowLastGoalZ = this._flowGoal.z;
+  }
+
+  /**
+   * Keep proxies on the nav surface after flock integration so they cannot
+   * step through boxcars / wall thickness that the flow grid under-samples.
+   */
+  _clampAgentToNav(agent) {
+    if (!this.navQuery || !agent?.position) return;
+    const pos = agent.position;
+    const prevX = agent._navPrevX;
+    const prevZ = agent._navPrevZ;
+    const hasPrev = Number.isFinite(prevX) && Number.isFinite(prevZ);
+    let clamped;
+    if (hasPrev) {
+      clamped = this.clampMoveToNav(prevX, prevZ, pos.x, pos.z, pos.y ?? 0);
+    } else {
+      clamped = this.projectToNav(pos.x, pos.z, pos.y ?? 0);
+    }
+    if (clamped.ok) {
+      pos.x = clamped.x;
+      pos.z = clamped.z;
+      // Y comes from ground conform next; nav poly height is a fallback.
+      if (!this._getGroundHeightAt && Number.isFinite(clamped.y)) {
+        pos.y = clamped.y;
+      }
+    }
+    agent._navPrevX = pos.x;
+    agent._navPrevZ = pos.z;
   }
 
   /** Sample analytic ground under the agent's XZ so it hugs pads/ballast. */
@@ -1206,6 +1451,12 @@ export class HordeProxySystem {
       peakCount: this._stats.peakCount,
       combatGrid: this.combatGrid.snapshot(),
       flowField: this.flowField ? this.flowField.snapshot() : null,
+      navMesh: this._navBake
+        ? {
+          ready: Boolean(this.navQuery),
+          ...this._navBake,
+        }
+        : { ready: false },
       suppression: this.suppressionField ? this.suppressionField.snapshot() : null,
       sample: this.agents.slice(0, PROXY_SNAPSHOT_LIMIT).map((agent) => ({
         id: agent.id,
@@ -1223,6 +1474,10 @@ export class HordeProxySystem {
 
   dispose() {
     this.clear();
+    this._disposeNavDebug();
+    this.navQuery = null;
+    this._navMesh = null;
+    this._navBake = null;
     for (const mesh of this.meshes.values()) {
       this.group.remove(mesh);
       mesh.dispose?.();

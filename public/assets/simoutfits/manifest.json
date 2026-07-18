@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "meshy-ai-rose-gold-sequin-dres-071622141",
+      "name": "Meshy AI Rose Gold Sequin Dres 0716221416 Texture",
+      "description": "Promoted import (female)",
+      "promoted": true,
+      "bodies": {
+        "female": {
+          "standard": "/assets/simoutfits/standard/meshy-ai-rose-gold-sequin-dres-071622141.glb?v=1784242337543",
+          "morph": "/assets/simoutfits/morph/meshy-ai-rose-gold-sequin-dres-071622141.glb?v=1784242337543"
+        }
+      }
+    }
+  ]
+}

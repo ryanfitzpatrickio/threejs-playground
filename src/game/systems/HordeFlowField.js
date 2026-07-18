@@ -165,6 +165,32 @@ export class HordeFlowField {
     }
   }
 
+  /**
+   * Intersect the static blocked mask with an external walkability test
+   * (e.g. navmesh nearest-poly). Cells that fail the test become blocked.
+   * Does not un-block cells already blocked by collider rasterization.
+   *
+   * @param {(x:number, z:number) => boolean} isWalkable
+   * @returns {number} newly blocked cell count
+   */
+  restrictToWalkable(isWalkable) {
+    if (typeof isWalkable !== 'function') return 0;
+    let added = 0;
+    for (let row = 0; row < this.rows; row += 1) {
+      for (let col = 0; col < this.cols; col += 1) {
+        const idx = this.cellIndex(col, row);
+        if (this.blocked[idx] === 1) continue;
+        const { x, z } = this.cellToWorld(col, row);
+        if (!isWalkable(x, z)) {
+          this.blocked[idx] = 1;
+          this._blockedCount += 1;
+          added += 1;
+        }
+      }
+    }
+    return added;
+  }
+
   // ── Integration field ──────────────────────────────────────────────────
 
   /**

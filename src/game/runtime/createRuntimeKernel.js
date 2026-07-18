@@ -11,6 +11,8 @@ import { HordeRuntimeFeature } from './features/horde/HordeRuntimeFeature.js';
 import { InteriorRuntimeFeature } from './features/InteriorRuntimeFeature.js';
 import { VehicleRuntimeFeature } from './features/VehicleRuntimeFeature.js';
 import { DeathmatchRuntimeFeature } from './features/deathmatch/DeathmatchRuntimeFeature.js';
+import { SimsRuntimeFeature } from './features/sims/SimsRuntimeFeature.js';
+import { DogParkRuntimeFeature } from './features/dogPark/DogParkRuntimeFeature.js';
 import { RuntimeCommands } from './RuntimeCommands.js';
 import { RuntimeSnapshotStore } from './RuntimeSnapshotStore.js';
 import { RuntimeVisibility } from './RuntimeVisibility.js';
@@ -39,7 +41,7 @@ export class RuntimeKernel {
     networkSystem = null,
   }) {
     this.canvas = canvas;
-    this.levelMode = ['world', 'wilds', 'rally', 'range', 'horde', 'highway', 'deathmatch'].includes(levelMode) ? levelMode : 'city';
+    this.levelMode = ['world', 'wilds', 'rally', 'range', 'horde', 'highway', 'deathmatch', 'sims', 'dog-park'].includes(levelMode) ? levelMode : 'city';
     this.qualityLevel = qualityLevel;
     // App-owned deathmatch socket (optional). Offline deathmatch leaves this null.
     this.networkSystem = networkSystem ?? null;
@@ -98,19 +100,21 @@ export class RuntimeKernel {
     });
     Object.assign(this, services);
 
-    this.postCutSlowMoTimer = 0;
     this.renderCap60 = Boolean(qualityPreset.renderCap60);
     this._visibilityPaused = false;
     this.showTimingHud = false;
     this._onVisibilityChange = () => this.handleVisibilityChange();
 
     // Features / mode controllers / stores (host = this kernel)
+    this.hordeGi = null;
     this.hordeFeature = new HordeRuntimeFeature(this);
     this.interiorFeature = new InteriorRuntimeFeature(this);
     this.vehicleFeature = new VehicleRuntimeFeature(this);
     this.deathmatchFeature = this.levelMode === 'deathmatch'
       ? new DeathmatchRuntimeFeature(this)
       : null;
+    this.simsFeature = new SimsRuntimeFeature(this);
+    this.dogParkFeature = new DogParkRuntimeFeature(this);
     this.commands = new RuntimeCommands(this);
     this.snapshotStore = new RuntimeSnapshotStore(this);
     this.visibility = new RuntimeVisibility(this);
@@ -649,6 +653,10 @@ export class RuntimeKernel {
     this.sceneSystem.clearRangeShadows?.();
     this.rendererSystem.setAnimationLoop(null);
     document.removeEventListener('visibilitychange', this._onVisibilityChange);
+    try {
+      this.hordeGi?.dispose?.();
+    } catch { /* ignore */ }
+    this.hordeGi = null;
     this.inputSystem.dispose();
     this.vaultSystem.dispose();
     this.mountSystem.dispose();
@@ -656,10 +664,13 @@ export class RuntimeKernel {
     this.firstPersonWeaponSystem.dispose();
     this.weaponSystem.dispose();
     this.shootingRangeSystem.dispose();
+    this.aquariumBreachSystem?.dispose?.();
+    this.propaneTankSystem?.dispose?.();
     this.hordeProxySystem.dispose();
     this.enemySystem.dispose();
     this.crowdSystem.dispose?.();
     this.propSystem.dispose();
+    this.carryItemSystem?.dispose?.();
     this.enemyCutSystem.dispose();
     this.horseSystem.dispose();
     // Highway / platform bookkeeping before VehicleSystem / LevelSystem teardown.
@@ -675,6 +686,8 @@ export class RuntimeKernel {
     this.ledgeHangSystem.dispose();
     this.deathmatchFeature?.dispose?.();
     this.deathmatchFeature = null;
+    this.simsFeature?.dispose?.();
+    this.dogParkFeature?.dispose?.();
     this.remotePlayerSystem?.dispose?.();
     this.characterSystem.dispose();
     this.levelSystem.dispose();

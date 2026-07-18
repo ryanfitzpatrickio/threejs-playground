@@ -8,6 +8,8 @@ import { CombatSystem } from '../systems/CombatSystem.js';
 import { FirstPersonWeaponSystem } from '../systems/FirstPersonWeaponSystem.js';
 import { WeaponSystem } from '../systems/WeaponSystem.js';
 import { ShootingRangeSystem } from '../systems/ShootingRangeSystem.js';
+import { AquariumBreachSystem } from '../systems/AquariumBreachSystem.js';
+import { PropaneTankSystem } from '../systems/PropaneTankSystem.js';
 import { EnemySystem } from '../systems/EnemySystem.js';
 import { HordeProxySystem } from '../systems/HordeProxySystem.js';
 import { CrowdSystem } from '../systems/CrowdSystem.js';
@@ -32,6 +34,7 @@ import { VaultSystem } from '../systems/VaultSystem.js';
 import { WallClimbSystem } from '../systems/WallClimbSystem.js';
 import { WallRunSystem } from '../systems/WallRunSystem.js';
 import { TelekinesisSystem } from '../systems/TelekinesisSystem.js';
+import { CarryItemSystem } from '../systems/CarryItemSystem.js';
 import { HookSwingSystem } from '../systems/HookSwingSystem.js';
 import { WingsuitSystem } from '../systems/WingsuitSystem.js';
 import { WingsuitFlightSystem } from '../systems/WingsuitFlightSystem.js';
@@ -43,6 +46,8 @@ import { PlatformRidingSystem } from '../systems/PlatformRidingSystem.js';
 import { CarLeapSystem } from '../systems/CarLeapSystem.js';
 import { WeatherSystem } from '../systems/WeatherSystem.js';
 import { RemotePlayerSystem } from '../systems/RemotePlayerSystem.js';
+import { SimSystem } from '../systems/SimSystem.js';
+import { SimCameraSystem } from '../systems/SimCameraSystem.js';
 import {
   HORDE_FULL_SHADOW_CASTER_LIMIT,
   HORDE_ATTACK_TOKEN_LIMIT,
@@ -64,6 +69,8 @@ export function createRuntimeServices({ canvas, qualityPreset, levelMode }) {
   const firstPersonWeaponSystem = new FirstPersonWeaponSystem();
   const weaponSystem = new WeaponSystem();
   const shootingRangeSystem = new ShootingRangeSystem();
+  const aquariumBreachSystem = new AquariumBreachSystem();
+  const propaneTankSystem = new PropaneTankSystem({ qualityPreset });
   const enemySystem = new EnemySystem();
   enemySystem.setHordeShadowCasterLimit(
     levelMode === 'horde' ? HORDE_FULL_SHADOW_CASTER_LIMIT : Infinity,
@@ -93,6 +100,7 @@ export function createRuntimeServices({ canvas, qualityPreset, levelMode }) {
   const traversalRouterSystem = new TraversalRouterSystem();
   const animationStateSystem = new AnimationStateSystem();
   const telekinesisSystem = new TelekinesisSystem();
+  const carryItemSystem = new CarryItemSystem();
   const hookSwingSystem = new HookSwingSystem();
   const wingsuitSystem = new WingsuitSystem();
   const wingsuitFlightSystem = new WingsuitFlightSystem();
@@ -105,6 +113,8 @@ export function createRuntimeServices({ canvas, qualityPreset, levelMode }) {
   const weatherSystem = new WeatherSystem();
   // Deathmatch M3: always constructed; only updated when deathmatch feature is active.
   const remotePlayerSystem = new RemotePlayerSystem();
+  const simSystem = new SimSystem();
+  const simCameraSystem = new SimCameraSystem();
   const frameStats = new FrameStats();
   const allocationSampler = new AllocationSampler();
   const renderRateLimiter = new RenderRateLimiter(60);
@@ -121,6 +131,8 @@ export function createRuntimeServices({ canvas, qualityPreset, levelMode }) {
     firstPersonWeaponSystem,
     weaponSystem,
     shootingRangeSystem,
+    aquariumBreachSystem,
+    propaneTankSystem,
     enemySystem,
     hordeProxySystem,
     crowdSystem,
@@ -141,6 +153,7 @@ export function createRuntimeServices({ canvas, qualityPreset, levelMode }) {
     traversalRouterSystem,
     animationStateSystem,
     telekinesisSystem,
+    carryItemSystem,
     hookSwingSystem,
     wingsuitSystem,
     wingsuitFlightSystem,
@@ -155,6 +168,8 @@ export function createRuntimeServices({ canvas, qualityPreset, levelMode }) {
     vehicleDamageSystem,
     weatherSystem,
     remotePlayerSystem,
+    simSystem,
+    simCameraSystem,
     frameStats,
     allocationSampler,
     renderRateLimiter,

@@ -7,7 +7,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_DB_PATH = path.resolve(__dirname, '..', 'data', 'dreamfall.db');
 export const DEFAULT_DATA_ROOT = path.resolve(__dirname, '..', 'data');
 
-const ALLOWED_COLLECTIONS = new Set(['blueprints', 'worldmaps', 'mapbuilder', 'garage', 'bodyshop', 'gunsmith', 'state']);
+const ALLOWED_COLLECTIONS = new Set(['blueprints', 'worldmaps', 'mapbuilder', 'garage', 'bodyshop', 'gunsmith', 'sims', 'garments', 'state']);
 const ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 const COLLECTION_DIRS = {
   blueprints: 'blueprints',
@@ -16,6 +16,8 @@ const COLLECTION_DIRS = {
   garage: 'garage',
   bodyshop: 'bodyshop',
   gunsmith: 'gunsmith',
+  sims: 'sims',
+  garments: 'garments',
 };
 
 const dbCache = new Map();
@@ -118,6 +120,8 @@ export function buildStoreIndex(db) {
     garage: [],
     bodyshop: [],
     gunsmith: [],
+    sims: [],
+    garments: [],
     state: readAppState(db),
   };
 
@@ -138,6 +142,8 @@ export function buildStoreSnapshot(db) {
     garage: {},
     bodyshop: {},
     gunsmith: {},
+    sims: {},
+    garments: {},
     state: readAppState(db),
   };
 
@@ -294,6 +300,8 @@ export function listExportableEntries(db, manifest = {}) {
     worldmaps: new Set(manifest.worldmaps ?? []),
     garage: new Set(manifest.garage ?? []),
     gunsmith: new Set(manifest.gunsmith ?? []),
+    sims: new Set(manifest.sims ?? []),
+    garments: new Set(manifest.garments ?? []),
   };
 
   const includeExportStatic = manifest.includeExportStatic !== false;
@@ -305,6 +313,8 @@ export function listExportableEntries(db, manifest = {}) {
     worldmaps: new Set(),
     garage: new Set(),
     gunsmith: new Set(),
+    sims: new Set(),
+    garments: new Set(),
   };
 
   for (const row of rows) {

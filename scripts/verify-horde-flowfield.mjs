@@ -162,14 +162,14 @@ console.log('HordeFlowField (M0) — synthetic + real-arena checks\n');
   });
 }
 
-// ── 3. Real arena integration ───────────────────────────────────────────────
+// ── 3. Real mall + train-yard integration ───────────────────────────────────
 {
   const level = createHordeModeLevel();
-  const HALF = 36; // mirrors createHordeModeLevel's HALF (train-yard arena bounds)
+  const bounds = level.snapshot().bounds;
 
   const field = new HordeFlowField({
     colliders: level.colliders,
-    bounds: { minX: -HALF, maxX: HALF, minZ: -HALF, maxZ: HALF },
+    bounds,
     cellSize: 0.75,
     agentRadius: 0.35,
     agentHeight: 1.8,
@@ -185,10 +185,10 @@ console.log('HordeFlowField (M0) — synthetic + real-arena checks\n');
     );
   });
 
-  field.update(0, 0); // goal at the arena origin (player spawn area)
+  field.update(level.spawnPoint.x, level.spawnPoint.z); // mall-center player spawn
   const afterUpdate = field.snapshot();
 
-  test('most floor cells are reachable from the origin goal', () => {
+  test('most floor cells are reachable from the mall-center goal', () => {
     const walkable = afterUpdate.cellCount - afterUpdate.blockedCells;
     const reachableFrac = afterUpdate.reachableCells / walkable;
     assert.ok(
@@ -196,6 +196,26 @@ console.log('HordeFlowField (M0) — synthetic + real-arena checks\n');
       `expected >85% of walkable cells reachable, got ${(reachableFrac * 100).toFixed(1)}% `
       + `(${afterUpdate.reachableCells}/${walkable})`,
     );
+  });
+
+  test('shipping hall carries yard flow into the mall', () => {
+    const yardMouth = { x: -39, z: 0 };
+    const mallMouth = { x: -46, z: 0 };
+    assert.ok(Number.isFinite(field.sampleDistance(yardMouth.x, yardMouth.z)), 'yard shipping mouth reachable');
+    assert.ok(Number.isFinite(field.sampleDistance(mallMouth.x, mallMouth.z)), 'mall shipping mouth reachable');
+    const dir = field.sampleDir(yardMouth.x, yardMouth.z);
+    assert.ok(dir.x < -0.2, `yard shipping flow should point west into mall, got ${dir.x.toFixed(2)}`);
+  });
+
+  test('flow reaches the food court through the winding leg', () => {
+    const court = { x: -242, z: 30.5 };
+    const bend = { x: -158.5, z: 13 };
+    assert.ok(Number.isFinite(field.sampleDistance(court.x, court.z)), 'food court reachable from mall center');
+    assert.ok(Number.isFinite(field.sampleDistance(bend.x, bend.z)), 'bend corridor reachable');
+    const courtDir = field.sampleDir(court.x, court.z);
+    assert.ok(courtDir.x > 0.2, `food court flow should point east toward leg C, got ${courtDir.x.toFixed(2)}`);
+    const bendDir = field.sampleDir(bend.x, bend.z);
+    assert.ok(bendDir.z < -0.2, `bend corridor flow should point south toward leg A, got ${bendDir.z.toFixed(2)}`);
   });
 
   test('gate-adjacent cells route inward through the gate opening', () => {

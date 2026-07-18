@@ -1,0 +1,28 @@
+{
+  "shared": "A standardized 2x2 canine conformation reference board on a neutral sage-gray seamless studio background, soft diffuse key light, realistic adult dog, no collar, no props, no text. Keep exactly the same individual, coat markings, scale, and lighting in all four panels. Top left: natural standing three-quarter view. Top right: exact standing profile. Bottom left: front-facing sit. Bottom right: head and shoulders close-up. Full paws visible in standing panels, natural breed-typical anatomy, documentary reference photography, square board.",
+  "breeds": {
+    "french-bulldog": "French Bulldog with compact muscular body, very short muzzle, broad skull, large upright bat ears, short smooth fawn-brindle coat, natural short tail.",
+    "labrador-retriever": "Labrador Retriever with athletic large frame, short dense black double coat, friendly otter tail, floppy ears, broad head, kind brown eyes.",
+    "german-shepherd-dog": "German Shepherd Dog with erect ears, athletic large frame, medium black-and-tan double coat, long wedge muzzle, full natural tail.",
+    "dachshund": "Smooth-coated black-and-tan Dachshund with a distinctly long low torso, very short legs, long drop ears, deep chest, and straight natural tail.",
+    "poodle": "Standard Poodle with square elegant frame, tight curly cream-white coat in a classic short sport clip with fuller topknot and tail pom, long muzzle, dark eyes, floppy ears with curly fringe.",
+    "beagle": "Beagle with compact medium hound frame, short tricolor coat black saddle white legs and tan head, long soft drop ears, dark eyes, white-tipped upright tail.",
+    "rottweiler": "Rottweiler with powerful balanced frame, short black coat and clearly placed rust points on muzzle, chest, brows, and lower legs, folded ears, natural tail.",
+    "german-shorthaired-pointer": "German Shorthaired Pointer with lean athletic large frame, short liver-and-white ticked coat, long muzzle, floppy ears, docked-looking high tail, elegant sporting proportions.",
+    "bulldog": "English Bulldog with heavy compact medium frame, broad chest, short bowed legs, very short wrinkled muzzle, rose ears, short smooth pied coat white with fawn patches, screw tail.",
+    "cane-corso": "Cane Corso with giant muscular frame, short sleek slate-gray coat, large blocky head, folded ears, powerful neck, natural long tail, serious working-dog expression.",
+    "cavalier-king-charles-spaniel": "Cavalier King Charles Spaniel with small graceful frame, silky blenheim coat rich chestnut markings on pearly white, very long feathered ears, large dark gentle eyes, plumed tail, short elegant muzzle.",
+    "yorkshire-terrier": "Yorkshire Terrier with tiny toy frame, long straight silky blue-and-tan coat parted down the back, small erect ears, dark eyes, neat beard and topknot, upright tail.",
+    "australian-shepherd": "Australian Shepherd with medium agile frame, blue merle medium double coat with white blaze and copper points, folded ears, bright intelligent eyes, natural bobtail or very short tail, athletic herding build.",
+    "doberman-pinscher": "Doberman Pinscher with lean powerful large frame, short glossy black coat with clearly placed rust tan points on muzzle chest brows and legs, folded ears, long wedge head, deep chest, natural long thin tail.",
+    "pembroke-welsh-corgi": "Pembroke Welsh Corgi with long low small frame, very short legs, medium red-and-white double coat, large erect ears, foxlike face, docked or naturally short tail, deep chest.",
+    "miniature-schnauzer": "Miniature Schnauzer with square compact frame, salt-and-pepper wiry double coat, folded ears, strong eyebrows, beard, and furnished legs, natural tail.",
+    "boxer": "Boxer with muscular athletic large frame, square balanced proportions, short smooth fawn coat with a clean black muzzle-and-eye mask, thin high-set rose-folded ears, blunt squared muzzle of moderate length, broad chest with tucked abdomen, and high-set natural tail.",
+    "pomeranian": "Orange Pomeranian with tiny compact spitz frame, small erect ears, foxlike short muzzle, abundant stand-off double coat and a large plumed tail curled over the back.",
+    "bernese-mountain-dog": "Bernese Mountain Dog with giant substantial frame, long black double coat with rich rust points and white blaze chest and paws, floppy ears, gentle expression, plumed tail carried low.",
+    "shih-tzu": "Shih Tzu with tiny compact toy frame, long flowing gold-and-white parti coat, short brachycephalic muzzle, large dark round eyes, topknot, heavily furnished ears, plumed tail curled over the back.",
+    "great-dane": "Great Dane with giant tall athletic frame, short sleek blue-gray coat, long elegant neck, folded ears, deep chest, long legs, long tapering tail, noble rectangular head.",
+    "boston-terrier": "Boston Terrier with small compact square frame, short smooth tuxedo black-and-white coat white blaze chest and muzzle, large upright bat ears, short square muzzle, screw tail, dark eyes.",
+    "chihuahua": "Smooth-coat fawn Chihuahua with extremely small fine-boned frame, apple-shaped skull, very large erect ears, large dark eyes, short tapered muzzle, and sickle tail."
+  }
+}

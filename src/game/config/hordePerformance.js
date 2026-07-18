@@ -21,9 +21,36 @@ export function applyHordeLevelOverrides(qualityPreset = {}, levelMode = 'city')
     }
     : qualityPreset.ssao;
 
+  // Low quality: no mall LightProbeGrid (docs/horde-gi-plan.md).
+  const isLow = qualityPreset.ssao?.enabled !== true
+    && (qualityPreset.maxPixelRatio ?? 2) <= 1;
+  const existingGi = environment.hordeGi ?? {};
+  const hordeGi = isLow
+    ? { ...existingGi, enabled: false }
+    : {
+      enabled: true,
+      intensity: 0.95,
+      probes: { x: 8, y: 3, z: 8 },
+      cubemapSize: 8,
+      bounces: 1,
+      sampleCount: 128,
+      fadeInSeconds: 0,
+      ...existingGi,
+      // Force on for high+ unless caller set enabled: false
+      enabled: existingGi.enabled === false ? false : true,
+    };
+
   return {
     ...qualityPreset,
     hordeMode: true,
+    propaneFx: {
+      gasCapacity: isLow ? 56 : 128,
+      smokeCapacity: isLow ? 36 : 72,
+      explosionCapacity: isLow ? 2 : 4,
+      heatShimmer: !isLow,
+      distortion: !isLow,
+      ...(qualityPreset.propaneFx ?? {}),
+    },
     // Retina DPR² blows full-screen post; cap hard for combat FPS.
     maxPixelRatio: Math.min(qualityPreset.maxPixelRatio ?? 2, 1.15),
     ssao,
@@ -48,6 +75,7 @@ export function applyHordeLevelOverrides(qualityPreset = {}, levelMode = 'city')
         ...(environment.volumetricClouds ?? {}),
         enabled: false,
       },
+      hordeGi,
     },
   };
 }

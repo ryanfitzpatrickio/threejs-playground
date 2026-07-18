@@ -155,6 +155,7 @@ export function SettingsDialog(props) {
                       { id: 'range', label: 'Range', title: 'Warehouse breach shooting course' },
                       { id: 'horde', label: 'Horde', title: 'Robot wave arena' },
                       { id: 'highway', label: 'Highway', title: 'Matrix highway greybox chase' },
+                      { id: 'sims', label: 'Household', title: 'Residential Sims lot' },
                     ]}
                   />
                 </SettingSection>
@@ -169,6 +170,20 @@ export function SettingsDialog(props) {
                     onChange={() => props.onOpenGarage?.()}
                     options={[
                       { id: 'garage', label: 'Open Garage', title: 'Vehicle builder' },
+                    ]}
+                  />
+                </SettingSection>
+
+                <SettingSection
+                  title="Character Maker"
+                  hint="Create and save residents for the Sims lot."
+                >
+                  <ChipGroup
+                    label="Character Maker"
+                    value={props.viewMode === 'simCreator' ? 'simCreator' : ''}
+                    onChange={() => props.onOpenSimCreator?.()}
+                    options={[
+                      { id: 'simCreator', label: 'Open Character Maker', title: 'Character Maker' },
                     ]}
                   />
                 </SettingSection>

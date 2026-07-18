@@ -336,14 +336,16 @@ export function createAaaMudParticleRenderer({
     seedAttr.setX(index, seed);
   };
 
-  const spawnDecal = (x, y, z, now, scale = 0.14 + Math.random() * 0.22) => {
+  const spawnDecal = (x, y, z, now, scaleOrOptions = 0.14 + Math.random() * 0.22) => {
+    const options = typeof scaleOrOptions === 'object' ? scaleOrOptions : null;
+    const scale = options?.scale ?? scaleOrOptions;
     const j = decalCursor;
     decalCursor = (decalCursor + 1) % decalCount;
     const d = decals[j];
     d.birth = now;
     d.x = x; d.y = y; d.z = z;
     d.scale = scale;
-    d.rot = Math.random() * 6.283185;
+    d.rot = options?.rotation ?? Math.random() * 6.283185;
     _decalPos.set(x, y, z);
     _decalScale.set(scale, scale, 1);
     _decalEuler.set(-Math.PI * 0.5, d.rot, 0, 'YXZ');
@@ -351,7 +353,7 @@ export function createAaaMudParticleRenderer({
     _m.compose(_decalPos, _decalQuat, _decalScale);
     decalMesh.setMatrixAt(j, _m);
     decalBirthAttr.setX(j, now);
-    decalSeedAttr.setX(j, d.rot);
+    decalSeedAttr.setX(j, options?.seed ?? d.rot);
     decalMesh.instanceMatrix.addUpdateRange(j * 16, 16);
     decalBirthAttr.addUpdateRange(j, 1);
     decalSeedAttr.addUpdateRange(j, 1);

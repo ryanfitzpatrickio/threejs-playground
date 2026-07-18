@@ -35,6 +35,8 @@ const COLLECTION_EXPORT_DIRS = {
   mapbuilder: 'mapbuilder',
   garage: 'garage',
   gunsmith: 'gunsmith',
+  sims: 'sims',
+  garments: 'garments',
 };
 
 async function readManifest(manifestPath) {
@@ -49,6 +51,8 @@ async function readManifest(manifestPath) {
         blueprints: [],
         garage: [],
         gunsmith: [],
+        sims: [],
+        garments: [],
         includeState: true,
         includeExportStatic: true,
       };
@@ -67,6 +71,8 @@ async function readMergedManifest(options = {}) {
     blueprints: [...new Set(manifests.flatMap((manifest) => manifest.blueprints ?? []))],
     garage: [...new Set(manifests.flatMap((manifest) => manifest.garage ?? []))],
     gunsmith: [...new Set(manifests.flatMap((manifest) => manifest.gunsmith ?? []))],
+    sims: [...new Set(manifests.flatMap((manifest) => manifest.sims ?? []))],
+    garments: [...new Set(manifests.flatMap((manifest) => manifest.garments ?? []))],
     includeState: manifests.every((manifest) => manifest.includeState !== false),
     includeExportStatic: manifests.some((manifest) => manifest.includeExportStatic !== false),
     // Default on: export every catalog/authored gunsmith profile for production.
@@ -243,6 +249,8 @@ export async function exportStaticDataToDist(options = {}) {
     mapbuilder: [],
     garage: index.garage.filter((entry) => exportIds.garage.has(entry.id)),
     gunsmith: (index.gunsmith ?? []).filter((entry) => exportIds.gunsmith.has(entry.id)),
+    sims: (index.sims ?? []).filter((entry) => exportIds.sims.has(entry.id)),
+    garments: (index.garments ?? []).filter((entry) => exportIds.garments.has(entry.id)),
     state,
   };
 
@@ -262,11 +270,15 @@ export async function exportStaticDataToDist(options = {}) {
   const total = filtered.blueprints.length
     + filtered.worldmaps.length
     + filtered.garage.length
-    + filtered.gunsmith.length;
+    + filtered.gunsmith.length
+    + filtered.sims.length
+    + filtered.garments.length;
+  const simTotal = filtered.sims.length + filtered.garments.length;
   console.info(
     `[export-static-data] wrote ${total} item(s) to ${distDataRoot}`
     + ` (${filtered.worldmaps.length} world map(s), ${filtered.blueprints.length} blueprint(s)`
-    + `, ${filtered.garage.length} garage, ${filtered.gunsmith.length} gunsmith)`,
+    + `, ${filtered.garage.length} garage, ${filtered.gunsmith.length} gunsmith`
+    + `, ${simTotal} sims/garments)`,
   );
 
   return filtered;

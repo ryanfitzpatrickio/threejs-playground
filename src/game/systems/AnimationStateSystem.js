@@ -162,6 +162,26 @@ export class AnimationStateSystem {
         character.animationController.setUpperBodyState(resolveHitReactionUpper(character));
         character.animationController.setAttackLegs(null, 0);
         groundingState = lowerState;
+      } else if (
+        character.carrying
+        && !movement.sliding
+        && !movement.airborne
+        && !dodgeActive
+        && !hitReactionActive
+      ) {
+        // Two-hand carry (propane tank, etc.): upper body holds a front grip pose
+        // while legs keep normal locomotion. Prefer a dedicated clip if present;
+        // great-sword idle is a solid two-hand front hold fallback.
+        character.animationController.clearFootwork?.();
+        character.animationController.setLayered(true);
+        const lowerState = surfacePlaybackState(resolveLocomotionLower(input, movement));
+        character.animationController.play(lowerState);
+        const holdState = character.animationController.hasState?.('carryHold')
+          ? 'carryHold'
+          : 'armedIdle';
+        character.animationController.setUpperBodyState(holdState);
+        character.animationController.setAttackLegs(null, 0);
+        groundingState = lowerState;
       } else if (armed && !movement.sliding && !dodgeActive && !hitReactionActive) {
         character.animationController.clearFootwork?.();
         // Layered rig for armed locomotion/attacks (but NOT during slide).

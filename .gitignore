@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-dog/
 .codex-tmp/
 .DS_Store
 npm-debug.log*
@@ -40,3 +41,4 @@ docs/
 !.dev.vars.example
 /volumetric-sky-cloud-analysis.md
 /.partykit/
+public/assets/simoutfits/_raw/

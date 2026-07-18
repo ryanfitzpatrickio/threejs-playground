@@ -25,6 +25,8 @@ const cache = {
   garage: {},
   bodyshop: {},
   gunsmith: {},
+  sims: {},
+  garments: {},
 };
 
 /** @type {Record<string, unknown>} */
@@ -249,6 +251,8 @@ function clearCache() {
   cache.garage = {};
   cache.bodyshop = {};
   cache.gunsmith = {};
+  cache.sims = {};
+  cache.garments = {};
   state = {};
 }
 
@@ -260,6 +264,8 @@ function applySnapshot(snapshot, readOnly) {
   cache.garage = { ...(snapshot.garage ?? {}) };
   cache.bodyshop = { ...(snapshot.bodyshop ?? {}) };
   cache.gunsmith = { ...(snapshot.gunsmith ?? {}) };
+  cache.sims = { ...(snapshot.sims ?? {}) };
+  cache.garments = { ...(snapshot.garments ?? {}) };
   state = snapshot.state && typeof snapshot.state === 'object' ? { ...snapshot.state } : {};
 }
 
@@ -275,6 +281,8 @@ async function hydrateFromIndex(index, readOnly) {
     garage: {},
     bodyshop: {},
     gunsmith: {},
+    sims: {},
+    garments: {},
     state: index.state ?? {},
   }, readOnly);
 
@@ -352,6 +360,20 @@ async function hydrateFromIndex(index, readOnly) {
     );
   }
 
+  for (const collection of ['sims', 'garments']) {
+    for (const meta of index[collection] ?? []) {
+      fetches.push(
+        fetchJson(readOnly ? prodUrl(collection, meta.id) : apiUrl(collection, meta.id))
+          .then((data) => {
+            cache[collection][meta.id] = data;
+          })
+          .catch((err) => {
+            console.error(`[fileStore] failed to load ${collection} ${meta.id}:`, err?.message || err);
+          }),
+      );
+    }
+  }
+
   await Promise.allSettled(fetches);
   notifyStoreHydrated();
 }
@@ -389,7 +411,7 @@ async function loadDevStore() {
   try {
     index = await fetchJson('/data/index.json');
   } catch {
-    index = { blueprints: [], worldmaps: [], mapbuilder: [], garage: [], bodyshop: [], gunsmith: [], state: {} };
+    index = { blueprints: [], worldmaps: [], mapbuilder: [], garage: [], bodyshop: [], gunsmith: [], sims: [], garments: [], state: {} };
   }
   await hydrateFromIndex(index, true);
   if (isStoreEmpty(index)) {
@@ -398,7 +420,7 @@ async function loadDevStore() {
 }
 
 function isStoreEmpty(snapshotOrIndex) {
-  const hasCollections = ['blueprints', 'worldmaps', 'mapbuilder', 'garage', 'bodyshop', 'gunsmith'].some((collection) => {
+  const hasCollections = ['blueprints', 'worldmaps', 'mapbuilder', 'garage', 'bodyshop', 'gunsmith', 'sims', 'garments'].some((collection) => {
     const bucket = snapshotOrIndex[collection];
     if (Array.isArray(bucket)) return bucket.length > 0;
     return bucket && Object.keys(bucket).length > 0;
@@ -566,6 +588,8 @@ export function __seedFileStoreForTests(snapshot = {}) {
   Object.assign(cache.garage, snapshot.garage ?? {});
   Object.assign(cache.bodyshop, snapshot.bodyshop ?? {});
   Object.assign(cache.gunsmith, snapshot.gunsmith ?? {});
+  Object.assign(cache.sims, snapshot.sims ?? {});
+  Object.assign(cache.garments, snapshot.garments ?? {});
   state = { ...state, ...(snapshot.state ?? {}) };
   writable = false;
   initialized = true;

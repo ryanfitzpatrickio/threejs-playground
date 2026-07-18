@@ -1,7 +1,11 @@
 import * as THREE from 'three';
 
-/** sRGB hex for the rally mud road ribbon (createRallySurfaceMaterial mudSurface). */
-export const RALLY_MUD_TRACK_SRGB = 0x7a5f38;
+/** Shared authored mud colors. Every mud effect starts from these sRGB values. */
+export const MUD_WET_SRGB = 0x625038;
+export const MUD_DRY_SRGB = 0x7a5f38;
+
+/** Backwards-compatible rally name for the dry road/crust color. */
+export const RALLY_MUD_TRACK_SRGB = MUD_DRY_SRGB;
 
 /** Linear RGB triple from an sRGB hex (for particle/decal shaders). */
 export function mudLinearFromHex(hex) {
@@ -10,8 +14,8 @@ export function mudLinearFromHex(hex) {
 }
 
 // Shared mud browns — same hue family as RALLY_MUD_TRACK_SRGB.
-export const RALLY_MUD_WET_LINEAR = mudLinearFromHex(0x625038);   // fresh / rut wet
-export const RALLY_MUD_BODY_LINEAR = mudLinearFromHex(RALLY_MUD_TRACK_SRGB);
+export const RALLY_MUD_WET_LINEAR = mudLinearFromHex(MUD_WET_SRGB);   // fresh / rut wet
+export const RALLY_MUD_BODY_LINEAR = mudLinearFromHex(MUD_DRY_SRGB);
 
-export const RALLY_MUD_DECAL_DARK_LINEAR = mudLinearFromHex(0x5e4a36);
-export const RALLY_MUD_DECAL_LIGHT_LINEAR = mudLinearFromHex(0x7a5f38);
+export const RALLY_MUD_DECAL_DARK_LINEAR = mudLinearFromHex(MUD_WET_SRGB);
+export const RALLY_MUD_DECAL_LIGHT_LINEAR = mudLinearFromHex(MUD_DRY_SRGB);

@@ -4,6 +4,8 @@ import { RallyModeController } from './RallyModeController.js';
 import { RangeModeController } from './RangeModeController.js';
 import { HordeModeController } from './HordeModeController.js';
 import { DeathmatchModeController } from './DeathmatchModeController.js';
+import { SimsModeController } from './SimsModeController.js';
+import { DogParkModeController } from './DogParkModeController.js';
 
 /**
  * Select exactly one mode policy controller at startup.
@@ -25,6 +27,10 @@ export function createModeController(levelMode, host) {
       return new HordeModeController(host);
     case 'deathmatch':
       return new DeathmatchModeController(host);
+    case 'sims':
+      return new SimsModeController(host);
+    case 'dog-park':
+      return new DogParkModeController(host);
     case 'world':
     case 'wilds':
     case 'city':
