@@ -1,15 +1,6 @@
 import * as THREE from 'three';
 import { createBaseLevel } from '../world/createBaseLevel.js';
-import { createStreamingTerrainLevel } from '../world/createStreamingTerrainLevel.js';
-import { createComposedWorldLevel } from '../world/createComposedWorldLevel.js';
-import { createWildsLevel } from '../world/createWildsLevel.js';
-import { createShootingRangeLevel } from '../world/createShootingRangeLevel.js';
-import { createHordeModeLevel } from '../world/createHordeModeLevel.js';
-import { createDeathmatchArenaLevel } from '../world/createDeathmatchArenaLevel.js';
-import { createMatrixHighwayLevel } from '../world/createMatrixHighwayLevel.js';
-import { createSimLotLevel } from '../world/createSimLotLevel.js';
 import { createDogParkLevel } from '../world/createDogParkLevel.js';
-import { getActiveWorldMap, getRallyWorldMap } from '../../world/worldMap/worldMapScenes.js';
 
 const ledgeNormal = new THREE.Vector3();
 const ledgeTangent = new THREE.Vector3();
@@ -102,26 +93,37 @@ export class LevelSystem {
     this.status = 'loading';
     this.mode = ['world', 'wilds', 'rally', 'range', 'horde', 'highway', 'deathmatch', 'sims', 'dog-park'].includes(mode) ? mode : 'city';
     if (this.mode === 'wilds') {
+      const { createWildsLevel } = await import('../world/createWildsLevel.js');
       this.level = createWildsLevel(qualityPreset);
     } else if (this.mode === 'range') {
+      const { createShootingRangeLevel } = await import('../world/createShootingRangeLevel.js');
       this.level = createShootingRangeLevel(qualityPreset);
     } else if (this.mode === 'horde') {
+      const { createHordeModeLevel } = await import('../world/createHordeModeLevel.js');
       this.level = createHordeModeLevel(qualityPreset);
     } else if (this.mode === 'deathmatch') {
+      const { createDeathmatchArenaLevel } = await import('../world/createDeathmatchArenaLevel.js');
       this.level = createDeathmatchArenaLevel(qualityPreset);
     } else if (this.mode === 'highway') {
+      const { createMatrixHighwayLevel } = await import('../world/createMatrixHighwayLevel.js');
       this.level = createMatrixHighwayLevel(qualityPreset);
     } else if (this.mode === 'sims') {
+      const { createSimLotLevel } = await import('../world/createSimLotLevel.js');
       this.level = createSimLotLevel(qualityPreset);
     } else if (this.mode === 'dog-park') {
       this.level = createDogParkLevel(qualityPreset, { renderer });
     } else if (this.mode === 'world' || this.mode === 'rally') {
+      const { getActiveWorldMap, getRallyWorldMap } = await import('../../world/worldMap/worldMapScenes.js');
       const worldMap = this.mode === 'rally' ? await getRallyWorldMap() : await getActiveWorldMap();
       const hasCity = (worldMap?.zones ?? []).some((zone) => zone.type === 'city');
       // Only spin up the city workers when the map actually has a city zone.
-      this.level = hasCity
-        ? createComposedWorldLevel(qualityPreset, { worldMap, levelMode: this.mode, renderer })
-        : createStreamingTerrainLevel(qualityPreset, { worldMap, levelMode: this.mode, renderer });
+      if (hasCity) {
+        const { createComposedWorldLevel } = await import('../world/createComposedWorldLevel.js');
+        this.level = createComposedWorldLevel(qualityPreset, { worldMap, levelMode: this.mode, renderer });
+      } else {
+        const { createStreamingTerrainLevel } = await import('../world/createStreamingTerrainLevel.js');
+        this.level = createStreamingTerrainLevel(qualityPreset, { worldMap, levelMode: this.mode, renderer });
+      }
     } else {
       this.level = createBaseLevel(qualityPreset);
     }

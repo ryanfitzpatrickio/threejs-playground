@@ -264,8 +264,9 @@ export function resolveSimOutfitAsset(id, body, options = {}) {
   };
 }
 
-// Kick off manifest fetch early in the browser.
-if (typeof window !== 'undefined') {
+// Kick off manifest fetch early in the full playground. Standalone products
+// that import the dormant Sim runtime keep this catalog network-inert.
+if (typeof window !== 'undefined' && globalThis.__DREAMFALL_PRODUCT__ !== 'dog-park') {
   loadSimOutfitImportManifest();
   loadSimOutfitPromotedManifest();
 }

@@ -1,10 +1,13 @@
+import * as THREE from 'three';
 import { createProceduralDog } from '../../../characters/dog/createProceduralDog.js';
-import { normalizeRenderableDogBreedId } from '../../../characters/dog/dogCatalog.js';
+import { normalizeDogBreedId } from '../../../characters/dog/dogCatalog.js';
+import { plantDogFeet } from '../../../characters/dog/dogFootPlant.js';
 import { DogPlayerController } from '../../../characters/dog/DogPlayerController.js';
-import { DogClipPlayer } from '../../../characters/dog/DogClipPlayer.js';
+import { DogClipPlayer, animalUsesDogClipLibrary } from '../../../characters/dog/DogClipPlayer.js';
 import { DogMudContactHelper } from '../../../characters/dog/DogMudContactHelper.js';
 import { DogCameraSystem } from '../../../systems/DogCameraSystem.js';
 import { DogMudCoatController } from './DogMudCoatController.js';
+import { DogParkNpcSystem } from './DogParkNpcSystem.js';
 
 const CONFIG_EVENT = 'dreamfall:dog-park-config';
 
@@ -24,6 +27,7 @@ export class DogParkRuntimeFeature {
     this.clipPlayer = null;
     this.mudContact = null;
     this.mudCoat = null;
+    this.npcSystem = null;
     this.camera = new DogCameraSystem();
     this.config = readDogConfig();
     this._onConfig = (event) => this.applyConfig(event.detail ?? {});
@@ -34,7 +38,23 @@ export class DogParkRuntimeFeature {
     this.host.inputSystem.setPointerLockEnabled(false);
     this.parkMainPlayer();
     this.spawnDog(this.config);
+    this.spawnNpcDogs();
     globalThis.addEventListener?.(CONFIG_EVENT, this._onConfig);
+  }
+
+  spawnNpcDogs() {
+    const level = this.host.levelSystem?.level;
+    if (!level?.parkBounds) return;
+    this.npcSystem?.dispose();
+    this.npcSystem = new DogParkNpcSystem({
+      scene: this.host.sceneSystem.scene,
+      levelSystem: this.host.levelSystem,
+      mudField: level.mudField,
+      mudPatches: level.mudPatches ?? [],
+      bounds: level.parkBounds,
+      spawnPoint: level.dogSpawnPoint,
+      getCamera: () => this.host.cameraSystem?.camera ?? null,
+    });
   }
 
   spawnDog(config, { preservePose = false } = {}) {
@@ -46,9 +66,12 @@ export class DogParkRuntimeFeature {
     this.dog?.dispose?.();
 
     const mouthState = normalizeMouthState(config.mouthState);
+    // Catalog id (incl. feline stubs); silhouette fallback is inside resolveDogPhenotype.
+    const breedId = normalizeDogBreedId(config.breedId);
     const dog = createProceduralDog({
-      breedId: normalizeRenderableDogBreedId(config.breedId),
+      breedId,
       seed: Number.isFinite(Number(config.seed)) ? Number(config.seed) : 1,
+      variantId: config.variantId,
       shellCount: Number.isFinite(Number(config.shellCount)) ? Number(config.shellCount) : undefined,
     });
     dog.setNakedBody(Boolean(config.naked));
@@ -61,7 +84,10 @@ export class DogParkRuntimeFeature {
 
     this.dog = dog;
     this.clipPlayer = null;
-    if (dogClipModeEnabled()) {
+    // Shared dog-bone retarget library (Walk/Run/Sit/Idle) for canids, felines,
+    // and procyonids. Procedural gait is the fallback when clips are disabled
+    // (`?dogAnims=procedural`) or the library fails to load.
+    if (animalUsesDogClipLibrary(dog)) {
       this.clipPlayer = new DogClipPlayer(dog);
       void this.clipPlayer.initialize();
     }
@@ -230,6 +256,7 @@ export class DogParkRuntimeFeature {
     if (this.host.cameraSystem?.photoMode && !this.host.cameraSystem?.photoModeLive) {
       return;
     }
+    this.npcSystem?.update(delta);
     const input = this.frameInput ?? {};
     const photoMode = Boolean(this.host.cameraSystem?.photoMode);
     // Z (draw/sheathe on foot) → playful puddle splash (Death → hold → Idle).
@@ -238,16 +265,41 @@ export class DogParkRuntimeFeature {
     }
     const clipBusy = Boolean(this.clipPlayer?.isBusy?.());
     const actionLocked = clipBusy || photoMode;
-    // While a clip one-shot owns the body, procedural pose must not reset bones
-    // (that was wiping the held Death final frame every tick).
-    this.dog.animation?.setClipDriven?.(clipBusy);
-    this.controller.update(delta, { ...input, actionLocked });
+    // Retargeted skeleton clips own body TRS whenever the library is ready —
+    // not only during one-shots. Procedural gait must not fight the mixer.
+    this.dog.animation?.setClipDriven?.(Boolean(this.clipPlayer?.ready));
+    this.controller.update(delta, {
+      ...input,
+      actionLocked,
+      deferFootPlant: Boolean(this.clipPlayer?.ready),
+    });
     // The controller owns the jump arc; fire the (rotation-only) clip in sync.
     if (!actionLocked) {
       if (this.controller.jumpStartedThisFrame) this.clipPlayer?.playOneShot?.('Jump');
       else if (input.mountPressed) this.clipPlayer?.playOneShot?.('Bark');
     }
     this.clipPlayer?.update?.(delta, this.dog.animation.getBehavior());
+    // Pant/alert jaw + ears after mixer (body stays clip-driven).
+    if (this.clipPlayer?.ready) {
+      this.dog.animation?.applyPostClipOverlays?.();
+    }
+    // Clips overwrite procedural bones — re-plant pads after mixer when grounded.
+    if (!clipBusy && this.controller?.jumpPhase === 'none') {
+      const pos = this.dog.root.position;
+      const radius = this.controller.radius ?? 0.34;
+      const probe = new THREE.Vector3();
+      plantDogFeet(this.dog, {
+        getGroundHeight: (x, z) => {
+          probe.set(x, pos.y, z);
+          const y = this.host.levelSystem?.getGroundHeightAt?.(probe, radius * 0.45, {
+            maxStepUp: 0.48,
+            maxSnapDown: 1.2,
+            requiredInset: Math.min(radius * 0.25, 0.1),
+          });
+          return Number.isFinite(y) ? y : pos.y;
+        },
+      });
+    }
     const yaw = this.dog.animation.getRootYaw();
     const headingX = Math.sin(yaw);
     const headingZ = Math.cos(yaw);
@@ -314,6 +366,7 @@ export class DogParkRuntimeFeature {
       mud: this.host.levelSystem?.level?.snapshot?.()?.mud ?? null,
       mudCoat: this.mudCoat?.snapshot?.() ?? null,
       camera: this.camera.snapshot(),
+      npc: this.npcSystem?.snapshot?.() ?? null,
     };
   }
 
@@ -328,20 +381,19 @@ export class DogParkRuntimeFeature {
     this.clipPlayer = null;
     this.dog?.dispose?.();
     this.dog = null;
+    this.npcSystem?.dispose?.();
+    this.npcSystem = null;
   }
-}
-
-function dogClipModeEnabled() {
-  const params = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
-  return params.get('dogAnims') !== 'procedural';
 }
 
 function readDogConfig() {
   const params = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
   return {
-    breedId: normalizeRenderableDogBreedId(params.get('breed') ?? 'golden-retriever'),
+    breedId: normalizeDogBreedId(params.get('breed') ?? 'golden-retriever'),
+    variantId: params.get('variant') ?? params.get('dogVariant') ?? undefined,
     seed: Number(params.get('dogSeed') ?? params.get('seed') ?? 1) || 1,
-    shellCount: Number(params.get('dogShells') ?? 18) || 18,
+    // Default 12 shells — 18+ looks richer but multiplies transparent skinned draws.
+    shellCount: Number(params.get('dogShells') ?? 12) || 12,
     mouthState: normalizeMouthState(params.get('dogMouth') ?? params.get('mouth') ?? 'closed'),
     naked: params.get('dogNaked') === '1',
     showFur: params.get('dogFur') !== '0',

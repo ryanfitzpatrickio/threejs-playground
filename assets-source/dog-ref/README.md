@@ -9,7 +9,7 @@ Retriever references. Quadrants must be, in reading order:
 3. front sit
 4. head close-up
 
-The board should show one consistent adult dog with neutral studio lighting,
+The board should show one consistent adult animal with neutral studio lighting,
 natural conformation, no collar, no text, and no props. Run
 `npm run prepare:dog-ref` to create optimized scene JPEGs. Generated output is
 written to `public/assets/dog-ref/<breed-id>/`.

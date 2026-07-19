@@ -155,6 +155,8 @@ export function createGeneratorCityLevel({
   seed = CITY_SEED,
   cityStyle = 'downtown',
   cityZone = null,
+  /** World-space rect to keep empty (e.g. a park lot carved out of one city block). */
+  clearRect = null,
   chunkKey = '0:0',
   chunkX = 0,
   chunkZ = 0,
@@ -179,16 +181,25 @@ export function createGeneratorCityLevel({
   const floorD = city.layout.cityD + city.layout.street;
   const roadVisualW = city.layout.cityW + 2 * city.layout.street;
   const roadVisualD = city.layout.cityD + 2 * city.layout.street;
+  const roadOuter = {
+    minX: originX - roadVisualW / 2,
+    maxX: originX + roadVisualW / 2,
+    minZ: originZ - roadVisualD / 2,
+    maxZ: originZ + roadVisualD / 2,
+  };
   // The road markings are world-space procedural (createRoadMaterial reads
   // positionWorld), so clipping the plane to the zone can't misalign them.
-  const roadCells = cityZone
-    ? clippedSurfaceCells(cityZone, {
-        minX: originX - roadVisualW / 2, maxX: originX + roadVisualW / 2,
-        minZ: originZ - roadVisualD / 2, maxZ: originZ + roadVisualD / 2,
-      }).map((cell) => new THREE.PlaneGeometry(cell.maxX - cell.minX, cell.maxZ - cell.minZ)
-        .rotateX(-Math.PI / 2)
-        .translate((cell.minX + cell.maxX) / 2, 0, (cell.minZ + cell.maxZ) / 2))
-    : [new THREE.PlaneGeometry(roadVisualW, roadVisualD).rotateX(-Math.PI / 2).translate(originX, 0, originZ)];
+  let roadCellRects;
+  if (cityZone) {
+    roadCellRects = clippedSurfaceCells(cityZone, roadOuter);
+  } else if (clearRect) {
+    roadCellRects = subtractRectFromRect(roadOuter, clearRect);
+  } else {
+    roadCellRects = [roadOuter];
+  }
+  const roadCells = roadCellRects.map((cell) => new THREE.PlaneGeometry(cell.maxX - cell.minX, cell.maxZ - cell.minZ)
+    .rotateX(-Math.PI / 2)
+    .translate((cell.minX + cell.maxX) / 2, 0, (cell.minZ + cell.maxZ) / 2));
   const roadGeometry = roadCells.length ? mergeGeometries(roadCells, false) : null;
   if (roadGeometry) {
     const road = new THREE.Mesh(roadGeometry, getRoadMaterial(city.layout));
@@ -208,13 +219,32 @@ export function createGeneratorCityLevel({
   // leaves unnamed. Name them so the worker -> payload -> rebuild path can restore the
   // per-block placements and route the correct procedural material to each.
   tagSidewalkMeshes(cityGroup);
-  if (cityZone) {
+  if (cityZone && !clearRect) {
     // V1 clipping policy from the sync plan: omit furniture for clipped chunks.
     // Placement generation already completed, so this cannot perturb tower PRNG.
+    // clearRect carve-outs keep furniture and filter instances below.
     cityGroup.getObjectByName('StreetFurniture')?.removeFromParent();
     city.furniturePlacements.cars = [];
   } else {
     tagFurnitureMeshes(cityGroup, castShadows);
+    if (clearRect) {
+      filterFurnitureOutsideClearRect(cityGroup, clearRect, originX, originZ);
+      // Drop cars whose body AABB still clips the clear lot (not just center point).
+      city.furniturePlacements.cars = (city.furniturePlacements.cars ?? []).filter((car) => {
+        const e = car.matrix.elements;
+        const alongZ = Math.abs(e[10]) > Math.abs(e[8]);
+        const width = alongZ ? 2.05 : 4.75;
+        const depth = alongZ ? 4.75 : 2.05;
+        const x = originX + e[12];
+        const z = originZ + e[14];
+        return !rectsOverlap(clearRect, {
+          minX: x - width / 2,
+          maxX: x + width / 2,
+          minZ: z - depth / 2,
+          maxZ: z + depth / 2,
+        });
+      });
+    }
   }
 
   const layoutData = buildCollisionLayout(city.layout, seed, city.parameters, {
@@ -237,22 +267,41 @@ export function createGeneratorCityLevel({
       allBuildingMeshes[index]?.removeFromParent();
       return;
     }
+    if (clearRect && rectsOverlap(building.collider, clearRect)) {
+      allBuildingMeshes[index]?.removeFromParent();
+      return;
+    }
     keptBuildings.push(building);
     buildingMeshes.push(allBuildingMeshes[index]);
   });
-  const sidewalkKeep = layoutData.sidewalks.map((sidewalk) => shouldKeepSidewalk(cityZone, sidewalk.collider, chunkX, chunkZ));
+  const sidewalkKeep = layoutData.sidewalks.map((sidewalk) => {
+    if (!shouldKeepSidewalk(cityZone, sidewalk.collider, chunkX, chunkZ)) return false;
+    if (clearRect && rectsOverlap(sidewalk.collider, clearRect)) return false;
+    return true;
+  });
   const keptSidewalks = layoutData.sidewalks.filter((_, index) => sidewalkKeep[index]);
   // Slab/curb instances were placed one per block in the same (bx,bz) order
   // as layoutData.sidewalks — compact them down to owned, in-zone blocks.
   filterSidewalkInstances(cityGroup, sidewalkKeep);
   for (const mesh of buildingMeshes) mesh.userData.materialRole = 'buildingMaterial';
+  const roadColliders = clearRect
+    ? subtractRectFromRect(roadOuter, clearRect).map((cell, index) => ({
+      name: `Generator City Road Collider ${chunkKey}-${index}`,
+      minX: cell.minX,
+      maxX: cell.maxX,
+      minZ: cell.minZ,
+      maxZ: cell.maxZ,
+      topY: 0,
+      bottomY: -CITY_ROAD_COLLIDER_THICKNESS,
+      width: cell.maxX - cell.minX,
+      depth: cell.maxZ - cell.minZ,
+      vaultable: false,
+      surface: 'asphalt',
+      chunkKey,
+    }))
+    : createRoadSurfaceColliders(cityZone, roadOuter, chunkKey, 'Generator City Road Collider');
   const colliders = [
-    ...createRoadSurfaceColliders(cityZone, {
-      minX: originX - roadVisualW * 0.5,
-      maxX: originX + roadVisualW * 0.5,
-      minZ: originZ - roadVisualD * 0.5,
-      maxZ: originZ + roadVisualD * 0.5,
-    }, chunkKey, 'Generator City Road Collider'),
+    ...roadColliders,
     ...keptSidewalks.map((sidewalk) => sidewalk.collider),
     ...buildCarColliders(city.furniturePlacements.cars, { originX, originZ, chunkKey }),
   ];
@@ -1172,6 +1221,84 @@ function pointInsideZone(zone, x, z) {
     if (((a.z > z) !== (b.z > z)) && x < ((b.x - a.x) * (z - a.z)) / (b.z - a.z) + a.x) inside = !inside;
   }
   return inside;
+}
+
+function pointInsideRect(rect, x, z) {
+  return x >= rect.minX && x <= rect.maxX && z >= rect.minZ && z <= rect.maxZ;
+}
+
+function rectsOverlap(a, b) {
+  return a.minX < b.maxX && a.maxX > b.minX && a.minZ < b.maxZ && a.maxZ > b.minZ;
+}
+
+/** Decompose `outer \ hole` into axis-aligned strips (up to 4). */
+function subtractRectFromRect(outer, hole) {
+  if (!hole || !rectsOverlap(outer, hole)) return [outer];
+  const clip = {
+    minX: Math.max(outer.minX, hole.minX),
+    maxX: Math.min(outer.maxX, hole.maxX),
+    minZ: Math.max(outer.minZ, hole.minZ),
+    maxZ: Math.min(outer.maxZ, hole.maxZ),
+  };
+  if (!(clip.maxX > clip.minX && clip.maxZ > clip.minZ)) return [outer];
+  const cells = [];
+  // North strip
+  if (clip.minZ > outer.minZ) {
+    cells.push({ minX: outer.minX, maxX: outer.maxX, minZ: outer.minZ, maxZ: clip.minZ });
+  }
+  // South strip
+  if (clip.maxZ < outer.maxZ) {
+    cells.push({ minX: outer.minX, maxX: outer.maxX, minZ: clip.maxZ, maxZ: outer.maxZ });
+  }
+  // West strip (between north/south clip band)
+  if (clip.minX > outer.minX) {
+    cells.push({ minX: outer.minX, maxX: clip.minX, minZ: clip.minZ, maxZ: clip.maxZ });
+  }
+  // East strip
+  if (clip.maxX < outer.maxX) {
+    cells.push({ minX: clip.maxX, maxX: outer.maxX, minZ: clip.minZ, maxZ: clip.maxZ });
+  }
+  return cells.filter((cell) => cell.maxX > cell.minX && cell.maxZ > cell.minZ);
+}
+
+const _furnitureInstanceMatrix = new THREE.Matrix4();
+const _furnitureInstancePos = new THREE.Vector3();
+
+/**
+ * Drop street-furniture instances whose world XZ sits inside clearRect.
+ * cityGroup is already positioned at (originX, 0, originZ).
+ * Inflate the clear rect slightly so large props (cars/trees) don't hang into the lot.
+ */
+function filterFurnitureOutsideClearRect(cityGroup, clearRect, originX, originZ) {
+  const furniture = cityGroup.getObjectByName('StreetFurniture');
+  if (!furniture) return;
+  const pad = 3.5;
+  const inflated = {
+    minX: clearRect.minX - pad,
+    maxX: clearRect.maxX + pad,
+    minZ: clearRect.minZ - pad,
+    maxZ: clearRect.maxZ + pad,
+  };
+  furniture.traverse((mesh) => {
+    if (!mesh.isInstancedMesh || mesh.count <= 0) return;
+    let write = 0;
+    for (let read = 0; read < mesh.count; read += 1) {
+      mesh.getMatrixAt(read, _furnitureInstanceMatrix);
+      _furnitureInstancePos.setFromMatrixPosition(_furnitureInstanceMatrix);
+      const wx = originX + _furnitureInstancePos.x;
+      const wz = originZ + _furnitureInstancePos.z;
+      if (pointInsideRect(inflated, wx, wz)) continue;
+      if (write !== read) mesh.setMatrixAt(write, _furnitureInstanceMatrix);
+      write += 1;
+    }
+    if (write === 0) {
+      mesh.removeFromParent();
+      return;
+    }
+    mesh.count = write;
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.computeBoundingSphere?.();
+  });
 }
 
 const districtMaterialCache = new Map();

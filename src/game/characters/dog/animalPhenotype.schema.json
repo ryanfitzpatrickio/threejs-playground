@@ -1,0 +1,291 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "dreamfall-animal-phenotype-v1",
+  "title": "Dreamfall AnimalPhenotype (Recipe | Refusal)",
+  "description": "Grok-constrained animal compiler payload. Parameters only — never JS or geometry.",
+  "oneOf": [
+    { "$ref": "#/$defs/AnimalRecipe" },
+    { "$ref": "#/$defs/AnimalRefusal" }
+  ],
+  "$defs": {
+    "hexColor": {
+      "type": "string",
+      "pattern": "^#?[0-9A-Fa-f]{6}$"
+    },
+    "optionalHexColor": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/hexColor" }
+      ]
+    },
+    "AnimalRefusal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["refuse", "error"],
+      "properties": {
+        "refuse": { "const": true },
+        "error": { "type": "string", "minLength": 1, "maxLength": 400 },
+        "suggestion": { "type": "string", "maxLength": 400 }
+      }
+    },
+    "AnimalRecipe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["template", "name", "skeleton", "ears", "tail", "coat"],
+      "properties": {
+        "schemaVersion": { "type": "integer", "const": 1 },
+        "template": {
+          "type": "string",
+          "enum": ["canid", "feline", "procyonid", "ursid", "mustelid", "caprine", "generic-quad"]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 48,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        },
+        "label": { "type": "string", "maxLength": 64 },
+        "familyId": { "type": "string", "maxLength": 48 },
+        "baseBreedId": { "type": "string", "maxLength": 48 },
+        "seed": { "type": "integer", "minimum": 0 },
+        "notes": { "type": "string", "maxLength": 500 },
+        "skeleton": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "scale": { "type": "number" },
+            "bodyLength": { "type": "number" },
+            "legLength": { "type": "number" },
+            "frontLegScale": { "type": "number" },
+            "chestWidth": { "type": "number" },
+            "hipWidth": { "type": "number" },
+            "neckLength": { "type": "number" },
+            "headSize": { "type": "number" },
+            "muzzleLength": { "type": "number" },
+            "tailLength": { "type": "number" }
+          }
+        },
+        "geometry": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "torsoWidth": { "type": "number" },
+            "torsoDepth": { "type": "number" },
+            "neckWidth": { "type": "number" },
+            "skullWidth": { "type": "number" },
+            "skullHeight": { "type": "number" },
+            "skullLength": { "type": "number" },
+            "muzzleWidth": { "type": "number" },
+            "muzzleHeight": { "type": "number" },
+            "legThickness": { "type": "number" },
+            "hindLegThickness": { "type": "number" },
+            "pawSize": { "type": "number" },
+            "cheekFullness": { "type": "number" },
+            "backArch": { "type": "number" },
+            "frontTaper": { "type": "number" },
+            "hump": { "type": "number" },
+            "headShape": {
+              "type": "string",
+              "enum": ["canid", "caviid", "suid", "hydrochoerine"]
+            }
+          }
+        },
+        "ears": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["floppy", "erect", "folded", "bat", "rounded"]
+            },
+            "fold": {
+              "type": "string",
+              "enum": ["drop", "rose", "semi-prick", "button"]
+            },
+            "length": { "type": "number" },
+            "width": { "type": "number" },
+            "dynamics": { "type": "number" }
+          }
+        },
+        "tail": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["plume", "straight", "saber", "upright", "curled", "sickle", "sciurid", "paddle"]
+            },
+            "thickness": { "type": "number" },
+            "curl": { "type": "number" },
+            "motion": { "type": "number" },
+            "taper": { "type": "number" }
+          }
+        },
+        "face": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "eyeScale": { "type": "number" },
+            "eyeSpacing": { "type": "number" },
+            "eyeHeight": { "type": "number" },
+            "eyeForward": { "type": "number" },
+            "noseScale": { "type": "number" },
+            "brow": { "type": "number" },
+            "eyeStyle": {
+              "type": "string",
+              "enum": ["canid", "feline", "caprine"]
+            },
+            "pupilAspect": { "type": "number" },
+            "scleraAmount": { "type": "number" },
+            "lidOpacity": { "type": "number" },
+            "lidScale": { "type": "number" },
+            "hideTeeth": { "type": "boolean" },
+            "irisColor": { "$ref": "#/$defs/hexColor" },
+            "irisColorL": { "$ref": "#/$defs/optionalHexColor" },
+            "irisColorR": { "$ref": "#/$defs/optionalHexColor" },
+            "lidColor": { "$ref": "#/$defs/hexColor" },
+            "lidDarkColor": { "$ref": "#/$defs/hexColor" },
+            "noseColor": { "$ref": "#/$defs/hexColor" },
+            "noseBlendColor": { "$ref": "#/$defs/hexColor" }
+          }
+        },
+        "coat": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["pattern"],
+          "properties": {
+            "length": { "type": "number" },
+            "body": { "type": "number" },
+            "head": { "type": "number" },
+            "muzzle": { "type": "number" },
+            "ears": { "type": "number" },
+            "legs": { "type": "number" },
+            "paws": { "type": "number" },
+            "tail": { "type": "number" },
+            "fiber": {
+              "type": "string",
+              "enum": ["soft", "double", "coarse-guard"]
+            },
+            "grooming": {
+              "type": "string",
+              "enum": [
+                "smooth",
+                "smooth-double",
+                "short",
+                "short-double",
+                "double",
+                "medium-double",
+                "long-double",
+                "dense-double",
+                "stand-off-double",
+                "feathered",
+                "silky",
+                "curly",
+                "wire",
+                "grizzled",
+                "coarse"
+              ]
+            },
+            "pattern": {
+              "type": "string",
+              "description": "Supported pattern or free-form alias resolved by clamp"
+            },
+            "palette": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "undercoat": { "$ref": "#/$defs/hexColor" },
+                "guard": { "$ref": "#/$defs/hexColor" },
+                "root": { "$ref": "#/$defs/hexColor" },
+                "tip": { "$ref": "#/$defs/hexColor" }
+              }
+            },
+            "gravityDroop": { "type": "number" },
+            "density": { "type": "number" }
+          }
+        },
+        "furnishings": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "brows": { "type": "number" },
+            "beard": { "type": "number" },
+            "mustache": { "type": "number" },
+            "neckSkirt": { "type": "number" },
+            "ruff": { "type": "number" },
+            "mane": { "type": "number" },
+            "topknot": { "type": "number" },
+            "anklePuffs": { "type": "number" },
+            "tailPom": { "type": "number" },
+            "dorsalCrest": { "type": "number" },
+            "quills": { "type": "number" }
+          }
+        },
+        "extremities": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "foot": {
+              "type": "string",
+              "enum": ["paw", "rodent-paw", "cloven-hoof", "solid-hoof", "webbed-paw"]
+            },
+            "hoofSize": { "type": "number" },
+            "dewclaw": { "type": "number" },
+            "bareBelow": { "type": "number" }
+          }
+        },
+        "headgear": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["none", "horn-caprine", "horn-bovid", "antler-simple", "antler-rack", "tusk-boar"]
+            },
+            "length": { "type": "number" },
+            "curl": { "type": "number" },
+            "spread": { "type": "number" },
+            "thickness": { "type": "number" },
+            "color": { "$ref": "#/$defs/hexColor" },
+            "tipColor": { "$ref": "#/$defs/hexColor" }
+          }
+        },
+        "motion": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "stride": { "type": "number" },
+            "speed": { "type": "number" },
+            "sitDepth": { "type": "number" },
+            "earDynamics": { "type": "number" },
+            "tailMotion": { "type": "number" }
+          }
+        },
+        "personality": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "energy": { "type": "number" },
+            "trainability": { "type": "number" },
+            "sociability": { "type": "number" },
+            "vigilance": { "type": "number" }
+          }
+        },
+        "variation": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "scale": { "type": "number" },
+            "build": { "type": "number" },
+            "coatShade": { "type": "number" },
+            "coatLength": { "type": "number" },
+            "energy": { "type": "number" },
+            "trainability": { "type": "number" }
+          }
+        }
+      }
+    }
+  }
+}

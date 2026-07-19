@@ -30,6 +30,10 @@ for (const entry of manifest.include || []) {
 for (const glob of manifest.includeGlobs || []) {
   assert.ok(!path.isAbsolute(glob.from), `includeGlobs.from must be repo-relative: ${glob.from}`);
   assert.ok(!glob.from.includes('..'), `includeGlobs.from must not escape repo root: ${glob.from}`);
+  if (glob.includeBasenames) {
+    assert.ok(Array.isArray(glob.includeBasenames) && glob.includeBasenames.length > 0,
+      `includeGlobs.includeBasenames must be a non-empty array: ${glob.from}`);
+  }
 }
 
 const { jobs, missingRequired } = resolveDogManifestCopyJobs(manifest, ROOT);
@@ -43,6 +47,31 @@ for (const glob of manifest.includeGlobs || []) {
   if (glob.optional) continue;
   const matched = jobs.filter((job) => job.sourceGlob === glob.from);
   assert.ok(matched.length >= 1, `includeGlobs "${glob.from}" expanded to zero files`);
+  for (const basename of glob.includeBasenames || []) {
+    assert.ok(
+      matched.some((job) => path.basename(job.from) === basename),
+      `includeGlobs "${glob.from}" did not contain required basename "${basename}"`,
+    );
+  }
+}
+
+// Clip packs required for product builds (dog + rodent + Quaternius farm).
+const clipGlobs = [
+  'public/assets/dog-anims/**',
+  'public/assets/rodent-anims/**',
+  'public/assets/equid-anims/**',
+  'public/assets/bovid-anims/**',
+];
+for (const from of clipGlobs) {
+  assert.ok(
+    (manifest.includeGlobs || []).some((g) => g.from === from),
+    `manifest missing clip allowlist glob ${from}`,
+  );
+  const matched = jobs.filter((job) => job.sourceGlob === from);
+  assert.ok(
+    matched.some((job) => path.basename(job.from) === 'manifest.json'),
+    `${from} must include manifest.json`,
+  );
 }
 
 console.log(`verify:dog-assets ok (phase=${manifest.phase}, ${jobs.length} allowlisted file(s))`);

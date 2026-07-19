@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "source": "/assets/models/rat-rigged.glb",
+  "pack": "Easy Animated Enemy Pack — Rat.fbx",
+  "retarget": "world-space-rotation-delta",
+  "reference": "Rat_Idle clip @ t=0",
+  "rootTranslationLocked": true,
+  "groundContactClips": [
+    "Idle",
+    "Walk",
+    "Run"
+  ],
+  "clips": [
+    {
+      "name": "Idle",
+      "file": "idle.json",
+      "duration": 2.4166667461395264,
+      "tracks": 29
+    },
+    {
+      "name": "Walk",
+      "file": "walk.json",
+      "duration": 1.375,
+      "tracks": 29
+    },
+    {
+      "name": "Run",
+      "file": "run.json",
+      "duration": 0.5416666865348816,
+      "tracks": 29
+    },
+    {
+      "name": "Jump",
+      "file": "jump.json",
+      "duration": 0.875,
+      "tracks": 28
+    },
+    {
+      "name": "Attack",
+      "file": "attack.json",
+      "duration": 0.7083333134651184,
+      "tracks": 28
+    },
+    {
+      "name": "Death",
+      "file": "death.json",
+      "duration": 1.125,
+      "tracks": 28
+    }
+  ]
+}

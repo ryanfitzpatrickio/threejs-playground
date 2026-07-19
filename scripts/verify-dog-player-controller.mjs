@@ -8,6 +8,7 @@ import { createMudDeformField } from '../src/game/world/mudDeformField.js';
 const root = new THREE.Group();
 root.position.set(0, 4, 0);
 const intent = { behavior: 'idle', direction: new THREE.Vector3(), external: false };
+let dogUpdateOptions = null;
 const dog = {
   root,
   phenotype: { skeleton: { scale: 1 }, motion: { speed: 1 } },
@@ -22,7 +23,7 @@ const dog = {
     getMoveSpeed: () => intent.behavior === 'trot' ? 3.9 : intent.behavior === 'walk' ? 1.85 : 0,
     getRootYaw: () => Math.PI,
   },
-  update() {},
+  update(_delta, options) { dogUpdateOptions = options; },
 };
 const camera = new THREE.PerspectiveCamera();
 camera.position.set(0, 3, 5);
@@ -36,7 +37,11 @@ const levelSystem = {
 const controller = new DogPlayerController({ dog, levelSystem, camera });
 assert.equal(intent.external, true, 'controller should own external root motion');
 
+controller.update(0, { deferFootPlant: true });
+assert.equal(dogUpdateOptions?.plantFeet, false, 'clip-driven pose must defer the procedural foot plant');
+
 controller.update(0.1, { moveZ: -1, moveX: 0, brace: false });
+assert.equal(dogUpdateOptions?.plantFeet, true, 'procedural-only pose should plant in the controller');
 assert.equal(intent.behavior, 'walk');
 assert.ok(root.position.z < -0.08, `forward input should move camera-forward, z=${root.position.z}`);
 assert.equal(root.position.y, 1.25, 'controller should snap world root to level ground');

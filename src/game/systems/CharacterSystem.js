@@ -18,6 +18,49 @@ export class CharacterSystem {
     this.character = null;
   }
 
+  /**
+   * Install the invisible, zero-network character required by the shared
+   * runtime pipeline while dog-park gives visible/player control to the dog.
+   * The fallback rig keeps AnimationStateSystem's procedural idle path valid;
+   * it contains transforms only and never creates renderable geometry.
+   */
+  installDogParkStub(scene) {
+    const group = new THREE.Group();
+    group.name = 'Dog Park Runtime Character Stub';
+    group.visible = false;
+
+    const rig = createDogParkStubRig();
+    group.add(rig.root);
+    scene.add(group);
+
+    this.character = {
+      source: 'dog-park-stub',
+      modelId: 'dog-park-stub',
+      group,
+      rig,
+      stamina: 1,
+      sway: 0,
+      speed: 0,
+      velocity: new THREE.Vector3(),
+      verticalVelocity: 0,
+      yaw: 0,
+      grounded: true,
+      health: GAME_CONFIG.character.maxHealth,
+      maxHealth: GAME_CONFIG.character.maxHealth,
+      invulnerable: true,
+      iframeTimer: 0,
+      pendingImpulse: new THREE.Vector3(),
+      hitReaction: null,
+      hitReactionTimer: 0,
+      lastHitTime: -Infinity,
+      hiddenForDogPark: true,
+      _lastDistrict: null,
+      _districtNotification: null,
+    };
+
+    return this.character;
+  }
+
   async loadMara(scene) {
     const model = await loadBestMaraModel();
     model.group.position.set(0, 0, 0);
@@ -393,6 +436,20 @@ export class CharacterSystem {
     this.character.group.removeFromParent();
     this.character = null;
   }
+}
+
+function createDogParkStubRig() {
+  const root = new THREE.Group();
+  const torso = new THREE.Group();
+  const head = new THREE.Group();
+  const leftArm = new THREE.Group();
+  const rightArm = new THREE.Group();
+  const leftLeg = new THREE.Group();
+  const rightLeg = new THREE.Group();
+  const hook = new THREE.Group();
+  root.add(torso, leftLeg, rightLeg, hook);
+  torso.add(head, leftArm, rightArm);
+  return { root, torso, head, leftArm, rightArm, leftLeg, rightLeg, hook };
 }
 
 async function loadBestMaraModel() {

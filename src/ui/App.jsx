@@ -8,7 +8,7 @@ import { HordeRobotViewerCanvas } from './components/HordeRobotViewerCanvas.jsx'
 import { SimHumanViewerCanvas } from './components/SimHumanViewerCanvas.jsx';
 import { PsxHouseholdViewerCanvas } from './components/PsxHouseholdViewerCanvas.jsx';
 import { DogSimCanvas } from './components/DogSimCanvas.jsx';
-import { DogParkHud } from './components/DogParkHud.jsx';
+import { DogParkHud, DogCustomizeIcon } from './components/DogParkHud.jsx';
 import { SimCreatorScene } from './components/SimCreatorScene.jsx';
 import { Minimap } from './components/Minimap.jsx';
 import { PhotoModeControls } from './components/PhotoModeControls.jsx';
@@ -163,6 +163,7 @@ export function App() {
   const [hudVisible, setHudVisible] = createSignal(true);
   const [showClothEditor, setShowClothEditor] = createSignal(false);
   const [showSettings, setShowSettings] = createSignal(false);
+  const [showDogParkMenu, setShowDogParkMenu] = createSignal(false);
   let gameRuntime = null;
   let controlsAutoOpened = false;
 
@@ -312,6 +313,12 @@ export function App() {
       || appPhase() === 'deathmatch_lobby',
   );
   const isPlaying = createMemo(() => isGame() && appPhase() === 'playing');
+  createEffect(() => {
+    // Drop the customize popup when leaving dog park or the HUD.
+    if (levelMode() !== 'dog-park' || !isPlaying() || !hudVisible()) {
+      setShowDogParkMenu(false);
+    }
+  });
   const showDeathmatchLobby = createMemo(
     () => isGame() && appPhase() === 'deathmatch_lobby',
   );
@@ -464,6 +471,11 @@ export function App() {
       setShowSettings(false);
       return;
     }
+    if (e.key === 'Escape' && showDogParkMenu()) {
+      e.preventDefault();
+      setShowDogParkMenu(false);
+      return;
+    }
     if (e.key === 'Escape' && gameSnapshot()?.camera?.photoMode && !hudVisible()) {
       e.preventDefault();
       setHudVisible(true);
@@ -507,6 +519,23 @@ export function App() {
       <Show when={(!gameSnapshot()?.camera?.photoMode || hudVisible()) && !isLoadBlocked()}>
       <div class="top-bar-switchers" style="position: absolute; top: 10px; right: 12px; z-index: 20; display: flex; gap: 6px; pointer-events: none;">
         <div class="top-bar-actions">
+          <Show when={isPlaying() && levelMode() === 'dog-park'}>
+            <button
+              type="button"
+              class="settings-btn dog-customize-btn"
+              classList={{ active: showDogParkMenu() }}
+              onClick={() => {
+                if (isLoadBlocked()) return;
+                setShowDogParkMenu((open) => !open);
+              }}
+              title="Customize dog"
+              aria-label="Customize dog"
+              aria-expanded={showDogParkMenu()}
+            >
+              <DogCustomizeIcon />
+              Customize
+            </button>
+          </Show>
           <button
             type="button"
             class="settings-btn"
@@ -637,12 +666,17 @@ export function App() {
               </>
             )}
           </Show>
-          {hudVisible() && isPlaying() && levelMode() !== 'dog-park' && <StatsPanel snapshot={gameSnapshot()} />}
+          {hudVisible() && isPlaying() && <StatsPanel snapshot={gameSnapshot()} />}
           {hudVisible() && isPlaying() && levelMode() !== 'dog-park' && <Hud snapshot={gameSnapshot()} />}
           <Show when={hudVisible() && isPlaying() && levelMode() === 'dog-park'}>
             <DogParkHud
               snapshot={gameSnapshot()?.dogPark}
-              onStudio={() => switchTo('dogSim')}
+              open={showDogParkMenu()}
+              onOpenChange={setShowDogParkMenu}
+              onStudio={() => {
+                setShowDogParkMenu(false);
+                switchTo('dogSim');
+              }}
             />
           </Show>
           <Show when={isPlaying() && showDeathmatchRoom()}>

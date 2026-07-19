@@ -15,8 +15,10 @@ import {
   earGroomAt,
   lengthAt,
   colorMaskAt,
+  packCoatMask,
   hairPartStrength,
 } from './dogCoatFields.js';
+import { buildCaviidPolyHead, buildSuidPolyHead } from './animalPolyHead.js';
 
 export { COAT_ZONE };
 
@@ -60,7 +62,7 @@ function stampPerVertex(geo, sample) {
     // Pack coat color + inner-pinna flag + anatomical zone in one scalar.
     // `coatZone` remains available to CPU/debug tools, while shaders decode it
     // here to stay below the WebGPU eight-active-buffer limit.
-    coatMask[i] = s.colorMask + (s.earInner ? 2 : 0) + s.zone * 4;
+    coatMask[i] = packCoatMask(s.colorMask, s.zone, !!s.earInner);
     groom[i * 3] = s.groom[0];
     groom[i * 3 + 1] = s.groom[1];
     groom[i * 3 + 2] = s.groom[2];
@@ -342,19 +344,38 @@ export function buildDogBodyGeometry(rig, phenotype = rig.phenotype ?? null) {
   const headScale = shape.headSize ?? 1;
   const torsoWidth = geom.torsoWidth ?? 1;
   const torsoDepth = geom.torsoDepth ?? 1;
+  const backArch = geom.backArch ?? 0;
+  const frontTaper = geom.frontTaper ?? 1;
   const neckWidth = geom.neckWidth ?? 1;
   const skullWidth = geom.skullWidth ?? 1;
   const skullHeight = geom.skullHeight ?? 1;
   const skullLength = geom.skullLength ?? 1;
+  const cheekFullness = geom.cheekFullness ?? 1;
   const muzzleWidth = geom.muzzleWidth ?? 1;
+  // Vertical depth of the muzzle loft (suid blocky snouts / poly head scales).
+  const muzzleHeight = geom.muzzleHeight ?? 1;
+  // Named head silhouettes:
+  //   canid     — sphere skull + soft muzzle loft + cheek spheres (default)
+  //   suid      — blocky rectangular loft (pig / warthog); was mis-used as capybara
+  //   caviid    — continuous polygonal head (capybara) via animalPolyHead.js
+  // 'hydrochoerine' kept as alias of 'suid' for older phenotypes.
+  const headShape = geom.headShape ?? 'canid';
+  const isCaviidPoly = headShape === 'caviid';
+  const isSuid = headShape === 'suid' || headShape === 'hydrochoerine';
+  const isHydrochoerine = isSuid; // legacy name used by the blocky loft path
   const legThickness = geom.legThickness ?? 1;
+  // Haunches default slightly bulkier than the front column (real quadruped
+  // read). Phenotypes may push further via hindLegThickness (felines).
+  const hindLegThickness = geom.hindLegThickness
+    ?? legThickness * 1.14;
   const pawSize = geom.pawSize ?? 1;
   const faceShape = phenotype?.face ?? {};
   const eyeX = 0.032 * headScale * (faceShape.eyeSpacing ?? 1);
   const eyeY = 0.016 * headScale * (faceShape.eyeHeight ?? 1);
-  const skullRx = 0.07 * headScale * 1.18 * skullWidth;
-  const skullRy = 0.07 * headScale * 0.97 * skullHeight;
-  const skullRz = 0.07 * headScale * 1.1 * skullLength;
+  // Match skullRx/Ry/Rz to the actual head mesh scales (canid / suid / caviid).
+  const skullRx = 0.07 * headScale * (isCaviidPoly ? 0.78 : isSuid ? 0.95 : 1.18) * skullWidth;
+  const skullRy = 0.07 * headScale * (isCaviidPoly ? 0.72 : isSuid ? 0.9 : 0.97) * skullHeight;
+  const skullRz = 0.07 * headScale * (isCaviidPoly ? 1.05 : isSuid ? 1.2 : 1.1) * skullLength;
   const eyeSurface = Math.sqrt(Math.max(
     0.08,
     1 - (eyeX / skullRx) ** 2 - ((eyeY - 0.008) / skullRy) ** 2,
@@ -377,10 +398,10 @@ export function buildDogBodyGeometry(rig, phenotype = rig.phenotype ?? null) {
 
     const stations = [
       { c: pelvis.clone().add(new THREE.Vector3(0, -0.01, -0.06)), rx: 0.095 * torsoWidth, ry: 0.105 * torsoDepth, bone: idx('Pelvis') },
-      { c: pelvis.clone().add(new THREE.Vector3(0, 0.018, 0.02)), rx: 0.12 * torsoWidth, ry: 0.128 * torsoDepth, bone: idx('Pelvis') },
-      { c: spine, rx: 0.128 * torsoWidth, ry: 0.138 * torsoDepth, bone: idx('Spine') },
-      { c: spine1, rx: 0.132 * torsoWidth, ry: 0.142 * torsoDepth, bone: idx('Spine1') },
-      { c: chest, rx: 0.13 * torsoWidth, ry: 0.14 * torsoDepth, bone: idx('Chest') },
+      { c: pelvis.clone().add(new THREE.Vector3(0, 0.018 + backArch * 0.35, 0.02)), rx: 0.12 * torsoWidth, ry: 0.128 * torsoDepth, bone: idx('Pelvis') },
+      { c: spine.clone().add(new THREE.Vector3(0, backArch * 0.72, 0)), rx: 0.128 * torsoWidth, ry: 0.138 * torsoDepth, bone: idx('Spine') },
+      { c: spine1.clone().add(new THREE.Vector3(0, backArch, 0)), rx: 0.132 * torsoWidth * THREE.MathUtils.lerp(1, frontTaper, 0.42), ry: 0.142 * torsoDepth * THREE.MathUtils.lerp(1, frontTaper, 0.35), bone: idx('Spine1') },
+      { c: chest.clone().add(new THREE.Vector3(0, backArch * 0.42, 0)), rx: 0.13 * torsoWidth * frontTaper, ry: 0.14 * torsoDepth * frontTaper, bone: idx('Chest') },
       // Thick neck ruff base
       { c: chest.clone().lerp(neck, 0.45), rx: 0.105 * neckWidth, ry: 0.11 * neckWidth, bone: idx('Chest') },
       { c: neck.clone().add(new THREE.Vector3(0, -0.008, -0.012)), rx: 0.082 * neckWidth, ry: 0.088 * neckWidth, bone: idx('Neck') },
@@ -414,111 +435,296 @@ export function buildDogBodyGeometry(rig, phenotype = rig.phenotype ?? null) {
     })));
   }
 
-  // ---- Head: broad golden skull + short muzzle (ref head-close) ----
+  // ---- Lion-mane collar (furnishings.mane, ruffed longhair cats) ----
+  // A dedicated flared loft around the neck: widest ring frames the face
+  // just behind the skull, tapering down over the shoulders into the chest
+  // (lion-mane taper) instead of just lengthening neck fur. Fur is stamped
+  // long over the collar and grooms radially outward with a downward bias so
+  // the shells read as a mane, not an Elizabethan cone.
+  const maneAmount = THREE.MathUtils.clamp(phenotype?.furnishings?.mane ?? 0, 0, 1);
+  if (maneAmount > 0.01) {
+    const chest = wp('Chest');
+    const neck = wp('Neck');
+    const head = wp('Head');
+    const flare = (f) => THREE.MathUtils.lerp(1, f, maneAmount);
+    const baseR = 0.095 * Math.max(neckWidth, 0.5);
+    const headR = 0.07 * headScale * Math.max(skullWidth, 0.6);
+    const stations = [
+      { c: chest.clone().add(new THREE.Vector3(0, -0.028, 0.035)), rx: baseR * flare(1.12), ry: baseR * flare(1.18), bone: idx('Chest') },
+      { c: chest.clone().lerp(neck, 0.55).add(new THREE.Vector3(0, 0.004, 0)), rx: baseR * flare(1.38), ry: baseR * flare(1.42), bone: idx('Chest') },
+      { c: neck.clone().add(new THREE.Vector3(0, 0.008, 0.004)), rx: baseR * flare(1.45), ry: baseR * flare(1.38), bone: idx('Neck') },
+      { c: neck.clone().lerp(head, 0.66), rx: headR * flare(1.45), ry: headR * flare(1.3), bone: idx('Head') },
+      { c: head.clone().add(new THREE.Vector3(0, 0.002, 0.012)), rx: headR * flare(1.36), ry: headR * flare(1.22), bone: idx('Head') },
+      // Snug closing ring hidden inside the skull so the end cap never shows.
+      { c: head.clone().add(new THREE.Vector3(0, 0.004, 0.03)), rx: headR * 0.72, ry: headR * 0.68, bone: idx('Head') },
+    ];
+    const axisA = stations[0].c.clone();
+    const axisB = stations[stations.length - 1].c.clone();
+    const axisDir = axisB.clone().sub(axisA).normalize();
+    parts.push(loftChain(stations, 32, (p, t) => {
+      // Taper: fullest framing the face (t≈0.8), fading into body coat at the
+      // chest end and pulling short at the closing ring so the face stays clear.
+      const frame = THREE.MathUtils.smoothstep(t, 0.15, 0.72);
+      const faceFade = 1 - THREE.MathUtils.smoothstep(t, 0.86, 1) * 0.75;
+      const onAxis = axisA.clone().addScaledVector(
+        axisDir,
+        THREE.MathUtils.clamp(p.clone().sub(axisA).dot(axisDir), 0, axisB.clone().sub(axisA).length()),
+      );
+      const out = p.clone().sub(onAxis);
+      if (out.lengthSq() < 1e-8) out.set(0, 0, -1);
+      out.normalize();
+      // Lion manes are fullest at the sides/chin and thin over the crown —
+      // without this the mane swallows the ears at full strength.
+      const crownThin = 1 - 0.45 * Math.max(out.y, 0) * THREE.MathUtils.smoothstep(t, 0.45, 0.85);
+      const len = (0.026 + 0.04 * frame) * faceFade * crownThin * (0.45 + 0.55 * maneAmount);
+      out.y -= 0.45;
+      out.z -= 0.15;
+      out.normalize();
+      return {
+        length: len,
+        colorMask: coatMask(COAT_ZONE.body, p),
+        groom: [out.x, out.y, out.z],
+        zone: COAT_ZONE.body,
+      };
+    }));
+  }
+
+  // ---- Dorsal hump (camel) ----
+  const humpAmt = THREE.MathUtils.clamp(phenotype?.geometry?.hump ?? 0, 0, 0.1);
+  if (humpAmt > 0.001) {
+    // Fat mass over the withers. A single peak reads dromedary; a large value
+    // splits into two lobes (bactrian / llama-wool read). Skinned across the
+    // Chest↔Spine1 seam so it rides the torso.
+    const chest = wp('Chest');
+    const spine1 = wp('Spine1');
+    const twoPeaks = humpAmt > 0.06;
+    const peaks = twoPeaks
+      ? [chest.clone().lerp(spine1, 0.2), chest.clone().lerp(spine1, 0.85)]
+      : [chest.clone().lerp(spine1, 0.5)];
+    for (const peak of peaks) {
+      const radius = humpAmt * 1.7 + 0.022;
+      const h = new THREE.SphereGeometry(radius, 22, 16);
+      h.scale(0.92, 0.85, 1.5); // elongated along the body, flatter on top
+      h.translate(peak.x, peak.y + humpAmt * 1.3 + 0.035, peak.z);
+      stampPerVertex(h, (_i, p) => ({
+        ...blendSkin(idx('Chest'), idx('Spine1'), 0.5),
+        length: coatLength(COAT_ZONE.body, p),
+        colorMask: coatMask(COAT_ZONE.body, p),
+        groom: bodyGroomAt(p),
+        zone: COAT_ZONE.body,
+      }));
+      parts.push(h);
+    }
+  }
+
+  // ---- Dorsal crest / stand-up mane (hyena, badger, warthog) ----
+  const dorsalAmt = THREE.MathUtils.clamp(phenotype?.furnishings?.dorsalCrest ?? 0, 0, 1.5);
+  if (dorsalAmt > 0.02) {
+    // Narrow raised ridge lofted along the spine (not a full neck ruff like the
+    // lion mane). Fur grooms up-and-back; length grows with crest strength.
+    const pelvis = wp('Pelvis');
+    const spine = wp('Spine');
+    const spine1 = wp('Spine1');
+    const chest = wp('Chest');
+    const neck = wp('Neck');
+    const w = 0.028 + dorsalAmt * 0.01;
+    const stations = [
+      { c: pelvis.clone().add(new THREE.Vector3(0, 0.042, 0)), rx: w * 0.8, ry: w * 0.5, bone: idx('Pelvis'), up: new THREE.Vector3(0, 1, 0) },
+      { c: spine.clone().add(new THREE.Vector3(0, 0.05, 0)), rx: w, ry: w * 0.5, bone: idx('Spine'), up: new THREE.Vector3(0, 1, 0) },
+      { c: spine1.clone().add(new THREE.Vector3(0, 0.058, 0)), rx: w * 1.05, ry: w * 0.5, bone: idx('Spine1'), up: new THREE.Vector3(0, 1, 0) },
+      { c: chest.clone().add(new THREE.Vector3(0, 0.058, 0)), rx: w * 0.95, ry: w * 0.5, bone: idx('Chest'), up: new THREE.Vector3(0, 1, 0) },
+      { c: chest.clone().lerp(neck, 0.5).add(new THREE.Vector3(0, 0.05, 0)), rx: w * 0.7, ry: w * 0.45, bone: idx('Neck'), up: new THREE.Vector3(0, 1, 0) },
+    ];
+    parts.push(loftChain(stations, 24, (p) => ({
+      length: 0.028 + 0.045 * dorsalAmt,
+      colorMask: coatMask(COAT_ZONE.body, p),
+      groom: [0, 1, -0.25], // stand up + lean back
+      zone: COAT_ZONE.body,
+    })));
+  }
+
+  // ---- Dorsal quill field (porcupine) ----
+  const quillAmt = THREE.MathUtils.clamp(phenotype?.furnishings?.quills ?? 0, 0, 1.5);
+  if (quillAmt > 0.02) {
+    // Layered cone quills over the back from withers to rump, densest toward the
+    // rump, fanned laterally and pointing up-and-back. Skinned to the nearest
+    // spine bone so they ride the torso. Pale shaft → dark tip per-vertex gives
+    // the banded porcupine-quill read without a second material.
+    const along = ['Chest', 'Spine1', 'Spine', 'Pelvis'];
+    const density = [0.45, 0.7, 0.95, 1.0];
+    const addQuill = (base, dir, len, radius, boneIdx) => {
+      const geo = new THREE.ConeGeometry(Math.max(0.001, radius), len, 5, 1);
+      geo.translate(0, len * 0.5, 0); // base at origin, apex at +len·Y
+      const m = new THREE.Matrix4();
+      m.compose(
+        base,
+        new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir),
+        new THREE.Vector3(1, 1, 1),
+      );
+      geo.applyMatrix4(m);
+      stampPerVertex(geo, (_i, p) => {
+        const alongTip = THREE.MathUtils.clamp(p.clone().sub(base).dot(dir) / len, 0, 1);
+        return {
+          ...monoSkin(boneIdx),
+          length: 0.001,
+          colorMask: THREE.MathUtils.lerp(0.18, 0.9, alongTip),
+          groom: [dir.x, dir.y, dir.z],
+          zone: COAT_ZONE.body,
+        };
+      });
+      parts.push(geo);
+    };
+    for (let r = 0; r < along.length; r += 1) {
+      const c = wp(along[r]);
+      const dens = density[r];
+      const bandRows = Math.max(1, Math.round(2 + quillAmt * 2 * dens));
+      const halfCols = Math.max(1, Math.round(1 + quillAmt * 2 * dens));
+      for (let i = 0; i < bandRows; i += 1) {
+        for (const side of [-1, 1]) {
+          for (let j = 0; j < halfCols; j += 1) {
+            const lateralFrac = (j + 0.6) / halfCols;
+            const lateral = side * lateralFrac * 0.045 * dens;
+            const forward = (i / Math.max(1, bandRows - 1) - 0.5) * 0.04;
+            const base = c.clone().add(new THREE.Vector3(lateral, 0.045 + j * 0.004, forward));
+            const dir = new THREE.Vector3(side * 0.35 * lateralFrac, 1, -0.55).normalize();
+            const len = (0.035 + 0.018 * ((i + j) % 2)) * (0.7 + quillAmt * 0.4);
+            addQuill(base, dir, len, 0.0032, idx(along[r]));
+          }
+        }
+      }
+    }
+  }
+
+  // ---- Head ----
+  // headShape 'caviid'  → flat-top rectangular poly head (capybara)
+  // headShape 'suid'    → curved-crown blocky poly head (pig / warthog)
+  // default 'canid'     → golden sphere skull + soft muzzle + cheek spheres
   {
     const head = headCenter.clone();
     const muzzle = wp('Muzzle');
     const nose = wp('NoseTip');
+    const muzzleLen = phenotype?.skeleton?.muzzleLength ?? 1;
+    const brachyFace = muzzleLen < 0.48 && !isSuid && !isCaviidPoly;
 
-    // Broad dome skull (wider than tall — golden proportions).
-    {
-      const skull = new THREE.SphereGeometry(0.07 * headScale, 48, 36);
-      skull.scale(1.18 * skullWidth, 0.97 * skullHeight, 1.1 * skullLength);
-      skull.translate(head.x, head.y + 0.008, head.z + 0.005);
-      stampPerVertex(skull, (_i, p) => {
-        let len = coatLength(COAT_ZONE.head, p);
-        const dx = Math.abs(p.x - headCenter.x);
-        const dy = p.y - headCenter.y;
-        const dz = p.z - headCenter.z;
-        // Short face plate with soft edges — hard cutoffs read as seams.
-        const front = THREE.MathUtils.smoothstep(dz, 0.015, 0.055)
-          * (1 - THREE.MathUtils.smoothstep(Math.abs(dy - 0.008), 0.03, 0.08));
-        len = Math.min(len, THREE.MathUtils.lerp(0.03, 0.004, front));
-        // Bare soft ovals follow the breed-scaled eye placement on the skull.
-        const eyeD = Math.hypot(dx - eyeX, (dy - eyeY) * 1.3, (dz - eyeZ) * 0.9);
-        const eyeMask = THREE.MathUtils.smoothstep(eyeD, 0.014, 0.034);
-        len = Math.min(len, THREE.MathUtils.lerp(0.0005, 0.004, eyeMask));
-        return {
-          ...monoSkin(idx('Head')),
-          length: len,
-          colorMask: coatMask(COAT_ZONE.head, p),
-          groom: headGroomAt(p, headCenter),
-          zone: COAT_ZONE.head,
-        };
-      });
-      parts.push(skull);
-    }
+    const polyCtx = {
+      headCenter,
+      muzzle,
+      nose,
+      jawPos: wp('Jaw'),
+      headScale,
+      skullWidth,
+      skullHeight,
+      skullLength,
+      muzzleWidth,
+      muzzleHeight,
+      cheekFullness,
+      headBone: idx('Head'),
+      muzzleBone: idx('Muzzle'),
+      jawBone: idx('Jaw'),
+      phenotype,
+      eyeX,
+      eyeY,
+      eyeZ,
+    };
 
-    // Short wide muzzle (ref is blocky-soft, not fox snout).
-    const muzzleStations = [
-      { c: head.clone().lerp(muzzle, 0.32), rx: 0.054 * headScale * muzzleWidth, ry: 0.045 * headScale, bone: idx('Head'), n: 2.05 },
-      { c: head.clone().lerp(muzzle, 0.62), rx: 0.047 * headScale * muzzleWidth, ry: 0.037 * headScale, bone: idx('Muzzle'), n: 2.1 },
-      { c: muzzle.clone().add(new THREE.Vector3(0, -0.002, 0)), rx: 0.039 * headScale * muzzleWidth, ry: 0.031 * headScale, bone: idx('Muzzle'), n: 2.1 },
-      { c: muzzle.clone().lerp(nose, 0.55), rx: 0.031 * headScale * muzzleWidth, ry: 0.025 * headScale, bone: idx('Muzzle'), n: 2.15 },
-      { c: nose.clone().add(new THREE.Vector3(0, -0.002, -0.002)), rx: 0.019 * headScale * muzzleWidth, ry: 0.015 * headScale, bone: idx('Muzzle'), n: 2.2 },
-    ];
-    parts.push(loftChain(muzzleStations, 32, (p, t) => {
-      const zone = t > 0.3 ? COAT_ZONE.muzzle : COAT_ZONE.head;
-      return {
-        length: coatLength(zone, p),
-        colorMask: coatMask(zone, p),
-        groom: headGroomAt(p, headCenter),
-        zone,
-      };
-    }, { n: 2.1 }));
+    if (isCaviidPoly) {
+      parts.push(...buildCaviidPolyHead(polyCtx));
+    } else if (isSuid) {
+      parts.push(...buildSuidPolyHead(polyCtx));
+    } else {
+      // Canid: sphere skull + soft muzzle loft + cheek spheres.
+      {
+        const skull = new THREE.SphereGeometry(0.07 * headScale, 48, 36);
+        skull.scale(1.18 * skullWidth, 0.97 * skullHeight, 1.1 * skullLength);
+        skull.translate(head.x, head.y + 0.008, head.z + 0.005);
+        stampPerVertex(skull, (_i, p) => {
+          let len = coatLength(COAT_ZONE.head, p);
+          const dx = Math.abs(p.x - headCenter.x);
+          const dy = p.y - headCenter.y;
+          const dz = p.z - headCenter.z;
+          const front = THREE.MathUtils.smoothstep(dz, 0.015, 0.055)
+            * (1 - THREE.MathUtils.smoothstep(Math.abs(dy - 0.008), 0.03, 0.08));
+          if (brachyFace) {
+            len = Math.min(len, THREE.MathUtils.lerp(len, len * 0.55, front * 0.7));
+          } else {
+            len = Math.min(len, THREE.MathUtils.lerp(0.03, 0.004, front));
+          }
+          const eyeD = Math.hypot(dx - eyeX, (dy - eyeY) * 1.3, (dz - eyeZ) * 0.9);
+          const eyeMask = THREE.MathUtils.smoothstep(eyeD, 0.014, 0.034);
+          len = Math.min(len, THREE.MathUtils.lerp(0.0005, 0.004, eyeMask));
+          return {
+            ...monoSkin(idx('Head')),
+            length: len,
+            colorMask: coatMask(COAT_ZONE.head, p),
+            groom: headGroomAt(p, headCenter),
+            zone: COAT_ZONE.head,
+          };
+        });
+        parts.push(skull);
+      }
 
-    // Soft cheeks (ref fill — not mumps spheres).
-    for (const side of [1, -1]) {
-      const c = head.clone().add(new THREE.Vector3(side * 0.047 * headScale * skullWidth, -0.006, 0.012));
-      const cheek = new THREE.SphereGeometry(0.04 * headScale, 28, 22);
-      cheek.scale(skullWidth, 0.95 * skullHeight, 1.1 * skullLength);
-      cheek.translate(c.x, c.y, c.z);
-      stampPerVertex(cheek, (_i, p) => {
-        let len = coatLength(COAT_ZONE.head, p) * 1.1;
-        const dx = Math.abs(p.x - headCenter.x);
-        const dy = p.y - headCenter.y;
-        const dz = p.z - headCenter.z;
-        // Same soft eye ovals as the skull so the seam never shows.
-        const eyeD = Math.hypot(dx - eyeX, (dy - eyeY) * 1.3, (dz - eyeZ) * 0.9);
-        const eyeMask = THREE.MathUtils.smoothstep(eyeD, 0.014, 0.034);
-        len = Math.min(len, THREE.MathUtils.lerp(0.0008, len, eyeMask));
-        return {
-          ...monoSkin(idx('Head')),
-          length: len,
-          colorMask: coatMask(COAT_ZONE.head, p) * 0.9,
-          groom: headGroomAt(p, headCenter),
-          zone: COAT_ZONE.head,
-        };
-      });
-      parts.push(cheek);
-    }
-
-    // ---- Bottom jaw: an actual lower-jaw loft, not a chin nub ----
-    // Rigidly skinned to the Jaw bone end to end (a real jaw swinging on its
-    // hinge), running from near the Jaw bone's pivot back under the cheek
-    // forward past the muzzle base to a rounded chin tip that sits just
-    // below and slightly behind the nose — where a real lower jaw/lip
-    // actually reaches, not stopping short under the muzzle base. Its own
-    // upper surface becomes the visible floor of the mouth once the jaw
-    // drops, instead of needing a separate hidden shape to mask the gap.
-    {
-      const jawPos = wp('Jaw');
-      const jawStations = [
-        { c: jawPos.clone().add(new THREE.Vector3(0, 0.006 * headScale, -0.014 * headScale)), rx: 0.028 * headScale * muzzleWidth, ry: 0.026 * headScale, bone: idx('Jaw'), n: 2.05 },
-        { c: jawPos.clone().lerp(muzzle, 0.38).add(new THREE.Vector3(0, -0.015 * headScale, 0)), rx: 0.037 * headScale * muzzleWidth, ry: 0.031 * headScale, bone: idx('Jaw'), n: 2.1 },
-        { c: jawPos.clone().lerp(muzzle, 0.85).add(new THREE.Vector3(0, -0.021 * headScale, 0)), rx: 0.028 * headScale * muzzleWidth, ry: 0.022 * headScale, bone: idx('Jaw'), n: 2.15 },
-        { c: muzzle.clone().lerp(nose, 0.55).add(new THREE.Vector3(0, -0.025 * headScale, 0)), rx: 0.021 * headScale * muzzleWidth, ry: 0.017 * headScale, bone: idx('Jaw'), n: 2.2 },
-        { c: muzzle.clone().lerp(nose, 0.92).add(new THREE.Vector3(0, -0.021 * headScale, -0.006 * headScale)), rx: 0.013 * headScale * muzzleWidth, ry: 0.011 * headScale, bone: idx('Jaw'), n: 2.25 },
+      const muzzleStations = [
+        { c: head.clone().lerp(muzzle, 0.32), rx: 0.054 * headScale * muzzleWidth, ry: 0.045 * headScale, bone: idx('Head'), n: 2.05 },
+        { c: head.clone().lerp(muzzle, 0.62), rx: 0.047 * headScale * muzzleWidth, ry: 0.037 * headScale, bone: idx('Muzzle'), n: 2.1 },
+        { c: muzzle.clone().add(new THREE.Vector3(0, -0.002, 0)), rx: 0.039 * headScale * muzzleWidth, ry: 0.031 * headScale, bone: idx('Muzzle'), n: 2.1 },
+        { c: muzzle.clone().lerp(nose, 0.55), rx: 0.031 * headScale * muzzleWidth, ry: 0.025 * headScale, bone: idx('Muzzle'), n: 2.15 },
+        { c: nose.clone().add(new THREE.Vector3(0, -0.002, -0.002)), rx: 0.019 * headScale * muzzleWidth, ry: 0.015 * headScale, bone: idx('Muzzle'), n: 2.2 },
       ];
-      parts.push(loftChain(jawStations, 24, (p, t) => {
-        const zone = t > 0.45 ? COAT_ZONE.muzzle : COAT_ZONE.head;
+      parts.push(loftChain(muzzleStations, 32, (p, t) => {
+        const zone = t > 0.3 ? COAT_ZONE.muzzle : COAT_ZONE.head;
         return {
-          length: coatLength(zone, p) * 0.65,
+          length: coatLength(zone, p),
           colorMask: coatMask(zone, p),
           groom: headGroomAt(p, headCenter),
           zone,
         };
-      }, { n: 2.15 }));
+      }, { n: 2.1 }));
+
+      const cheekLateral = brachyFace ? 0.036 : 0.047;
+      const cheekScaleX = brachyFace ? Math.min(skullWidth, 1.12) : skullWidth;
+      for (const side of [1, -1]) {
+        const c = head.clone().add(new THREE.Vector3(side * cheekLateral * headScale * skullWidth, -0.006, 0.012));
+        const cheek = new THREE.SphereGeometry(0.04 * headScale * cheekFullness, 28, 22);
+        cheek.scale(cheekScaleX, 0.95 * skullHeight, 1.1 * skullLength);
+        cheek.translate(c.x, c.y, c.z);
+        stampPerVertex(cheek, (_i, p) => {
+          let len = coatLength(COAT_ZONE.head, p) * 1.1;
+          const dx = Math.abs(p.x - headCenter.x);
+          const dy = p.y - headCenter.y;
+          const dz = p.z - headCenter.z;
+          const eyeD = Math.hypot(dx - eyeX, (dy - eyeY) * 1.3, (dz - eyeZ) * 0.9);
+          const eyeMask = THREE.MathUtils.smoothstep(eyeD, 0.014, 0.034);
+          len = Math.min(len, THREE.MathUtils.lerp(0.0008, len, eyeMask));
+          return {
+            ...monoSkin(idx('Head')),
+            length: len,
+            colorMask: coatMask(COAT_ZONE.head, p) * 0.9,
+            groom: headGroomAt(p, headCenter),
+            zone: COAT_ZONE.head,
+          };
+        });
+        parts.push(cheek);
+      }
+
+      {
+        const jawPos = wp('Jaw');
+        const jawStations = [
+          { c: jawPos.clone().add(new THREE.Vector3(0, 0.006 * headScale, -0.014 * headScale)), rx: 0.028 * headScale * muzzleWidth, ry: 0.026 * headScale, bone: idx('Jaw'), n: 2.05 },
+          { c: jawPos.clone().lerp(muzzle, 0.38).add(new THREE.Vector3(0, -0.015 * headScale, 0)), rx: 0.037 * headScale * muzzleWidth, ry: 0.031 * headScale, bone: idx('Jaw'), n: 2.1 },
+          { c: jawPos.clone().lerp(muzzle, 0.85).add(new THREE.Vector3(0, -0.021 * headScale, 0)), rx: 0.028 * headScale * muzzleWidth, ry: 0.022 * headScale, bone: idx('Jaw'), n: 2.15 },
+          { c: muzzle.clone().lerp(nose, 0.55).add(new THREE.Vector3(0, -0.025 * headScale, 0)), rx: 0.021 * headScale * muzzleWidth, ry: 0.017 * headScale, bone: idx('Jaw'), n: 2.2 },
+          { c: muzzle.clone().lerp(nose, 0.92).add(new THREE.Vector3(0, -0.021 * headScale, -0.006 * headScale)), rx: 0.013 * headScale * muzzleWidth, ry: 0.011 * headScale, bone: idx('Jaw'), n: 2.25 },
+        ];
+        parts.push(loftChain(jawStations, 24, (p, t) => {
+          const zone = t > 0.45 ? COAT_ZONE.muzzle : COAT_ZONE.head;
+          return {
+            length: coatLength(zone, p) * 0.65,
+            colorMask: coatMask(zone, p),
+            groom: headGroomAt(p, headCenter),
+            zone,
+          };
+        }, { n: 2.15 }));
+      }
     }
   }
 
@@ -548,50 +754,212 @@ export function buildDogBodyGeometry(rig, phenotype = rig.phenotype ?? null) {
       }
     }
     if (beard > 0) {
-      // Hang from the lower-jaw chin tip, fully skinned to Jaw so the beard
-      // swings with the mouth (not glued to the upper muzzle mid-face).
+      // Terrier / wire furnishings: chin goatee + modest mustache + neck skirt.
+      // Geometry is kept tight so the nose/eyes stay readable (v1 was too bulky).
+      // mustache / neckSkirt default from beard unless a profile sets them.
+      const mustache = phenotype?.furnishings?.mustache ?? beard * 0.75;
+      const neckSkirt = phenotype?.furnishings?.neckSkirt ?? beard * 0.65;
       const jawBone = idx('Jaw');
+      const headBone = idx('Head');
+      const neckBone = idx('Neck');
+      const chestBone = idx('Chest');
       const muzzle = wp('Muzzle');
       const nose = wp('NoseTip');
+      const jawPos = wp('Jaw');
+      const head = wp('Head');
+      const neck = wp('Neck');
+      const chest = wp('Chest');
       // Match the jaw loft's forward chin tip (see lower-jaw stations above).
       const chinTip = muzzle.clone().lerp(nose, 0.92).add(
         new THREE.Vector3(0, -0.024 * headScale, -0.004 * headScale),
       );
-      const hang = Math.max(0.55, beard);
+      const hang = Math.max(0.4, beard * 0.72);
+
+      // ---- Chin goatee ----
       const beardGeo = loftChain([
-        // Root: underside of the chin tip
         {
           c: chinTip.clone().add(new THREE.Vector3(0, -0.002 * headScale, 0.002 * headScale)),
-          rx: 0.026 * headScale * muzzleWidth,
+          rx: 0.02 * headScale * muzzleWidth,
+          ry: 0.01 * headScale,
+          bone: jawBone,
+        },
+        {
+          c: chinTip.clone().add(new THREE.Vector3(0, -0.022 * headScale * hang, 0.008 * headScale)),
+          rx: 0.022 * headScale * muzzleWidth,
           ry: 0.012 * headScale,
           bone: jawBone,
         },
         {
-          c: chinTip.clone().add(new THREE.Vector3(0, -0.032 * headScale * hang, 0.01 * headScale)),
-          rx: 0.03 * headScale * muzzleWidth,
-          ry: 0.016 * headScale,
+          c: chinTip.clone().add(new THREE.Vector3(0, -0.042 * headScale * hang, 0.004 * headScale)),
+          rx: 0.016 * headScale * muzzleWidth,
+          ry: 0.01 * headScale,
           bone: jawBone,
         },
         {
-          c: chinTip.clone().add(new THREE.Vector3(0, -0.062 * headScale * hang, 0.006 * headScale)),
-          rx: 0.022 * headScale * muzzleWidth,
-          ry: 0.013 * headScale,
+          c: chinTip.clone().add(new THREE.Vector3(0, -0.058 * headScale * hang, -0.002 * headScale)),
+          rx: 0.008 * headScale * muzzleWidth,
+          ry: 0.006 * headScale,
           bone: jawBone,
         },
-        // Tip: droops down / slightly back under the chin
-        {
-          c: chinTip.clone().add(new THREE.Vector3(0, -0.09 * headScale * hang, -0.004 * headScale)),
-          rx: 0.011 * headScale * muzzleWidth,
-          ry: 0.008 * headScale,
-          bone: jawBone,
-        },
-      ], 20, (p) => ({
-        length: 0.038 * beard,
+      ], 18, (p) => ({
+        length: 0.026 * beard,
         colorMask: coatMask(COAT_ZONE.muzzle, p),
         groom: [0, -0.95, 0.12],
         zone: COAT_ZONE.muzzle,
       }));
       parts.push(beardGeo);
+
+      // ---- Mustache (compact upper-lip pad + small side tufts) ----
+      if (mustache > 0.05) {
+        const m = Math.max(0.35, mustache * 0.7);
+        // Stay under the nose pad so the black nose remains visible.
+        const lipRoot = muzzle.clone().lerp(nose, 0.48).add(
+          new THREE.Vector3(0, -0.014 * headScale, 0.002 * headScale),
+        );
+        const mustachePad = loftChain([
+          {
+            c: lipRoot.clone(),
+            rx: 0.022 * headScale * muzzleWidth * (0.9 + 0.12 * m),
+            ry: 0.009 * headScale,
+            bone: idx('Muzzle'),
+          },
+          {
+            c: lipRoot.clone().add(new THREE.Vector3(0, -0.016 * headScale * m, 0.008 * headScale)),
+            rx: 0.026 * headScale * muzzleWidth * (0.9 + 0.1 * m),
+            ry: 0.012 * headScale,
+            bone: idx('Muzzle'),
+          },
+          {
+            c: lipRoot.clone().add(new THREE.Vector3(0, -0.03 * headScale * m, 0.004 * headScale)),
+            rx: 0.018 * headScale * muzzleWidth,
+            ry: 0.01 * headScale,
+            bone: idx('Muzzle'),
+          },
+          {
+            c: lipRoot.clone().add(new THREE.Vector3(0, -0.042 * headScale * m, -0.002 * headScale)),
+            rx: 0.009 * headScale * muzzleWidth,
+            ry: 0.007 * headScale,
+            bone: idx('Muzzle'),
+          },
+        ], 16, (p) => ({
+          length: 0.028 * mustache,
+          colorMask: coatMask(COAT_ZONE.muzzle, p),
+          groom: [0, -0.9, 0.28],
+          zone: COAT_ZONE.muzzle,
+        }));
+        parts.push(mustachePad);
+
+        // Side tufts — short whisker-like lobes, not cheek blankets.
+        for (const side of [1, -1]) {
+          const cheekRoot = muzzle.clone().lerp(nose, 0.32).add(
+            new THREE.Vector3(side * 0.032 * headScale * muzzleWidth, -0.01 * headScale, 0.002 * headScale),
+          );
+          const lobe = loftChain([
+            {
+              c: cheekRoot.clone(),
+              rx: 0.012 * headScale,
+              ry: 0.01 * headScale,
+              bone: idx('Muzzle'),
+            },
+            {
+              c: cheekRoot.clone().add(new THREE.Vector3(
+                side * 0.012 * headScale * m,
+                -0.018 * headScale * m,
+                0.008 * headScale,
+              )),
+              rx: 0.015 * headScale,
+              ry: 0.013 * headScale,
+              bone: idx('Muzzle'),
+            },
+            {
+              c: cheekRoot.clone().add(new THREE.Vector3(
+                side * 0.014 * headScale * m,
+                -0.034 * headScale * m,
+                0.002 * headScale,
+              )),
+              rx: 0.01 * headScale,
+              ry: 0.009 * headScale,
+              bone: idx('Muzzle'),
+            },
+            {
+              c: cheekRoot.clone().add(new THREE.Vector3(
+                side * 0.01 * headScale * m,
+                -0.048 * headScale * m,
+                -0.004 * headScale,
+              )),
+              rx: 0.006 * headScale,
+              ry: 0.006 * headScale,
+              bone: idx('Muzzle'),
+            },
+          ], 14, (p) => ({
+            length: 0.026 * mustache,
+            colorMask: coatMask(COAT_ZONE.muzzle, p),
+            groom: [side * 0.4, -0.85, 0.2],
+            zone: COAT_ZONE.muzzle,
+          }));
+          parts.push(lobe);
+        }
+      }
+
+      // ---- Neck skirt (throat fringe — shorter, narrower than v1) ----
+      if (neckSkirt > 0.05) {
+        const s = Math.max(0.35, neckSkirt * 0.7);
+        const throatStart = jawPos.clone().add(
+          new THREE.Vector3(0, -0.01 * headScale, -0.008 * headScale),
+        );
+        const throatMid = head.clone().lerp(neck, 0.5).add(
+          new THREE.Vector3(0, -0.028 * headScale - 0.028 * headScale * s, 0.008 * headScale),
+        );
+        const throatChest = neck.clone().lerp(chest, 0.35).add(
+          new THREE.Vector3(0, -0.014 * headScale - 0.022 * headScale * s, 0.012 * headScale),
+        );
+        const skirtGeo = loftChain([
+          {
+            c: throatStart,
+            rx: 0.028 * headScale * muzzleWidth * (0.9 + 0.12 * s),
+            ry: 0.012 * headScale,
+            bone: jawBone,
+          },
+          {
+            c: chinTip.clone().lerp(throatMid, 0.4).add(new THREE.Vector3(0, -0.012 * headScale * s, 0)),
+            rx: 0.034 * headScale * (1 + 0.08 * s),
+            ry: 0.015 * headScale,
+            bone: headBone,
+          },
+          {
+            c: throatMid,
+            rx: 0.036 * headScale * (1 + 0.1 * s),
+            ry: 0.018 * headScale,
+            bone: neckBone,
+          },
+          {
+            c: throatMid.clone().lerp(throatChest, 0.55).add(
+              new THREE.Vector3(0, -0.014 * headScale * s, 0.004 * headScale),
+            ),
+            rx: 0.028 * headScale,
+            ry: 0.014 * headScale,
+            bone: neckBone,
+          },
+          {
+            c: throatChest.clone().add(new THREE.Vector3(0, -0.012 * headScale * s, 0)),
+            rx: 0.018 * headScale,
+            ry: 0.01 * headScale,
+            bone: chestBone,
+          },
+          {
+            c: throatChest.clone().add(new THREE.Vector3(0, -0.024 * headScale * s, -0.006 * headScale)),
+            rx: 0.01 * headScale,
+            ry: 0.007 * headScale,
+            bone: chestBone,
+          },
+        ], 18, (p, t) => ({
+          length: 0.028 * neckSkirt * (0.85 + 0.2 * (1 - t)),
+          colorMask: coatMask(t < 0.35 ? COAT_ZONE.muzzle : COAT_ZONE.head, p),
+          groom: [0, -0.92, 0.15],
+          zone: t < 0.35 ? COAT_ZONE.muzzle : COAT_ZONE.head,
+        }));
+        parts.push(skirtGeo);
+      }
     }
     if (topknot > 0) {
       const topknotGeo = new THREE.SphereGeometry(0.052 * headScale, 28, 20);
@@ -635,7 +1003,8 @@ export function buildDogBodyGeometry(rig, phenotype = rig.phenotype ?? null) {
     const earWidth = (phenotype?.ears?.width ?? 1) * headScale;
     const earType = phenotype?.ears?.type ?? 'floppy';
     const isBat = earType === 'bat';
-    const isErect = earType === 'erect' || isBat;
+    const isRounded = earType === 'rounded';
+    const isErect = earType === 'erect' || isBat || isRounded;
     const isFolded = earType === 'folded';
     const foldType = phenotype?.ears?.fold ?? 'drop';
     const tipDirection = tipBone.clone().sub(mid);
@@ -652,6 +1021,39 @@ export function buildDogBodyGeometry(rig, phenotype = rig.phenotype ?? null) {
       tipDirection,
       tipExtension * (phenotype?.ears?.length ?? 1),
     );
+
+    if (isRounded) {
+      // A rounded procyonid pinna needs a circular silhouette. The shared
+      // leaf loft always reads triangular even with a blunt final station,
+      // so use a shallow, rigidly-skinned cup with a smaller dark inner cup.
+      const earLength = phenotype?.ears?.length ?? 1;
+      const center = base.clone().lerp(tipBone, 0.58);
+      const outer = new THREE.SphereGeometry(0.04 * headScale, 24, 18);
+      outer.scale(earWidth * 0.7, earLength * 1.15, 0.2);
+      outer.translate(center.x, center.y, center.z);
+      stampPerVertex(outer, (_i, p) => ({
+        ...monoSkin(idx(names[0])),
+        length: coatLength(COAT_ZONE.ear, p),
+        colorMask: coatMask(COAT_ZONE.ear, p),
+        groom: earGroomAt(s),
+        zone: COAT_ZONE.ear,
+      }));
+      parts.push(outer);
+
+      const inner = new THREE.SphereGeometry(0.031 * headScale, 22, 16);
+      inner.scale(earWidth * 0.62, earLength * 1.04, 0.11);
+      inner.translate(center.x, center.y, center.z + 0.009 * headScale);
+      stampPerVertex(inner, (_i, p) => ({
+        ...monoSkin(idx(names[0])),
+        length: coatLength(COAT_ZONE.ear, p) * 0.22,
+        colorMask: coatMask(COAT_ZONE.ear, p),
+        groom: earGroomAt(s),
+        zone: COAT_ZONE.ear,
+        earInner: 1,
+      }));
+      parts.push(inner);
+      continue;
+    }
 
     // Soft ear-root pad on the skull so the loft doesn't float as a detached block.
     {
@@ -801,75 +1203,251 @@ export function buildDogBodyGeometry(rig, phenotype = rig.phenotype ?? null) {
 
   // ---- Tail (plume) ----
   {
-    const stations = DOG_TAIL_BONES.map((name, i) => {
+    const tailThickness = phenotype?.tail?.thickness ?? 1;
+    const tailTaper = phenotype?.tail?.taper ?? 1;
+    const isSciuridTail = phenotype?.tail?.type === 'sciurid';
+    const isPaddleTail = phenotype?.tail?.type === 'paddle';
+    if (isPaddleTail) {
+      // Flat horizontal scaly paddle (beaver): a wide lateral ribbon (rx) that
+      // is razor-thin vertically (ry), laid straight back along the caudal chain.
+      // An explicit world-up hint keeps the plate level regardless of how the
+      // chain is posed; the skeleton dispatch already holds it near-horizontal.
+      const paddleStations = DOG_TAIL_BONES.map((name, i) => {
+        const c = wp(name);
+        const tChain = i / Math.max(1, DOG_TAIL_BONES.length - 1);
+        // Oval plate: narrow at the rump attach, widest through the mid,
+        // rounding off to a tapered trailing edge.
+        const widthProfile = 0.45 + 0.55 * Math.sin(tChain * Math.PI);
+        const rx = (0.05 + 0.04 * widthProfile) * tailThickness;
+        return {
+          c, rx, ry: 0.006 * tailThickness, bone: idx(name), up: new THREE.Vector3(0, 1, 0),
+        };
+      });
+      const last = paddleStations[paddleStations.length - 1];
+      paddleStations.push({
+        c: last.c.clone().add(new THREE.Vector3(0, 0, -0.022)),
+        rx: 0.014 * tailThickness,
+        ry: 0.004 * tailThickness,
+        bone: last.bone,
+        up: new THREE.Vector3(0, 1, 0),
+      });
+      parts.push(loftChain(paddleStations, 24, (p, t) => ({
+        // Leathery / scaly paddle — only a short nap of fur.
+        length: coatLength(COAT_ZONE.tail, p) * 0.2,
+        colorMask: colorMaskAt(COAT_ZONE.tail, p, headCenter, phenotype, { alongT: t }),
+        groom: [0, -0.1, -1],
+        zone: COAT_ZONE.tail,
+      })));
+    } else {
+    // Sciurid: narrow solid core (shell fur carries bushiness). Avoid thick
+    // mid-bulge tubes that read as a potato fused to the torso.
+    const baseR = isSciuridTail ? 0.028 : 0.042;
+    const boneStations = DOG_TAIL_BONES.map((name, i) => {
       const c = wp(name);
-      const r = (0.042 - i * 0.0055) * (phenotype?.tail?.thickness ?? 1);
-      return { c, rx: r, ry: r * 0.95, bone: idx(name) };
+      const tChain = i / Math.max(1, DOG_TAIL_BONES.length - 1);
+      const linearTaper = 1 - i * (0.0055 / baseR);
+      // Slight mid-softening only — bush comes from coat.tail shells, not loft.
+      const midBulge = isSciuridTail ? (1 + 0.06 * Math.sin(tChain * Math.PI)) : 1;
+      // Sciurid base stays thinner than mid so the plume lifts free of the rump.
+      const basePinch = isSciuridTail ? THREE.MathUtils.lerp(0.72, 1, THREE.MathUtils.smoothstep(tChain, 0, 0.35)) : 1;
+      const r = baseR * THREE.MathUtils.lerp(1, linearTaper, tailTaper) * tailThickness * midBulge * basePinch;
+      return { c, rx: r, ry: r * (isSciuridTail ? 0.92 : 0.95), bone: idx(name) };
     });
-    stations.push({
-      c: wp('Tail4').add(new THREE.Vector3(0, -0.012, -0.05)),
-      rx: 0.01,
-      ry: 0.009,
+    boneStations.push({
+      c: wp('Tail4').add(new THREE.Vector3(
+        0,
+        isSciuridTail ? 0.018 : -0.012,
+        isSciuridTail ? -0.01 : -0.05,
+      )),
+      rx: THREE.MathUtils.lerp((isSciuridTail ? 0.012 : 0.018) * tailThickness, 0.008, tailTaper),
+      ry: THREE.MathUtils.lerp((isSciuridTail ? 0.011 : 0.017) * tailThickness, 0.007, tailTaper),
       bone: idx('Tail4'),
     });
-    parts.push(loftChain(stations, 20, (p) => ({
+    const ringSubdivisions = phenotype?.coat?.pattern === 'raccoon-mask' ? 3 : 1;
+    const stations = [];
+    for (let i = 0; i < boneStations.length - 1; i += 1) {
+      const from = boneStations[i];
+      const to = boneStations[i + 1];
+      stations.push(from);
+      for (let sub = 1; sub < ringSubdivisions; sub += 1) {
+        const t = sub / ringSubdivisions;
+        stations.push({
+          c: from.c.clone().lerp(to.c, t),
+          rx: THREE.MathUtils.lerp(from.rx, to.rx, t),
+          ry: THREE.MathUtils.lerp(from.ry, to.ry, t),
+          bone: from.bone,
+        });
+      }
+    }
+    stations.push(boneStations[boneStations.length - 1]);
+    const ringedTail = phenotype?.coat?.pattern === 'raccoon-mask';
+    // Sciurid / chipmunk / murine tails use loft-parameter alongT (world -Z
+    // is non-monotonic on rising/curved plumes).
+    const alongTTail = phenotype?.coat?.pattern === 'squirrel-grey'
+      || phenotype?.coat?.pattern === 'chipmunk-stripe'
+      || phenotype?.coat?.pattern === 'murine-agouti';
+    parts.push(loftChain(stations, 20, (p, t) => ({
       length: coatLength(COAT_ZONE.tail, p),
-      colorMask: coatMask(COAT_ZONE.tail, p),
+      colorMask: ringedTail
+        ? (Math.sin(t * Math.PI * 12) > 0 ? 0.94 : 0.1)
+        : colorMaskAt(COAT_ZONE.tail, p, headCenter, phenotype, {
+          // alongT is monotonic base→tip even when the sciurid plume rises.
+          alongT: alongTTail ? t : undefined,
+        }),
       groom: [0, -0.15, -1],
       zone: COAT_ZONE.tail,
     })));
+    }
   }
 
-  // ---- Legs + flat pads (not tippy-toe spikes) ----
+  // ---- Legs + paws / rodent paws / ungulate hooves ----
+  const footType = phenotype?.extremities?.foot ?? 'paw';
+  const hoofSize = phenotype?.extremities?.hoofSize ?? 1;
+  const dewclawAmt = phenotype?.extremities?.dewclaw ?? 0;
+  const isHoof = footType === 'cloven-hoof' || footType === 'solid-hoof';
+  const isRodentPaw = footType === 'rodent-paw';
+  const isWebbedPaw = footType === 'webbed-paw';
+
   for (const chain of Object.values(DOG_LEG_CHAINS)) {
     const names = chain.bones;
+    // Front column stays lean (think fox/dog reference). Hind uses haunch bulk
+    // so the top of the rear leg is never skinnier than the front.
+    // Rodent-paw: keep a little bulk at the root, then wire-thin forearm/shin
+    // and a tiny plantigrade foot (mouse/rat/squirrel refs).
+    const thick = chain.front ? legThickness : hindLegThickness;
     const stations = [];
     for (let i = 0; i < names.length; i += 1) {
       const c = wp(names[i]);
       let rx;
-      if (i === 0) rx = (chain.front ? 0.05 : 0.054) * legThickness;
-      else if (i === 1) rx = 0.042 * legThickness;
-      else if (i === 2) rx = 0.034 * legThickness;
-      else if (i === 3) rx = 0.028 * legThickness; // pastern / hock
-      else rx = 0.026 * pawSize; // paw bone (mid-pad)
+      let ryScale = i >= names.length - 2 ? 0.75 : 0.95;
+      if (isRodentPaw) {
+        if (chain.front) {
+          // Shoulder → upper arm stay modest; forearm + pastern go skinny.
+          if (i === 0) rx = 0.032 * thick;
+          else if (i === 1) rx = 0.024 * thick;
+          else if (i === 2) { rx = 0.014 * thick; ryScale = 0.85; } // forearm
+          else if (i === 3) { rx = 0.011 * thick; ryScale = 0.8; } // pastern
+          else { rx = 0.014 * pawSize; ryScale = 0.7; } // paw joint
+        } else {
+          // Hip/thigh keep a bit of haunch; tibia + hock skinny plantigrade stilts.
+          if (i === 0) { rx = 0.036 * thick; ryScale = 0.9; }
+          else if (i === 1) { rx = 0.034 * thick; ryScale = 0.92; }
+          else if (i === 2) { rx = 0.016 * thick; ryScale = 0.85; } // tibia
+          else if (i === 3) { rx = 0.012 * thick; ryScale = 0.8; } // hock
+          else { rx = 0.014 * pawSize; ryScale = 0.7; }
+        }
+      } else if (chain.front) {
+        // Lean front: shoulder → forearm → pastern (was reading thicker than haunch).
+        if (i === 0) rx = 0.044 * thick;
+        else if (i === 1) rx = 0.036 * thick;
+        else if (i === 2) rx = 0.030 * thick;
+        else if (i === 3) rx = 0.025 * thick;
+        else rx = isHoof ? 0.018 * pawSize * hoofSize : 0.026 * pawSize;
+      } else {
+        // Hip joins the rump flush (thin "rear shoulder"), then mid-thigh has
+        // a little bulk before tapering to hock/cannon — not a thick bulb at
+        // the pelvis seam.
+        if (i === 0) { rx = 0.046 * thick; ryScale = 0.92; } // hip — flush with rump
+        else if (i === 1) { rx = 0.050 * thick; ryScale = 0.96; } // stifle / mid-thigh
+        else if (i === 2) rx = 0.036 * thick; // tibia
+        else if (i === 3) rx = 0.028 * thick; // hock / cannon
+        else rx = isHoof ? 0.018 * pawSize * hoofSize : 0.026 * pawSize;
+      }
       stations.push({
         c,
         rx,
-        ry: rx * (i >= names.length - 2 ? 0.75 : 0.95),
+        ry: rx * ryScale,
         bone: idx(names[i]),
       });
     }
-    // Flat foot pad: from pastern/hock down to ground, then forward under the paw.
-    // These three rings force an explicit world-up hint (rather than the
-    // propagated frame) so the flat pad stays level and on the floor
-    // regardless of how the chain above it is oriented.
     const padUp = new THREE.Vector3(0, 1, 0);
     const pastern = wp(names[names.length - 2]);
     const paw = wp(names[names.length - 1]);
-    // Heel under pastern/hock
-    stations.splice(stations.length - 1, 0, {
-      c: pastern.clone().add(new THREE.Vector3(0, -0.016, 0.008)),
-      rx: 0.03 * pawSize,
-      ry: 0.014,
-      bone: idx(names[names.length - 2]),
-      up: padUp,
-    });
-    // Mid pad at paw bone
-    stations[stations.length - 1] = {
-      c: paw.clone().add(new THREE.Vector3(0, -0.01, 0)),
-      rx: 0.034 * pawSize,
-      ry: 0.012,
-      bone: idx(names[names.length - 1]),
-      up: padUp,
-    };
-    // Toe end of pad (forward, still on the floor)
-    stations.push({
-      c: paw.clone().add(new THREE.Vector3(0, -0.014, 0.028)),
-      rx: 0.026 * pawSize,
-      ry: 0.01,
-      bone: idx(names[names.length - 1]),
-      up: padUp,
-    });
+    // Re-anchor the ring frame at the lower leg (tangent is well off vertical
+    // here, so the world-up cross product is stable). The torso→shoulder cap
+    // bends out of the sagittal plane, so the propagated frame arrives at the
+    // foot with accumulated roll; meeting the world-up-hinted pad rings with
+    // that roll twisted the pad loft into a bowtie "hook" behind the paw.
+    // Anchoring here keeps the rest of the (planar) chain roll-free.
+    stations[2].up = padUp;
+
+    if (isHoof) {
+      // Taper the distal chain into a short cannon above the hoof; no flat pad.
+      stations.splice(stations.length - 1, 0, {
+        c: pastern.clone().add(new THREE.Vector3(0, -0.01, 0.004)),
+        rx: 0.022 * legThickness,
+        ry: 0.018 * legThickness,
+        bone: idx(names[names.length - 2]),
+        up: padUp,
+      });
+      stations[stations.length - 1] = {
+        c: paw.clone().add(new THREE.Vector3(0, -0.004, 0.002)),
+        rx: 0.016 * pawSize * hoofSize,
+        ry: 0.014 * pawSize * hoofSize,
+        bone: idx(names[names.length - 1]),
+        up: padUp,
+      };
+    } else if (isRodentPaw) {
+      // Skinny plantigrade foot: narrow ankle into a small elongated sole
+      // (mouse/rat/squirrel — not a dog pad loaf). Slightly longer along Z
+      // for plantigrade contact, very thin left/right.
+      const ps = Math.max(0.35, pawSize);
+      stations.splice(stations.length - 1, 0, {
+        c: pastern.clone().add(new THREE.Vector3(0, -0.01, 0.004)),
+        rx: 0.012 * ps,
+        ry: 0.01 * ps,
+        bone: idx(names[names.length - 2]),
+        up: padUp,
+      });
+      stations[stations.length - 1] = {
+        c: paw.clone().add(new THREE.Vector3(0, -0.006, 0.002)),
+        rx: 0.016 * ps,
+        ry: 0.008 * ps,
+        bone: idx(names[names.length - 1]),
+        up: padUp,
+      };
+      stations.push({
+        c: paw.clone().add(new THREE.Vector3(0, -0.01, 0.018)),
+        rx: 0.014 * ps,
+        ry: 0.007 * ps,
+        bone: idx(names[names.length - 1]),
+        up: padUp,
+      });
+      // Tiny toe nubs at the sole tip (reads as a rodent foot, not a hoof).
+      stations.push({
+        c: paw.clone().add(new THREE.Vector3(0, -0.009, 0.028)),
+        rx: 0.01 * ps,
+        ry: 0.006 * ps,
+        bone: idx(names[names.length - 1]),
+        up: padUp,
+      });
+    } else {
+      // Flat foot pad: from pastern/hock down to ground, then forward under the paw.
+      // These three rings force an explicit world-up hint (rather than the
+      // propagated frame) so the flat pad stays level and on the floor
+      // regardless of how the chain above it is oriented.
+      stations.splice(stations.length - 1, 0, {
+        c: pastern.clone().add(new THREE.Vector3(0, -0.016, 0.008)),
+        rx: 0.03 * pawSize,
+        ry: 0.014,
+        bone: idx(names[names.length - 2]),
+        up: padUp,
+      });
+      stations[stations.length - 1] = {
+        c: paw.clone().add(new THREE.Vector3(0, -0.01, 0)),
+        rx: 0.034 * pawSize,
+        ry: 0.012,
+        bone: idx(names[names.length - 1]),
+        up: padUp,
+      };
+      stations.push({
+        c: paw.clone().add(new THREE.Vector3(0, -0.014, 0.028)),
+        rx: 0.026 * pawSize,
+        ry: 0.01,
+        bone: idx(names[names.length - 1]),
+        up: padUp,
+      });
+    }
 
     // Shoulder/hip cap blends the leg into the torso. This used to be a
     // separate loftChain call sharing only its terminal point with the leg's
@@ -882,10 +1460,17 @@ export function buildDogBodyGeometry(rig, phenotype = rig.phenotype ?? null) {
     const attach = wp(rootBone);
     const parentName = chain.front ? 'Chest' : 'Pelvis';
     const parent = wp(parentName);
-    const capStations = [
-      { c: parent.clone().lerp(attach, 0.35), rx: 0.068, ry: 0.058, bone: idx(parentName) },
-      { c: attach.clone().lerp(parent, 0.25), rx: 0.058, ry: 0.052, bone: idx(rootBone) },
-    ];
+    // Cap blends leg into torso. Hind cap stays slim so the rump outline is
+    // continuous (flush rear shoulder), not a thick haunch bulb off the pelvis.
+    const capStations = chain.front
+      ? [
+        { c: parent.clone().lerp(attach, 0.35), rx: 0.052 * thick, ry: 0.044 * thick, bone: idx(parentName) },
+        { c: attach.clone().lerp(parent, 0.25), rx: 0.046 * thick, ry: 0.040 * thick, bone: idx(rootBone) },
+      ]
+      : [
+        { c: parent.clone().lerp(attach, 0.38), rx: 0.050 * thick, ry: 0.044 * thick, bone: idx(parentName) },
+        { c: attach.clone().lerp(parent, 0.28), rx: 0.046 * thick, ry: 0.040 * thick, bone: idx(rootBone) },
+      ];
     const chainLength = (list) => {
       let sum = 0;
       for (let i = 1; i < list.length; i += 1) sum += list[i].c.distanceTo(list[i - 1].c);
@@ -916,8 +1501,63 @@ export function buildDogBodyGeometry(rig, phenotype = rig.phenotype ?? null) {
       };
     }));
 
+    if (isHoof) {
+      const hs = pawSize * hoofSize;
+      const pawBone = idx(names[names.length - 1]);
+      const bareStamp = (_i, p) => ({
+        ...monoSkin(pawBone),
+        length: 0.0004,
+        colorMask: 0.88,
+        groom: bodyGroomAt(p),
+        zone: COAT_ZONE.paw,
+      });
+
+      if (footType === 'cloven-hoof') {
+        // Two keratin toes split left/right under the distal bone.
+        for (const toe of [-1, 1]) {
+          const toeGeo = new THREE.SphereGeometry(0.015 * hs, 12, 10);
+          toeGeo.scale(0.62, 0.48, 1.18);
+          toeGeo.translate(
+            paw.x + toe * 0.011 * hs,
+            paw.y - 0.013 * hs,
+            paw.z + 0.01 * hs,
+          );
+          stampPerVertex(toeGeo, bareStamp);
+          parts.push(toeGeo);
+        }
+        // Soft cleft filler so the split does not read as a hole.
+        const cleft = new THREE.SphereGeometry(0.008 * hs, 8, 6);
+        cleft.scale(0.45, 0.35, 0.7);
+        cleft.translate(paw.x, paw.y - 0.01 * hs, paw.z + 0.006 * hs);
+        stampPerVertex(cleft, bareStamp);
+        parts.push(cleft);
+      } else {
+        // Solid hoof (horse-like single wall) — same attach point.
+        const wall = new THREE.SphereGeometry(0.02 * hs, 14, 12);
+        wall.scale(0.95, 0.55, 1.15);
+        wall.translate(paw.x, paw.y - 0.012 * hs, paw.z + 0.008 * hs);
+        stampPerVertex(wall, bareStamp);
+        parts.push(wall);
+      }
+
+      if (dewclawAmt > 0.05) {
+        const dew = new THREE.SphereGeometry(0.007 * hs * (0.6 + dewclawAmt * 0.4), 8, 6);
+        dew.scale(0.8, 0.7, 0.9);
+        dew.translate(paw.x, pastern.y - 0.008, pastern.z - 0.012);
+        stampPerVertex(dew, (_i, p) => ({
+          ...monoSkin(idx(names[names.length - 2])),
+          length: 0.0005,
+          colorMask: 0.75,
+          groom: bodyGroomAt(p),
+          zone: COAT_ZONE.paw,
+        }));
+        parts.push(dew);
+      }
+    }
+
     const anklePuffs = phenotype?.furnishings?.anklePuffs ?? 0;
-    if (anklePuffs > 0) {
+    // Rodent paws stay bare/skinny — skip dog ankle fur puffs.
+    if (anklePuffs > 0 && !isHoof && !isRodentPaw) {
       const puffCenter = paw.clone().add(new THREE.Vector3(0, 0.018, 0));
       const puff = new THREE.SphereGeometry(0.038 * pawSize, 20, 14);
       puff.scale(1, 0.82, 1.05);
@@ -930,6 +1570,64 @@ export function buildDogBodyGeometry(rig, phenotype = rig.phenotype ?? null) {
         zone: COAT_ZONE.paw,
       }));
       parts.push(puff);
+    }
+
+    // Rodent toe nubs — three tiny bare pads at the sole tip for a plantigrade
+    // foot read (geometry loft alone is a single skinny pad).
+    if (isRodentPaw) {
+      const ps = Math.max(0.35, pawSize);
+      const pawBone = idx(names[names.length - 1]);
+      const bareToe = (_i, p) => ({
+        ...monoSkin(pawBone),
+        length: 0.0003,
+        colorMask: 0.12,
+        groom: bodyGroomAt(p),
+        zone: COAT_ZONE.paw,
+      });
+      for (const toe of [-1, 0, 1]) {
+        const toeGeo = new THREE.SphereGeometry(0.006 * ps, 8, 6);
+        toeGeo.scale(0.55, 0.4, 0.95);
+        toeGeo.translate(
+          paw.x + toe * 0.006 * ps,
+          paw.y - 0.01 * ps,
+          paw.z + 0.03 * ps,
+        );
+        stampPerVertex(toeGeo, bareToe);
+        parts.push(toeGeo);
+      }
+    }
+
+    // Webbed paw (otter / beaver): regular flat pad (fell through above) plus
+    // 4 forward toes spanned by a thin webbing membrane for the aquatic read.
+    if (isWebbedPaw) {
+      const ps = Math.max(0.5, pawSize);
+      const pawBone = idx(names[names.length - 1]);
+      const toes = [-1.5, -0.5, 0.5, 1.5];
+      for (const toe of toes) {
+        const toeGeo = new THREE.SphereGeometry(0.009 * ps, 10, 8);
+        toeGeo.scale(0.7, 0.5, 1.1);
+        toeGeo.translate(paw.x + toe * 0.012 * ps, paw.y - 0.009 * ps, paw.z + 0.03 * ps);
+        stampPerVertex(toeGeo, (_i, p) => ({
+          ...monoSkin(pawBone),
+          length: 0.0006,
+          colorMask: 0.16,
+          groom: bodyGroomAt(p),
+          zone: COAT_ZONE.paw,
+        }));
+        parts.push(toeGeo);
+      }
+      // Thin webbing disc spanning the toes (wide in X, deep in Z, razor-thin Y).
+      const web = new THREE.SphereGeometry(0.022 * ps, 16, 10);
+      web.scale(1.3, 0.18, 0.9);
+      web.translate(paw.x, paw.y - 0.006 * ps, paw.z + 0.018 * ps);
+      stampPerVertex(web, (_i, p) => ({
+        ...monoSkin(pawBone),
+        length: 0.0007,
+        colorMask: 0.18,
+        groom: bodyGroomAt(p),
+        zone: COAT_ZONE.paw,
+      }));
+      parts.push(web);
     }
   }
 

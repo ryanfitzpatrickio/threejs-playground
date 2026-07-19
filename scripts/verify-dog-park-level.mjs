@@ -8,6 +8,9 @@ const level = createDogParkLevel({
   forestLodMode: 'static',
   shadows: false,
   dogParkHeroTrees: true,
+  // Full radius-1 ring is heavy for a unit check; center tile still exercises
+  // clearRect carve + furniture path.
+  dogParkCityRadius: 0,
 });
 
 try {
@@ -17,6 +20,15 @@ try {
   assert.ok(level.colliders.length >= 20, `expected park colliders, got ${level.colliders.length}`);
   assert.ok(level.geometryIndex.entries.length >= 30, 'park architecture should be raycastable');
   assert.ok(level.snapshot().forest.forestTrees >= 8, 'shared forest path should populate park trees');
+  assert.equal(level.snapshot().city?.chunks, 1, 'center downtown tile wraps the park lot');
+  // City roads/buildings must not steal the lawn under the dog spawn.
+  assert.equal(level.getSurfaceAt(0, 0), 'grass');
+  const cityColliderOnLawn = level.colliders.some((c) => (
+    c.chunkKey?.startsWith?.('dog-park:')
+    && c.minX < 2 && c.maxX > -2 && c.minZ < 2 && c.maxZ > -2
+    && (c.topY ?? 0) > 0.5
+  ));
+  assert.equal(cityColliderOnLawn, false, 'no tall city colliders inside the park lot');
 
   const spawnGround = level.getGroundHeightAt(level.dogSpawnPoint, 0.35, { maxStepUp: 0.5, maxSnapDown: 2 });
   assert.ok(Math.abs(spawnGround) < 0.05, `dog spawn ground is ${spawnGround}`);

@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "source": "/assets/models/quaternius-farm/Cow.fbx",
+  "pack": "Quaternius Farm — Cow.fbx",
+  "retarget": "world-space-rotation-delta",
+  "reference": "Idle clip @ t=0",
+  "rootTranslationLocked": true,
+  "groundContactClips": [
+    "Idle",
+    "Walk",
+    "Walk Slow",
+    "Run"
+  ],
+  "clips": [
+    {
+      "name": "Idle",
+      "file": "idle.json",
+      "duration": 6.25,
+      "tracks": 27
+    },
+    {
+      "name": "Walk",
+      "file": "walk.json",
+      "duration": 1.6927082929760218,
+      "tracks": 27
+    },
+    {
+      "name": "Walk Slow",
+      "file": "walk-slow.json",
+      "duration": 2.0833332538604736,
+      "tracks": 27
+    },
+    {
+      "name": "Run",
+      "file": "run.json",
+      "duration": 1.4166666269302368,
+      "tracks": 27
+    },
+    {
+      "name": "Jump",
+      "file": "jump.json",
+      "duration": 1.7083333730697632,
+      "tracks": 26
+    },
+    {
+      "name": "Death",
+      "file": "death.json",
+      "duration": 1.25,
+      "tracks": 26
+    }
+  ]
+}

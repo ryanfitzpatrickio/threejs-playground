@@ -74,6 +74,7 @@ export function resolveDogManifestCopyJobs(manifest, rootDir = ROOT) {
     for (const file of files) {
       const relFromRoot = path.relative(rootDir, file).split(path.sep).join('/');
       if (isExcluded(relFromRoot, manifest.excludeGlobs)) continue;
+      if (glob.includeBasenames && !glob.includeBasenames.includes(path.basename(file))) continue;
       const relFromBase = path.relative(fromDir, file).split(path.sep).join('/');
       jobs.push({ from: file, to: path.posix.join(glob.toPrefix || '', relFromBase), sourceGlob: glob.from });
     }
@@ -108,7 +109,9 @@ export function copyDogManifestAssets(distRoot, manifest) {
 function isViteEmittedPath(relPosixPath) {
   if (relPosixPath === 'index.html') return true;
   const parts = relPosixPath.split('/');
-  return parts[0] === 'assets' && parts.length === 2 && /\.(js|css|mjs|map)$/.test(parts[1]);
+  return parts[0] === 'assets'
+    && parts.length === 2
+    && /-[A-Za-z0-9_-]{6,}\.(js|css|mjs|map|wasm)$/.test(parts[1]);
 }
 
 /**

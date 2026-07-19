@@ -969,6 +969,23 @@ select {
   gap: 6px;
 }
 
+.dog-sim-generator-grid--species {
+  grid-template-columns: 1fr 1fr;
+}
+
+.dog-sim-generator-grid__species {
+  grid-column: 1 / -1;
+}
+
+.dog-sim-generator-grid__variant {
+  grid-column: 1 / -1;
+}
+
+.dog-sim-species-empty {
+  margin: 4px 0 0;
+  opacity: 0.72;
+}
+
 .dog-sim-generator-grid label {
   display: grid;
   gap: 3px;
@@ -1024,6 +1041,89 @@ select {
   font-size: 9px;
 }
 
+.dog-sim-lighting-sliders {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 8px;
+  margin-top: 6px;
+}
+
+.dog-sim-lighting-sliders label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 9px;
+  color: rgb(247 244 232 / 62%);
+}
+
+.dog-sim-lighting-sliders input[type='range'] {
+  width: 100%;
+  accent-color: rgb(180 210 170);
+}
+
+.dog-sim-lighting-colors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.dog-sim-lighting-colors label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9px;
+  color: rgb(247 244 232 / 62%);
+}
+
+.dog-sim-lighting-colors input[type='color'] {
+  width: 28px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid rgb(247 244 232 / 18%);
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.dog-sim-clip-meta {
+  font-weight: 400;
+  color: rgb(247 244 232 / 48%);
+  font-size: 9px;
+}
+
+/* Compact control strip (bottom-left) when the customize popup is closed. */
+.dog-park-hint {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 18;
+  max-width: min(420px, calc(100vw - 24px));
+  padding: 5px 9px;
+  border-radius: 999px;
+  border: 1px solid rgb(247 244 232 / 12%);
+  background: rgb(17 24 20 / 72%);
+  color: rgb(247 244 232 / 55%);
+  font-size: 9px;
+  letter-spacing: 0.03em;
+  pointer-events: none;
+  user-select: none;
+  backdrop-filter: blur(8px);
+}
+
+.dog-park-hud-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding: 52px 12px 12px;
+  background: rgb(8 10 9 / 28%);
+  backdrop-filter: blur(1px);
+  pointer-events: auto;
+}
+
 .dog-park-hud {
   position: absolute;
   top: 14px;
@@ -1039,13 +1139,71 @@ select {
   color: #f7f4e8;
 }
 
+.dog-park-hud--popup {
+  position: relative;
+  top: auto;
+  left: auto;
+  max-height: calc(100vh - 72px);
+  overflow: auto;
+  pointer-events: auto;
+}
+
+.dog-park-hud__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
 .dog-park-hud__title {
-  margin-bottom: 8px;
+  margin: 0;
   color: #d4c4a0;
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
+}
+
+.dog-park-hud__subtitle {
+  margin: 3px 0 0;
+  color: rgb(247 244 232 / 48%);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  font-weight: 400;
+}
+
+.dog-park-hud__close {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid rgb(247 244 232 / 14%);
+  background: rgb(247 244 232 / 6%);
+  color: #f7f4e8;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.dog-park-hud__close:hover {
+  background: rgb(247 244 232 / 12%);
+}
+
+.dog-customize-btn.active {
+  border-color: rgb(180 160 100 / 55%);
+  background: rgb(247 244 232 / 12%);
+}
+
+.dog-product-top-bar {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: 20;
+  display: flex;
+  gap: 6px;
+  pointer-events: none;
 }
 
 .dog-park-hud__row {
@@ -1101,6 +1259,49 @@ select {
   margin: 8px 0 0;
   color: rgb(247 244 232 / 52%);
   font-size: 9px;
+}
+
+.dog-product-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 24;
+  display: grid;
+  place-content: center;
+  gap: 5px;
+  color: #f7f4e8;
+  text-align: center;
+  background: rgb(17 24 20 / 76%);
+  backdrop-filter: blur(8px);
+}
+
+.dog-product-loading strong {
+  color: #d4c4a0;
+  font-size: 15px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.dog-product-loading span {
+  color: rgb(247 244 232 / 62%);
+  font-size: 11px;
+}
+
+.dog-product-mode-toggle {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 24;
+  padding: 7px 11px;
+  border: 1px solid rgb(247 244 232 / 18%);
+  border-radius: 6px;
+  color: #f7f4e8;
+  background: rgb(17 24 20 / 84%);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 20%);
+  cursor: pointer;
+}
+
+.dog-product-debug-toggle {
+  right: 102px;
 }
 
 @media (max-width: 640px) {

@@ -27,6 +27,9 @@ import { createMaterialWarmupGroup } from './createMaterialWarmupGroup.js';
 import { getGroundHeightAt, getBlockingColliderAt } from './createBaseLevel.js';
 import { RAIL_CRUCIBLE, getRampFloorCutouts } from '../config/deathmatch/railCrucibleMap.js';
 import { PICKUP_KIND } from '../config/deathmatch/deathmatchRules.js';
+import { DEATHMATCH_ENVIRONMENT } from '../config/deathmatch/deathmatchEnvironment.js';
+
+export { DEATHMATCH_ENVIRONMENT } from '../config/deathmatch/deathmatchEnvironment.js';
 
 /** Lowest floor plane; drives analytic ground fallback for out-of-collider queries. */
 const BASE_HEIGHT = RAIL_CRUCIBLE.bounds.min[1];
@@ -37,15 +40,6 @@ const METAL_TILE_M = 1.85;
 const WOOD_TILE_M = 1.4;
 const GRAVEL_TILE_M = 3.2;
 const BRICK_TILE_M = 2.4;
-
-export const DEATHMATCH_ENVIRONMENT = {
-  timeOfDay: 0.28, // sodium-lit dusk
-  weather: 'clear',
-  fogEnabled: true,
-  fogDensity: 0.008,
-  fogColor: 0x2a2f36,
-  ambientBoost: 0.06,
-};
 
 /** Landmark accent colour per tier (readability aid, not gameplay). */
 const TIER_ACCENT = { lower: 0x1f9e8f, mid: 0xd9863b, upper: 0xb648c8 };

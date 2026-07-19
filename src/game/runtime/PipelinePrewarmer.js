@@ -47,7 +47,13 @@ export class PipelinePrewarmer {
       // buffers. WebGPU rejects zero-byte bindings, so strip impossible empty
       // render objects before Three builds the asynchronous render list.
       sanitizeWebGPUVertexBuffers(scene);
-      if (renderer && typeof renderer.compileAsync === 'function' && scene && camera) {
+      if (
+        renderer
+        && typeof renderer.compileAsync === 'function'
+        && scene
+        && camera
+        && this.levelSystem.level?.skipInitialAsyncCompile !== true
+      ) {
         // Three r185's async pipeline descriptor is incomplete for the custom
         // MeshSSSNodeMaterial used by hero foliage (missing depthStencil), which
         // poisons the prewarm command stream. Let those bounded objects compile

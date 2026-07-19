@@ -39,12 +39,17 @@ export class DogCameraSystem {
 
     /** Orbit yaw around the dog (absolute world yaw; +PI is behind heading 0). */
     this.yaw = Math.PI;
-    this.pitch = 0.26;
+    this.pitch = 0.30;
     this.distance = 2.15;
 
     this.minDistance = 0.72;
     this.maxDistance = 5.4;
     this.defaultDistance = 2.15;
+    /** Elevated pitch when chase cam auto-settles behind the dog. */
+    this.settlePitch = 0.30;
+    // Far / mid framing (withers aim, shoulder-high cam). Close zoom lerps
+    // toward dog-eye height so the view sits lower to the ground — but only
+    // while the player owns framing (orbit / free-look). Auto-settle stays high.
 
     this.steerOffset = 0;
     this.lateralOffset = 0;
@@ -62,7 +67,7 @@ export class DogCameraSystem {
     this.camera = camera;
     this.targetObject = targetObject;
     this.yaw = yaw;
-    this.pitch = 0.26;
+    this.pitch = this.settlePitch;
     this.distance = this.defaultDistance;
     this.steerOffset = 0;
     this.lateralOffset = 0;
@@ -112,9 +117,13 @@ export class DogCameraSystem {
       const pitchSens = freeLook ? 0.0040 : 0.0036;
       this.yaw -= (input.lookX ?? 0) * sens;
       // Mouse-up (negative movementY) raises pitch — drag down to look down.
+      // Close zoom allows a flatter / slightly upward pitch so the cam isn't
+      // forced to look down onto the dog from a high perch.
+      const closeT = this._closeZoomT(this.distance);
+      const minPitch = THREE.MathUtils.lerp(-0.08, -0.22, closeT);
       this.pitch = THREE.MathUtils.clamp(
         this.pitch + (input.lookY ?? 0) * pitchSens,
-        -0.08,
+        minPitch,
         0.78,
       );
       if (freeLook) {
@@ -163,6 +172,16 @@ export class DogCameraSystem {
       this.yaw += step;
     }
 
+    // Auto chase settle: restore elevated pitch. Low ground framing is for
+    // player-owned close zoom only (orbit / free-look), not the settle pose.
+    if (!userFraming) {
+      this.pitch = THREE.MathUtils.lerp(
+        this.pitch,
+        this.settlePitch,
+        1 - Math.exp(-2.4 * dt),
+      );
+    }
+
     // Push/pull on turns — outside lateral swing + small look-into-turn yaw.
     // Sign: positive yawRate (CCW / left turn) swings camera to the right side.
     // Mute while free-looking so the user owns the framing.
@@ -176,8 +195,12 @@ export class DogCameraSystem {
     this.lateralOffset = THREE.MathUtils.lerp(this.lateralOffset, desiredLateral, steerAlpha);
 
     this.targetObject.getWorldPosition(targetGoal);
-    // Aim around chest / withers so a close zoom doesn't bury into the rump.
-    targetGoal.y += 0.48;
+    // Close zoom can sit lower — but only while the player owns framing.
+    // Auto-settle always uses elevated withers / shoulder-high heights.
+    const closeT = this._closeZoomT(this.distance);
+    const lowT = userFraming ? closeT : 0;
+    const aimHeight = THREE.MathUtils.lerp(0.48, 0.28, lowT);
+    targetGoal.y += aimHeight;
     const targetSmooth = 1 - Math.exp(-(moving ? 12 : 9) * dt);
     this.target.lerp(targetGoal, targetSmooth);
 
@@ -188,11 +211,14 @@ export class DogCameraSystem {
       + speedEase * 0.55
       + turnEase * 0.22;
 
+    // Auto-settle base lift stays high (~0.42). Close user framing dips to ~0.08.
+    const baseHeight = THREE.MathUtils.lerp(0.42, 0.08, lowT);
+
     const cameraYaw = this.yaw + this.steerOffset;
     const horizontal = Math.cos(this.pitch) * framedDistance;
     offset.set(
       Math.sin(cameraYaw) * horizontal,
-      0.42 + Math.sin(this.pitch) * framedDistance + speedEase * 0.12,
+      baseHeight + Math.sin(this.pitch) * framedDistance + speedEase * 0.12 * (1 - lowT * 0.65),
       Math.cos(cameraYaw) * horizontal,
     );
 
@@ -201,17 +227,24 @@ export class DogCameraSystem {
     offset.addScaledVector(dogRight, this.lateralOffset);
 
     cameraGoal.copy(this.target).add(offset);
+    // Never bury the lens underground on close low framing.
+    const minCamY = this.target.y - aimHeight + 0.12;
+    if (cameraGoal.y < minCamY) cameraGoal.y = minCamY;
     // Free look keeps position a bit looser so looking around feels less glued.
     const positionRate = freeLook ? 4.2 : (6.5 + speedEase * 4);
     const positionSmooth = 1 - Math.exp(-positionRate * dt);
     this.camera.position.lerp(cameraGoal, positionSmooth);
+    if (this.camera.position.y < minCamY) this.camera.position.y = minCamY;
 
     // Look slightly ahead of the dog along heading; steer softens into the turn.
     // Free look aims more toward the orbit focus so the view is mouse-driven.
     const lookAhead = freeLook ? 0.12 : (0.35 + speedEase * 0.85);
     lookGoal.copy(this.target).addScaledVector(dogForward, lookAhead);
     if (!freeLook) lookGoal.addScaledVector(dogRight, this.lateralOffset * 0.35);
-    lookGoal.y = this.target.y + 0.06 + (freeLook ? 0 : speedEase * 0.04);
+    // Close user framing: keep look slightly above aim so we don't stare into dirt.
+    lookGoal.y = this.target.y
+      + THREE.MathUtils.lerp(0.06, 0.02, lowT)
+      + (freeLook ? 0 : speedEase * 0.04 * (1 - lowT));
 
     const lookAlpha = 1 - Math.exp(-(freeLook ? 14 : 10) * dt);
     if (!this.hasLookTarget || this.lookTarget.distanceTo(lookGoal) > 8) {
@@ -226,6 +259,7 @@ export class DogCameraSystem {
 
   recenter(headingYaw = this._readTargetYaw()) {
     this.yaw = headingYaw + Math.PI;
+    this.pitch = this.settlePitch;
     this.orbitHold = 0;
     this.freeLookHold = 0;
     this.steerOffset = 0;
@@ -237,17 +271,32 @@ export class DogCameraSystem {
     return Number.isFinite(rotY) ? rotY : 0;
   }
 
+  /**
+   * 0 at mid/far default distance, 1 at min zoom (fully close).
+   * @param {number} distance
+   */
+  _closeZoomT(distance = this.distance) {
+    const span = Math.max(1e-3, this.defaultDistance - this.minDistance);
+    return smoothstep01((this.defaultDistance - distance) / span);
+  }
+
   snap() {
     if (!this.camera || !this.targetObject) return;
     this.targetObject.getWorldPosition(this.target);
-    this.target.y += 0.48;
+    // Snap uses elevated settle framing (not low close-zoom).
+    const aimHeight = 0.48;
+    const baseHeight = 0.42;
+    this.pitch = this.settlePitch;
+    this.target.y += aimHeight;
     const horizontal = Math.cos(this.pitch) * this.distance;
     offset.set(
       Math.sin(this.yaw) * horizontal,
-      0.42 + Math.sin(this.pitch) * this.distance,
+      baseHeight + Math.sin(this.pitch) * this.distance,
       Math.cos(this.yaw) * horizontal,
     );
     this.camera.position.copy(this.target).add(offset);
+    const minCamY = this.target.y - aimHeight + 0.12;
+    if (this.camera.position.y < minCamY) this.camera.position.y = minCamY;
     this.lookTarget.copy(this.target);
     this.hasLookTarget = true;
     this.camera.lookAt(this.lookTarget);

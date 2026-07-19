@@ -143,14 +143,18 @@ async function streamAssetsInBackground() {
   }
 
   this._setLoadProgress({ phase: 'character', label: 'Loading character…', sub: { character: 0.1 } });
-  await this.characterSystem.loadMara(this.sceneSystem.scene);
+  if (this.levelMode === 'dog-park') {
+    this.characterSystem.installDogParkStub(this.sceneSystem.scene);
+  } else {
+    await this.characterSystem.loadMara(this.sceneSystem.scene);
+  }
   if (this._aborted(gen) || !this.characterSystem.character) {
     return;
   }
 
   // Jacket cloth (three-simplecloth on WebGPU). Skipped when jacketExperiments is off
   // (see gameConfig); ?jacket=cloth still forces it on for one-off tuning.
-  if (resolveJacketMode() !== 'off') {
+  if (this.levelMode !== 'dog-park' && resolveJacketMode() !== 'off') {
     await this.characterSystem.attachJacketCloth(this.rendererSystem.renderer);
   }
   if (this._aborted(gen)) return;
@@ -341,11 +345,12 @@ async function streamAssetsInBackground() {
   // player car plus a bounded parked-traffic pool (not open-world garage logic).
   // Fail-open: never block play-ready on chassis/audio GLB stalls.
   const VEHICLE_SPAWN_BUDGET_MS = 12_000;
+  let vehicleSpawnTimer = null;
   try {
     await Promise.race([
       spawnPlayVehicles(this, character),
       new Promise((resolve) => {
-        setTimeout(() => {
+        vehicleSpawnTimer = setTimeout(() => {
           console.warn('[RuntimeLoader] vehicle spawn budget exceeded; continuing load');
           resolve(null);
         }, VEHICLE_SPAWN_BUDGET_MS);
@@ -353,6 +358,8 @@ async function streamAssetsInBackground() {
     ]);
   } catch (err) {
     console.error('[RuntimeLoader] vehicle spawn failed', err);
+  } finally {
+    if (vehicleSpawnTimer !== null) clearTimeout(vehicleSpawnTimer);
   }
   if (this._aborted(gen)) {
     return;
@@ -369,7 +376,11 @@ async function streamAssetsInBackground() {
   // Late systems (FP weapons, etc.) can force Mara visible; re-park after they start.
   if (this.levelMode === 'sims') this.simsFeature?.parkMainPlayer?.();
   if (this.levelMode === 'dog-park') this.dogParkFeature?.parkMainPlayer?.();
-  this.weaponSystem.initialize(this.sceneSystem.scene);
+  // The dog product has no weapon gameplay. Avoid creating presentation pools
+  // (and loading the bullet-hole atlas) for this standalone mode.
+  if (this.levelMode !== 'dog-park') {
+    this.weaponSystem.initialize(this.sceneSystem.scene);
+  }
 
   // Shooting range: force first-person + equip a gun for the session (training focus).
   if (this.levelMode === 'range') {

@@ -14,7 +14,7 @@ import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
 import { dreamfallAppUrl } from './lib/dreamfallAppUrl.mjs';
-import { AUTHORED_DOG_BREED_IDS } from '../src/game/characters/dog/dogCatalog.js';
+import { AUTHORED_DOG_BREED_IDS, normalizeDogVariantId } from '../src/game/characters/dog/dogCatalog.js';
 
 const args = process.argv.slice(2);
 const allBreeds = args.includes('--all-breeds');
@@ -25,6 +25,8 @@ const requestedBreeds = args.find((arg) => arg.startsWith('--breeds='))
   ?.slice('--breeds='.length)
   .split(',')
   .filter((id) => AUTHORED_DOG_BREED_IDS.includes(id));
+// Unknown/omitted variant falls back to the breed's authored default (no throw).
+const requestedVariant = args.find((arg) => arg.startsWith('--variant='))?.slice('--variant='.length);
 const presets = args.filter((a) => !a.startsWith('--'));
 if (presets.length === 0) presets.push('head-close');
 if (allBreeds && presets.length === 1 && presets[0] === 'head-close') {
@@ -78,6 +80,8 @@ try {
   for (const breedId of breedIds) {
     await page.evaluate((id) => globalThis.__DOG_SIM_DEBUG__.setBreed(id), breedId);
     await page.evaluate(() => globalThis.__DOG_SIM_DEBUG__.setSeed(1));
+    const variantId = requestedVariant ? normalizeDogVariantId(breedId, requestedVariant) : null;
+    if (variantId) await page.evaluate((id) => globalThis.__DOG_SIM_DEBUG__.setVariant(id), variantId);
     for (const preset of presets) {
       await page.evaluate((id) => {
         const api = globalThis.__DOG_SIM_DEBUG__;
@@ -105,7 +109,10 @@ try {
       }
       const canvas = await page.$('canvas');
       const suffix = mobile ? '-mobile' : '';
-      const file = path.join(outDir, `${breedId}-${preset}${suffix}.png`);
+      // Filename reflects what actually rendered, not the raw --variant= arg
+      // (an unknown id silently resolves to the breed's default, no throw).
+      const variantSuffix = snapshot.variantId && snapshot.variantId !== 'default' ? `-${snapshot.variantId}` : '';
+      const file = path.join(outDir, `${breedId}${variantSuffix}-${preset}${suffix}.png`);
       if (canvas) await canvas.screenshot({ path: file });
       else await page.screenshot({ path: file });
       console.log('wrote', file);

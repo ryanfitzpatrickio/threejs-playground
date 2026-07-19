@@ -228,6 +228,7 @@ function rebuildPane() {
   }
 
   const folderPriority = {
+    Dog: -1,
     Session: 0,
     Runtime: 1,
     Horde: 1.5,
@@ -248,7 +249,8 @@ function rebuildPane() {
   });
 
   for (const folderName of order) {
-    const defaultExpanded = folderName === 'Session'
+    const defaultExpanded = folderName === 'Dog'
+      || folderName === 'Session'
       || folderName === 'Runtime'
       || folderName === 'Horde'
       || folderName === 'Weather Control'

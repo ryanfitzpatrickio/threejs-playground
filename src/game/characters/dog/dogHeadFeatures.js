@@ -79,23 +79,62 @@ export function createDogHeadFeatures(bonesByName, phenotype = null) {
   };
 
   // Ref: mid-head, modest size, dark iris filling the opening.
+  // Optional per-eye colors (Khao Manee odd-eye): irisColorL / irisColorR.
+  // eyeStyle: canid (round pupil) | feline (vertical slit) | caprine (horizontal slit).
   const geometryShape = phenotype?.geometry ?? {};
+  const eyeStyle = faceShape.eyeStyle ?? 'canid';
   const irisColor = faceShape.irisColor ?? IRIS;
+  const irisColorL = faceShape.irisColorL ?? irisColor;
+  const irisColorR = faceShape.irisColorR ?? irisColor;
   const lidColor = faceShape.lidColor ?? LID;
   const lidDarkColor = faceShape.lidDarkColor ?? LID_DARK;
-  const eyeY = 0.016 * headScale * (faceShape.eyeHeight ?? 1);
-  const eyeX = 0.032 * headScale * (faceShape.eyeSpacing ?? 1);
-  const eyeR = 0.0135 * headScale * (faceShape.eyeScale ?? 1);
-  const skullRx = 0.07 * headScale * 1.18 * (geometryShape.skullWidth ?? 1);
-  const skullRy = 0.07 * headScale * 0.97 * (geometryShape.skullHeight ?? 1);
-  const skullRz = 0.07 * headScale * 1.1 * (geometryShape.skullLength ?? 1);
-  const eyeSurface = Math.sqrt(Math.max(
-    0.08,
-    1 - (eyeX / skullRx) ** 2 - ((eyeY - 0.008) / skullRy) ** 2,
-  ));
-  const eyeZ = 0.005 + skullRz * eyeSurface
-    + 0.004 * headScale
-    + ((faceShape.eyeForward ?? 1) - 1) * 0.008 * headScale;
+  const pupilAspect = Number.isFinite(faceShape.pupilAspect)
+    ? faceShape.pupilAspect
+    : (eyeStyle === 'caprine' ? 3.2 : eyeStyle === 'feline' ? 0.35 : 1);
+  const scleraAmount = THREE.MathUtils.clamp(
+    Number.isFinite(faceShape.scleraAmount)
+      ? faceShape.scleraAmount
+      : (eyeStyle === 'caprine' ? 0.32 : 0),
+    0,
+    1,
+  );
+  const headShapeKind = geometryShape.headShape ?? 'canid';
+  const isCaviidHead = headShapeKind === 'caviid';
+  const isSuidHead = headShapeKind === 'suid' || headShapeKind === 'hydrochoerine';
+  // Caviid solid is centered near Head origin with halfH≈0.05*hs — place eyes
+  // on the upper side wall of that box (not above it).
+  let eyeY;
+  let eyeX;
+  let eyeZ;
+  let eyeR = 0.0135 * headScale * (faceShape.eyeScale ?? 1)
+    * (eyeStyle === 'caprine' ? 1.08 : 1);
+  if (isCaviidHead) {
+    // Eyes high on the cheek transition (visible from front + 3/4, not buried
+    // on the far side wall of the rectangular solid).
+    const halfW = 0.052 * headScale * (geometryShape.skullWidth ?? 1);
+    eyeY = 0.016 * headScale * (faceShape.eyeHeight ?? 1);
+    eyeX = halfW * 0.88 * (faceShape.eyeSpacing ?? 1);
+    eyeZ = 0.028 * headScale * (geometryShape.skullLength ?? 1)
+      * (faceShape.eyeForward ?? 1);
+  } else {
+    const eyeYBoost = isSuidHead ? 0.006 * headScale : 0;
+    eyeY = 0.016 * headScale * (faceShape.eyeHeight ?? 1) + eyeYBoost;
+    eyeX = 0.032 * headScale * (faceShape.eyeSpacing ?? 1);
+    const skullRxMul = isSuidHead ? 0.95 : 1.18;
+    const skullRyMul = isSuidHead ? 0.9 : 0.97;
+    const skullRzMul = isSuidHead ? 1.2 : 1.1;
+    const skullRx = 0.07 * headScale * skullRxMul * (geometryShape.skullWidth ?? 1);
+    const skullRy = 0.07 * headScale * skullRyMul * (geometryShape.skullHeight ?? 1);
+    const skullRz = 0.07 * headScale * skullRzMul * (geometryShape.skullLength ?? 1);
+    const eyeSurface = Math.sqrt(Math.max(
+      0.08,
+      1 - (eyeX / skullRx) ** 2 - ((eyeY - 0.008) / skullRy) ** 2,
+    ));
+    const eyeZBase = isSuidHead ? 0.014 : 0.005;
+    eyeZ = eyeZBase + skullRz * eyeSurface
+      + 0.004 * headScale
+      + ((faceShape.eyeForward ?? 1) - 1) * 0.008 * headScale;
+  }
 
   /** @type {{ root: THREE.Group, iris: THREE.Mesh, lids: THREE.Mesh[] }[]} */
   const eyes = [];
@@ -104,17 +143,37 @@ export function createDogHeadFeatures(bonesByName, phenotype = null) {
     const eyeRoot = new THREE.Group();
     eyeRoot.name = side > 0 ? 'EyeL' : 'EyeR';
     eyeRoot.position.set(side * eyeX, eyeY, eyeZ);
-    eyeRoot.rotation.y = side * 0.2;
-    eyeRoot.rotation.x = -0.06;
-    // Slight slant — inner corner dips toward the nose (golden "kind" eye).
-    eyeRoot.rotation.z = side * 0.05;
+    // Caprine eyes sit more laterally; canid keeps the soft inward slant.
+    eyeRoot.rotation.y = side * (eyeStyle === 'caprine' ? 0.32 : 0.2);
+    eyeRoot.rotation.x = eyeStyle === 'caprine' ? -0.02 : -0.06;
+    eyeRoot.rotation.z = side * (eyeStyle === 'caprine' ? 0.02 : 0.05);
     eyeRoot.renderOrder = 500;
 
-    // Dark iris fills the opening (dogs show almost no white).
+    // Optional pale sclera disc behind the iris (goats show more "white").
+    if (scleraAmount > 0.02) {
+      const scleraGeo = new THREE.CircleGeometry(eyeR * 1.22, 22);
+      disposables.push(scleraGeo);
+      const sclera = new THREE.Mesh(
+        scleraGeo,
+        mat(0xf2ebe0, { opacity: 0.55 + scleraAmount * 0.35 }),
+      );
+      sclera.scale.set(
+        eyeStyle === 'caprine' ? 1.25 : 1.1,
+        eyeStyle === 'caprine' ? 0.88 : 1.0,
+        1,
+      );
+      sclera.position.z = 0.0002;
+      sclera.renderOrder = 498;
+      eyeRoot.add(sclera);
+    }
+
+    // Iris fills the opening. Per-eye color for odd-eye cats.
     const irisGeo = new THREE.CircleGeometry(eyeR, 22);
     disposables.push(irisGeo);
-    const iris = new THREE.Mesh(irisGeo, mat(irisColor));
-    iris.scale.set(1.05, 0.96, 1);
+    const sideIris = side > 0 ? irisColorL : irisColorR;
+    const iris = new THREE.Mesh(irisGeo, mat(sideIris));
+    if (eyeStyle === 'caprine') iris.scale.set(1.28, 0.82, 1);
+    else iris.scale.set(1.05, 0.96, 1);
     iris.position.z = 0.001;
     iris.renderOrder = 500;
     eyeRoot.add(iris);
@@ -124,16 +183,25 @@ export function createDogHeadFeatures(bonesByName, phenotype = null) {
     disposables.push(rimGeo);
     const rim = new THREE.Mesh(rimGeo, mat(lidDarkColor, { opacity: 0.35 }));
     rim.position.z = 0.0005;
-    rim.scale.set(1.05, 0.96, 1);
+    rim.scale.copy(iris.scale);
     rim.renderOrder = 499;
     eyeRoot.add(rim);
 
-    // Pupil
+    // Pupil — round, vertical slit (feline), or horizontal slit (caprine).
     const pupilGeo = new THREE.CircleGeometry(eyeR * 0.4, 14);
     disposables.push(pupilGeo);
     const pupil = new THREE.Mesh(pupilGeo, mat(PUPIL));
     pupil.position.z = 0.002;
     pupil.renderOrder = 501;
+    if (eyeStyle === 'caprine') {
+      const aspect = Math.max(1.2, pupilAspect);
+      pupil.scale.set(aspect * 0.55, 0.28 / Math.sqrt(aspect), 1);
+    } else if (eyeStyle === 'feline') {
+      const aspect = Math.min(1, Math.max(0.15, pupilAspect));
+      pupil.scale.set(aspect * 0.55, 1.15 / Math.sqrt(Math.max(aspect, 0.2)), 1);
+    } else {
+      pupil.scale.set(1, 1, 1);
+    }
     eyeRoot.add(pupil);
 
     // Catch light
@@ -146,27 +214,49 @@ export function createDogHeadFeatures(bonesByName, phenotype = null) {
 
     // Soft lids only (no full socket disc — that read as yellow rings).
     // Upper lid hugs the top of the iris so the eye reads open, not sleepy.
+    // Sciurids dial lids down (face.lidOpacity / lidScale) so periocular pale
+    // comes from coat shells, not white semicircle "spectacles".
+    const lidOpacity = THREE.MathUtils.clamp(
+      Number.isFinite(faceShape.lidOpacity) ? faceShape.lidOpacity : 1,
+      0,
+      1,
+    );
+    const lidScale = THREE.MathUtils.clamp(
+      Number.isFinite(faceShape.lidScale) ? faceShape.lidScale : 1,
+      0.15,
+      1.5,
+    );
     const lids = [];
-    {
-      const lidGeo = new THREE.CircleGeometry(eyeR * 1.2, 16, 0, Math.PI);
-      disposables.push(lidGeo);
-      const lid = new THREE.Mesh(lidGeo, mat(lidColor, { opacity: 0.8 }));
-      lid.position.set(0, eyeR * 0.68, 0.0015);
-      lid.scale.set(1.1, 0.3, 1);
-      lid.renderOrder = 503;
-      eyeRoot.add(lid);
-      lids.push(lid);
-    }
-    {
-      const lidGeo = new THREE.CircleGeometry(eyeR * 1.1, 14, 0, Math.PI);
-      disposables.push(lidGeo);
-      const lid = new THREE.Mesh(lidGeo, mat(lidColor, { opacity: 0.5 }));
-      lid.rotation.z = Math.PI;
-      lid.position.set(0, -eyeR * 0.58, 0.0015);
-      lid.scale.set(1.06, 0.2, 1);
-      lid.renderOrder = 503;
-      eyeRoot.add(lid);
-      lids.push(lid);
+    if (lidOpacity > 0.02) {
+      {
+        const lidGeo = new THREE.CircleGeometry(eyeR * 1.2, 16, 0, Math.PI);
+        disposables.push(lidGeo);
+        const lid = new THREE.Mesh(lidGeo, mat(lidColor, { opacity: 0.8 * lidOpacity }));
+        lid.position.set(0, eyeR * (eyeStyle === 'caprine' ? 0.55 : 0.68), 0.0015);
+        lid.scale.set(
+          (eyeStyle === 'caprine' ? 1.25 : 1.1) * lidScale,
+          (eyeStyle === 'caprine' ? 0.22 : 0.3) * lidScale,
+          1,
+        );
+        lid.renderOrder = 503;
+        eyeRoot.add(lid);
+        lids.push(lid);
+      }
+      {
+        const lidGeo = new THREE.CircleGeometry(eyeR * 1.1, 14, 0, Math.PI);
+        disposables.push(lidGeo);
+        const lid = new THREE.Mesh(lidGeo, mat(lidColor, { opacity: 0.5 * lidOpacity }));
+        lid.rotation.z = Math.PI;
+        lid.position.set(0, -eyeR * (eyeStyle === 'caprine' ? 0.48 : 0.58), 0.0015);
+        lid.scale.set(
+          (eyeStyle === 'caprine' ? 1.2 : 1.06) * lidScale,
+          (eyeStyle === 'caprine' ? 0.16 : 0.2) * lidScale,
+          1,
+        );
+        lid.renderOrder = 503;
+        eyeRoot.add(lid);
+        lids.push(lid);
+      }
     }
 
     head.add(eyeRoot);
@@ -186,6 +276,8 @@ export function createDogHeadFeatures(bonesByName, phenotype = null) {
   }
 
   // ---- Nose: compact wet pad meeting cream muzzle ----
+  // Caviid (capybara) + suid (pig/boar): large dual-nostril leather on a blunt tip.
+  const isBroadNose = isCaviidHead || isSuidHead;
   const noseRoot = new THREE.Group();
   noseRoot.name = 'Nose';
   if (noseTip) noseRoot.position.copy(noseTip.position);
@@ -193,40 +285,83 @@ export function createDogHeadFeatures(bonesByName, phenotype = null) {
   noseRoot.renderOrder = 510;
   (muzzle ?? head).add(noseRoot);
 
-  // Cream-to-leather blend (matches ref soft transition)
+  // Cream-to-leather blend (matches ref soft transition). White cats override
+  // via face.noseColor / face.noseBlendColor (pink leather).
   const noseScale = headScale * (faceShape.noseScale ?? 1);
-  const blendGeo = new THREE.SphereGeometry(0.011 * noseScale, 14, 12);
-  disposables.push(blendGeo);
-  const blend = new THREE.Mesh(blendGeo, mat(NOSE_BLEND, { opacity: 0.42 }));
-  blend.position.set(0, -0.002, -0.006);
-  blend.scale.set(1.35, 0.8, 0.95);
-  blend.renderOrder = 508;
-  noseRoot.add(blend);
+  const noseLeather = faceShape.noseColor ?? NOSE;
+  const noseBlendHex = faceShape.noseBlendColor ?? NOSE_BLEND;
+  if (isBroadNose) {
+    // Broad dual-nostril leather on the blunt tip (caviid / suid).
+    // Caviid is slightly softer/rounder; suid is flatter disk-like.
+    const w = isCaviidHead ? 1.7 : 1.95;
+    const h = isCaviidHead ? 1.15 : 1.05;
+    const d = isCaviidHead ? 0.62 : 0.5;
+    const blendGeo = new THREE.SphereGeometry(0.013 * noseScale, 16, 14);
+    disposables.push(blendGeo);
+    const blend = new THREE.Mesh(blendGeo, mat(noseBlendHex, { opacity: 0.5 }));
+    blend.position.set(0, 0, 0.001);
+    blend.scale.set(w * 0.9, h, d);
+    blend.renderOrder = 508;
+    noseRoot.add(blend);
 
-  const noseGeo = new THREE.SphereGeometry(0.0105 * noseScale, 16, 14);
-  disposables.push(noseGeo);
-  const noseMesh = new THREE.Mesh(noseGeo, mat(NOSE));
-  noseMesh.scale.set(1.35, 0.9, 1.05);
-  noseMesh.renderOrder = 510;
-  noseRoot.add(noseMesh);
+    const noseGeo = new THREE.SphereGeometry(0.012 * noseScale, 18, 16);
+    disposables.push(noseGeo);
+    const noseMesh = new THREE.Mesh(noseGeo, mat(noseLeather));
+    noseMesh.scale.set(w, h, d);
+    noseMesh.position.set(0, 0.002, 0.005);
+    noseMesh.renderOrder = 510;
+    noseRoot.add(noseMesh);
 
-  for (const side of [1, -1]) {
-    const pitGeo = new THREE.SphereGeometry(0.0036 * noseScale, 10, 8);
-    disposables.push(pitGeo);
-    const pit = new THREE.Mesh(pitGeo, mat(0x050403));
-    pit.position.set(side * 0.0046 * noseScale, -0.001 * noseScale, 0.008 * noseScale);
-    pit.scale.set(1.2, 0.75, 0.6);
-    pit.renderOrder = 511;
-    noseRoot.add(pit);
+    for (const side of [1, -1]) {
+      const pitGeo = new THREE.SphereGeometry(0.0042 * noseScale, 10, 8);
+      disposables.push(pitGeo);
+      const pit = new THREE.Mesh(pitGeo, mat(0x050403));
+      pit.position.set(side * 0.008 * noseScale, 0.0035 * noseScale, 0.012 * noseScale);
+      pit.scale.set(1.2, 1.15, 0.5);
+      pit.renderOrder = 511;
+      noseRoot.add(pit);
+    }
+
+    const philGeo = new THREE.BoxGeometry(0.0018 * noseScale, 0.009 * noseScale, 0.0035 * noseScale);
+    disposables.push(philGeo);
+    const phil = new THREE.Mesh(philGeo, mat(0x0a0806, { opacity: 0.38 }));
+    phil.position.set(0, -0.007, 0.005);
+    phil.renderOrder = 511;
+    noseRoot.add(phil);
+  } else {
+    const blendGeo = new THREE.SphereGeometry(0.011 * noseScale, 14, 12);
+    disposables.push(blendGeo);
+    const blend = new THREE.Mesh(blendGeo, mat(noseBlendHex, { opacity: 0.42 }));
+    blend.position.set(0, -0.002, -0.006);
+    blend.scale.set(1.35, 0.8, 0.95);
+    blend.renderOrder = 508;
+    noseRoot.add(blend);
+
+    const noseGeo = new THREE.SphereGeometry(0.0105 * noseScale, 16, 14);
+    disposables.push(noseGeo);
+    const noseMesh = new THREE.Mesh(noseGeo, mat(noseLeather));
+    noseMesh.scale.set(1.35, 0.9, 1.05);
+    noseMesh.renderOrder = 510;
+    noseRoot.add(noseMesh);
+
+    for (const side of [1, -1]) {
+      const pitGeo = new THREE.SphereGeometry(0.0036 * noseScale, 10, 8);
+      disposables.push(pitGeo);
+      const pit = new THREE.Mesh(pitGeo, mat(0x050403));
+      pit.position.set(side * 0.0046 * noseScale, -0.001 * noseScale, 0.008 * noseScale);
+      pit.scale.set(1.2, 0.75, 0.6);
+      pit.renderOrder = 511;
+      noseRoot.add(pit);
+    }
+
+    // Soft philtrum
+    const philGeo = new THREE.BoxGeometry(0.002 * noseScale, 0.007 * noseScale, 0.005 * noseScale);
+    disposables.push(philGeo);
+    const phil = new THREE.Mesh(philGeo, mat(0x0a0806, { opacity: 0.5 }));
+    phil.position.set(0, -0.008, 0.001);
+    phil.renderOrder = 511;
+    noseRoot.add(phil);
   }
-
-  // Soft philtrum
-  const philGeo = new THREE.BoxGeometry(0.002 * noseScale, 0.007 * noseScale, 0.005 * noseScale);
-  disposables.push(philGeo);
-  const phil = new THREE.Mesh(philGeo, mat(0x0a0806, { opacity: 0.5 }));
-  phil.position.set(0, -0.008, 0.001);
-  phil.renderOrder = 511;
-  noseRoot.add(phil);
 
   // Mouth-depth layout tracks the real nose pad for every muzzle length.
   // Capping at golden-only Z buried teeth mid-snout on retrievers / GSDs
@@ -325,6 +460,10 @@ export function createDogHeadFeatures(bonesByName, phenotype = null) {
     upperTeethGroup.add(upperGum);
   }
   (muzzle ?? head).add(upperTeethGroup);
+  // Sciurids / rodents: exterior tooth cones read as white "teeth" even with
+  // a closed mouth (loft gap + pale muzzle). Hide permanently when requested.
+  const hideTeeth = !!faceShape.hideTeeth;
+  if (hideTeeth) upperTeethGroup.visible = false;
 
   // ---- Articulated lower jaw interior: inner mouth, bottom teeth, tongue ----
   // All parented to the Jaw bone so they open/close and pant with it — the
@@ -518,7 +657,8 @@ export function createDogHeadFeatures(bonesByName, phenotype = null) {
       const open = t > 0.02;
       jawGroup.visible = open;
       palate.visible = open;
-      upperTeethGroup.visible = open;
+      // hideTeeth: never show exterior crowns (rodent closed-snout stills).
+      upperTeethGroup.visible = open && !hideTeeth;
       // Soften the closed-mouth lip mark when the jaws open (interior takes over).
       mouth.visible = t < 0.55;
       mouth.scale.set(

@@ -5,7 +5,7 @@
  * lifecycle to DeathmatchRuntimeFeature. Offline solo arena review works with
  * no networkSystem; multiplayer injects the App-owned socket via the feature.
  */
-import { DEATHMATCH_ENVIRONMENT } from '../../world/createDeathmatchArenaLevel.js';
+import { DEATHMATCH_ENVIRONMENT } from '../../config/deathmatch/deathmatchEnvironment.js';
 
 export class DeathmatchModeController {
   constructor(host) {

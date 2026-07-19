@@ -161,6 +161,7 @@ export class DogPlayerController {
       floorY = Math.max(floorY, water.waterY - 0.18 * water.weight);
     }
 
+    const grounded = this.jumpPhase === 'none' || this.jumpPhase === 'crouch';
     if (this.jumpPhase === 'crouch') {
       this.jumpTimer -= dt;
       position.y = floorY;
@@ -180,11 +181,30 @@ export class DogPlayerController {
         this.verticalVelocity = 0;
       }
     } else {
+      // Approximate support before pose; plantDogFeet corrects with pad raycasts.
       position.y = floorY;
     }
     this.surfaceClass = this.levelSystem.level?.getSurfaceAt?.(position.x, position.z) ?? this.surfaceClass;
 
-    this.dog.update(dt, { fixed: false });
+    const groundProbe = new THREE.Vector3();
+    this.dog.update(dt, {
+      fixed: false,
+      // When a retargeted clip follows this update, its final pose owns the
+      // single foot-plant pass (see DogParkRuntimeFeature). Planting this
+      // procedural pose too makes the actor height seesaw twice per frame.
+      plantFeet: grounded && !locked && !input.deferFootPlant,
+      getGroundHeight: (x, z) => {
+        groundProbe.set(x, position.y, z);
+        const y = this.levelSystem.getGroundHeightAt(groundProbe, this.radius * 0.45, {
+          maxStepUp: 0.48,
+          maxSnapDown: 1.2,
+          requiredInset: Math.min(this.radius * 0.25, 0.1),
+        });
+        if (!Number.isFinite(y)) return floorY;
+        if ((water?.weight ?? 0) > 0) return Math.max(y, water.waterY - 0.18 * water.weight);
+        return y;
+      },
+    });
   }
 
   moveWithCollision(position, target) {

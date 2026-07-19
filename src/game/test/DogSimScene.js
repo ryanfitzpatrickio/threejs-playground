@@ -17,22 +17,127 @@ import {
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { createProceduralDog } from '../characters/dog/createProceduralDog.js';
 import {
+  DogClipPlayer,
+  animalUsesDogClipLibrary,
+} from '../characters/dog/DogClipPlayer.js';
+import {
+  ANIMAL_SPECIES,
   AUTHORED_DOG_BREED_IDS,
   DOG_BREEDS,
   DOG_FAMILIES,
-  getAuthoredDogBreeds,
+  plantDogFeet,
   getDogBreed,
+  getDogBreeds,
+  getDogVariants,
+  getFamiliesForSpecies,
+  getPopulatedFamiliesForSpecies,
+  getSpeciesIdForFamily,
+  normalizeDogBreedId,
   normalizeDogSeed,
-  normalizeRenderableDogBreedId,
+  normalizeDogVariantId,
 } from '../characters/dog/index.js';
+import { createDogSimStudioLighting } from './createDogSimStudioLighting.js';
 
 const FIXED_DT = 1 / 60;
 
-/** Resolve a still under public/assets/dog-ref/. */
-export function dogRefUrl(filename, breedId = 'golden-retriever') {
-  return breedId === 'golden-retriever'
-    ? `/assets/dog-ref/${filename}`
-    : `/assets/dog-ref/${breedId}/${filename}`;
+/** True for a breed's own default variant (e.g. dachshund's is 'smooth', not literally 'default'). */
+function isDogDefaultVariant(breedId, variantId) {
+  return (getDogBreed(breedId)?.defaultVariantId ?? 'default') === variantId;
+}
+
+/**
+ * Root-level golden stills used older names (`head-close-profile.jpg`) while
+ * breed folders and `refFile` use catalog names (`profile.jpg`). Map both so
+ * compare never 404-loops on the default breed.
+ */
+const ROOT_REF_ALIASES = Object.freeze({
+  'profile.jpg': ['head-close-profile.jpg'],
+  'front-sit.jpg': ['head-close-front.jpg'],
+  'head-close-profile.jpg': ['profile.jpg'],
+  'head-close-front.jpg': ['front-sit.jpg'],
+});
+
+function isFelineBreed(breedId) {
+  return getDogBreed(breedId)?.familyId === 'feline';
+}
+
+function isRodentBreed(breedId) {
+  const breed = getDogBreed(breedId);
+  return Boolean(breed?.conformationFlags?.includes('rodent'));
+}
+
+/** Resolve a still under public/assets/dog-ref/, cat-ref/, or rodent-ref/. */
+export function dogRefUrl(filename, breedId = 'golden-retriever', variantId = 'default') {
+  if (isFelineBreed(breedId)) {
+    // Khao Manee eye variants use head-close-<variant>.jpg; other cats use head-close.jpg.
+    if (breedId === 'khao-manee' && variantId && variantId !== 'default') {
+      const stem = filename.replace(/\.jpg$/i, '');
+      if (stem === 'head-close' || stem === 'three-quarter' || stem === 'profile' || stem === 'front-sit') {
+        return `/assets/cat-ref/${breedId}/head-close-${variantId}.jpg`;
+      }
+    }
+    return `/assets/cat-ref/${breedId}/${filename}`;
+  }
+  if (isRodentBreed(breedId)) {
+    return `/assets/rodent-ref/${breedId}/${filename}`;
+  }
+  if (breedId === 'golden-retriever') return `/assets/dog-ref/${filename}`;
+  if (variantId && !isDogDefaultVariant(breedId, variantId)) {
+    return `/assets/dog-ref/${breedId}/${variantId}/${filename}`;
+  }
+  return `/assets/dog-ref/${breedId}/${filename}`;
+}
+
+/**
+ * Fallback chain when a variant still hasn't been photographed yet:
+ * 1. breed/variant path (dogs or cats)
+ * 2. breed default path
+ * 3. dog-ref root aliases (golden stills) for canines only
+ * The UI tries each candidate in order via <img onError>, landing on a
+ * placeholder only once every candidate 404s.
+ */
+export function dogRefUrlChain(filename, breedId = 'golden-retriever', variantId = 'default') {
+  const chain = [];
+  const seen = new Set();
+  const push = (url) => {
+    if (!url || seen.has(url)) return;
+    seen.add(url);
+    chain.push(url);
+  };
+
+  if (isFelineBreed(breedId)) {
+    push(dogRefUrl(filename, breedId, variantId));
+    push(`/assets/cat-ref/${breedId}/head-close.jpg`);
+    push(`/assets/cat-ref/${breedId}/three-quarter.jpg`);
+    // Eye-specific stills if variant was a generic filename.
+    if (breedId === 'khao-manee') {
+      push(`/assets/cat-ref/khao-manee/head-close-${variantId || 'odd-eye'}.jpg`);
+      push('/assets/cat-ref/khao-manee/head-close-odd-eye.jpg');
+      push('/assets/cat-ref/khao-manee/head-close-blue.jpg');
+      push('/assets/cat-ref/khao-manee/head-close-regular.jpg');
+    }
+    return chain;
+  }
+
+  if (isRodentBreed(breedId)) {
+    push(dogRefUrl(filename, breedId, variantId));
+    push(`/assets/rodent-ref/${breedId}/head-close.jpg`);
+    push(`/assets/rodent-ref/${breedId}/three-quarter.jpg`);
+    return chain;
+  }
+
+  if (breedId !== 'golden-retriever' && variantId && !isDogDefaultVariant(breedId, variantId)) {
+    push(dogRefUrl(filename, breedId, variantId));
+  }
+  if (breedId !== 'golden-retriever') {
+    push(dogRefUrl(filename, breedId, getDogBreed(breedId)?.defaultVariantId ?? 'default'));
+  }
+  // Root stills (golden + shared fallbacks for missing breed boards).
+  push(`/assets/dog-ref/${filename}`);
+  for (const alias of ROOT_REF_ALIASES[filename] ?? []) {
+    push(`/assets/dog-ref/${alias}`);
+  }
+  return chain;
 }
 
 /**
@@ -121,6 +226,8 @@ export class DogSimScene {
     this._disposed = false;
 
     this.dog = null;
+    /** @type {DogClipPlayer | null} */
+    this.clipPlayer = null;
     this.status = 'booting';
     this.error = null;
     this.liveMotion = true;
@@ -128,15 +235,20 @@ export class DogSimScene {
     this.activePresetId = DOG_REFERENCE_PRESETS[0].id;
     this.galleryIndex = 0;
     this.compareEnabled = false;
+    this._lastSnapshotEmitMs = 0;
     this.shellCount = 64;
+    this.speciesId = 'canidae';
     this.familyId = 'retriever-sporting';
     this.breedId = 'golden-retriever';
+    this.variantId = 'default';
     this.seed = 1;
     this._bootNaked = false;
 
     this.keyLight = null;
     this.hemiLight = null;
     this.fillLight = null;
+    /** @type {ReturnType<typeof createDogSimStudioLighting> | null} */
+    this.studioLighting = null;
 
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
@@ -185,10 +297,15 @@ export class DogSimScene {
       this.dog = createProceduralDog({
         breedId: this.breedId,
         seed: this.seed,
+        variantId: this.variantId,
         shellCount: this.shellCount,
       });
+      this.variantId = this.dog.variantId;
       this.scene.add(this.dog.root);
       if (this._bootNaked) this.dog.setNakedBody(true);
+      this._bindClipPlayer(this.dog);
+      // Bake probes after the dog is in the scene so SH capture sees the subject.
+      void this.studioLighting?.bakeProbes?.();
 
       if (this.harnessMode) {
         this.enterHarnessDefaults();
@@ -224,50 +341,35 @@ export class DogSimScene {
   }
 
   setupEnvironment() {
-    // Soft studio palette matching dog-ref stills (sage-gray seamless).
-    this.scene.background = new THREE.Color(0xc5cdc6);
-    this.scene.fog = new THREE.Fog(0xc5cdc6, 6, 18);
-
-    this.hemiLight = new THREE.HemisphereLight(0xf2f4f0, 0x8a9088, 0.95);
-    this.scene.add(this.hemiLight);
-
-    this.keyLight = new THREE.DirectionalLight(0xfff4e8, 1.55);
-    this.keyLight.position.set(2.2, 5.0, 3.0);
-    this.keyLight.castShadow = true;
-    this.keyLight.shadow.mapSize.set(2048, 2048);
-    this.keyLight.shadow.camera.near = 0.5;
-    this.keyLight.shadow.camera.far = 20;
-    this.keyLight.shadow.camera.left = -3;
-    this.keyLight.shadow.camera.right = 3;
-    this.keyLight.shadow.camera.top = 3;
-    this.keyLight.shadow.camera.bottom = -3;
-    this.keyLight.shadow.bias = -0.0003;
-    this.scene.add(this.keyLight);
-
-    this.fillLight = new THREE.DirectionalLight(0xd4e0f0, 0.55);
-    this.fillLight.position.set(-3.0, 2.4, -1.2);
-    this.scene.add(this.fillLight);
-
-    const rim = new THREE.DirectionalLight(0xffe8d0, 0.35);
-    rim.position.set(-1.5, 3.5, -3.0);
-    this.scene.add(rim);
-
-    const floorMat = new THREE.MeshStandardMaterial({
-      color: 0xb0b8b2,
-      roughness: 0.92,
-      metalness: 0,
+    // Realtime studio stack: SSGI + AO, SSR, denoisers, LightProbeGrid probes.
+    this.studioLighting?.dispose?.();
+    this.studioLighting = createDogSimStudioLighting({
+      scene: this.scene,
+      camera: this.camera,
+      renderer: this.renderer,
     });
-    const floor = new THREE.Mesh(new THREE.CircleGeometry(6, 48), floorMat);
-    floor.rotation.x = -Math.PI * 0.5;
-    floor.receiveShadow = true;
-    this.scene.add(floor);
+    // Compatibility aliases used by applyPreset / harness lighting.
+    this.hemiLight = this.studioLighting.lights.hemi;
+    this.keyLight = this.studioLighting.lights.sun;
+    this.fillLight = this.studioLighting.lights.fill;
+  }
 
-    // Subtle grid — keep low so it doesn't fight the portrait look.
-    const grid = new THREE.GridHelper(6, 12, 0x7a8880, 0xa8b4ac);
-    grid.position.y = 0.002;
-    grid.material.transparent = true;
-    grid.material.opacity = 0.18;
-    this.scene.add(grid);
+  /**
+   * Live studio lighting / post / sky / floor controls.
+   * @param {object} patch
+   * @param {{ rebakeProbes?: boolean, rebuildPipeline?: boolean }} [opts]
+   */
+  setStudioLighting(patch = {}, opts = {}) {
+    this.studioLighting?.setSettings?.(patch, opts);
+    this.emitSnapshot();
+  }
+
+  getStudioLighting() {
+    return this.studioLighting?.snapshot?.() ?? null;
+  }
+
+  rebakeStudioProbes() {
+    return this.studioLighting?.bakeProbes?.();
   }
 
   /**
@@ -278,7 +380,18 @@ export class DogSimScene {
     if (!preset || !this.dog) return;
     this.activePresetId = preset.id;
 
-    if (preset.light && this.keyLight && this.hemiLight) {
+    if (preset.light && this.studioLighting) {
+      // Map legacy preset key position → sun azimuth/elevation + intensities.
+      const [kx, ky, kz] = preset.light.key ?? [2.2, 5, 3];
+      const az = THREE.MathUtils.radToDeg(Math.atan2(kx, kz));
+      const elev = THREE.MathUtils.radToDeg(Math.atan2(ky, Math.hypot(kx, kz)));
+      this.studioLighting.setSettings({
+        sunAzimuth: az,
+        sunElevation: elev,
+        sunIntensity: preset.light.keyIntensity ?? 1.6,
+        hemiIntensity: preset.light.hemi ?? 1.1,
+      });
+    } else if (preset.light && this.keyLight && this.hemiLight) {
       this.keyLight.position.fromArray(preset.light.key);
       this.keyLight.intensity = preset.light.keyIntensity ?? 1.6;
       this.hemiLight.intensity = preset.light.hemi ?? 1.1;
@@ -288,9 +401,18 @@ export class DogSimScene {
     this.dog.animation.setBehavior(preset.behavior ?? 'idle');
     this.dog.animation.setRootPosition(0, 0, 0);
     this.dog.animation.setRootYaw(0);
+    // Studio/harness stills keep a closed mouth so faces match photo boards
+    // (open pant reads as a dog gape on rodents/cats). Sit is still a
+    // quadruped crouch — upright sciurid sit needs a dedicated pose kit.
+    this.dog.animation.setMouthState(preset.mouthState ?? 'closed');
 
     if (opts.settle !== false && this.harnessMode) {
       this.settleSeconds(preset.settleSeconds ?? 1.0);
+      // Snap closed after damp so residual pant blend can't flash teeth/jaw.
+      if ((preset.mouthState ?? 'closed') === 'closed') {
+        this.dog.animation.setMouthState('closed');
+        this.dog.face?.setMouthOpen(0, 0, 0, 0, false);
+      }
     }
     this.frameDogForPreset(preset);
     this.emitSnapshot();
@@ -334,8 +456,37 @@ export class DogSimScene {
     if (!this.dog) return;
     const steps = Math.max(1, Math.round(seconds / FIXED_DT));
     for (let i = 0; i < steps; i += 1) {
-      this.dog.update(FIXED_DT, { fixed: true, time: this.dog.animation.getTime() });
+      const clipReady = !this.harnessMode && Boolean(this.clipPlayer?.ready);
+      // Skeleton clips own body TRS when the library is ready — skip procedural gait.
+      this.dog.animation?.setClipDriven?.(clipReady);
+      this.dog.update(FIXED_DT, {
+        fixed: true,
+        time: this.dog.animation.getTime(),
+        plantFeet: !clipReady,
+      });
+      // Harness stays procedural-only for deterministic screenshots; live studio
+      // advances retargeted skeleton clips as the sole body pose writer.
+      if (!this.harnessMode) {
+        this.clipPlayer?.update?.(FIXED_DT, this.dog.animation.getBehavior());
+        if (this.clipPlayer?.ready) {
+          this.dog.animation?.applyPostClipOverlays?.();
+          plantDogFeet(this.dog, { getGroundHeight: () => 0 });
+        }
+      }
     }
+  }
+
+  /**
+   * Attach the shared dog-bone clip library (Walk/Run/Sit/Idle) when enabled.
+   * Skipped in harness mode so visual probes stay deterministic.
+   * @param {ReturnType<typeof createProceduralDog>} dog
+   */
+  _bindClipPlayer(dog) {
+    this.clipPlayer?.dispose?.();
+    this.clipPlayer = null;
+    if (this.harnessMode || !animalUsesDogClipLibrary(dog)) return;
+    this.clipPlayer = new DogClipPlayer(dog);
+    void this.clipPlayer.initialize();
   }
 
   /**
@@ -356,8 +507,33 @@ export class DogSimScene {
 
   setBehavior(id) {
     this.dog?.animation.setAutopilot(false);
+    // Behavior grid owns procedural mapping — release any studio clip pin.
+    this.clipPlayer?.clearPin?.();
     this.dog?.animation.setBehavior(id);
     this.emitSnapshot();
+  }
+
+  /**
+   * Play a retargeted horse→dog GLB clip by source name (Idle, Walk, Bark, …).
+   * @param {string} name
+   */
+  setClip(name) {
+    if (!name || !this.clipPlayer) return false;
+    this.liveMotion = true;
+    this.dog?.animation.setAutopilot(false);
+    const catalog = this.clipPlayer.snapshot?.()?.catalog
+      ?? null;
+    const entry = Array.isArray(catalog)
+      ? catalog.find((item) => item.name === name)
+      : null;
+    // Align procedural behavior when the clip has a matching gait slot so
+    // secondary motion (mouth/tail) stays consistent.
+    if (entry?.behavior) {
+      this.dog?.animation.setBehavior(entry.behavior);
+    }
+    const ok = this.clipPlayer.playClip(name);
+    this.emitSnapshot();
+    return ok;
   }
 
   setMouthState(id) {
@@ -375,10 +551,20 @@ export class DogSimScene {
     this.emitSnapshot();
   }
 
-  rebuildDog({ breedId = this.breedId, seed = this.seed } = {}) {
+  rebuildDog({ breedId = this.breedId, seed = this.seed, variantId } = {}) {
     if (!this.scene) return null;
-    const normalizedBreedId = normalizeRenderableDogBreedId(breedId);
+    // Keep catalog identity (feline stubs stay "siamese"); silhouette falls back
+    // inside resolveDogPhenotype when the breed is not authored.
+    const normalizedBreedId = normalizeDogBreedId(breedId);
     const normalizedSeed = normalizeDogSeed(seed);
+    const breedChanged = normalizedBreedId !== this.breedId;
+    // Explicit variantId always wins. Otherwise: breed change resets to that
+    // breed's default variant; seed-only changes (randomize) keep the current
+    // variant so gallery pairs stay a fair A/B of the same coat.
+    const normalizedVariantId = normalizeDogVariantId(
+      normalizedBreedId,
+      variantId ?? (breedChanged ? undefined : this.variantId),
+    );
     const previous = this.dog;
     const state = previous ? {
       behavior: previous.animation.getBehavior(),
@@ -391,9 +577,13 @@ export class DogSimScene {
       showFur: previous.getShowFur(),
     } : null;
 
+    this.clipPlayer?.dispose?.();
+    this.clipPlayer = null;
+
     const next = createProceduralDog({
       breedId: normalizedBreedId,
       seed: normalizedSeed,
+      variantId: normalizedVariantId,
       shellCount: this.shellCount,
     });
     this.scene.add(next.root);
@@ -414,8 +604,15 @@ export class DogSimScene {
     this.dog = next;
     this.breedId = next.breedId;
     this.familyId = next.familyId;
+    this.speciesId = next.speciesId
+      ?? getSpeciesIdForFamily(next.familyId)
+      ?? 'canidae';
+    this.variantId = next.variantId;
     this.seed = next.seed;
     previous?.dispose();
+    this._bindClipPlayer(next);
+    // Subject changed — refresh probe SH so bounce matches the new coat/shape.
+    void this.studioLighting?.bakeProbes?.();
 
     const preset = DOG_REFERENCE_PRESETS.find((item) => item.id === this.activePresetId)
       ?? DOG_REFERENCE_PRESETS[0];
@@ -428,9 +625,34 @@ export class DogSimScene {
     return this.rebuildDog({ breedId });
   }
 
+  setSpecies(speciesId) {
+    const key = String(speciesId ?? '').trim().toLowerCase();
+    const species = ANIMAL_SPECIES.find((entry) => entry.id === key);
+    if (!species) return null;
+    this.speciesId = key;
+    const families = getPopulatedFamiliesForSpecies(key);
+    if (!families.length) {
+      // Master list entry with no authored breeds yet — keep selection, clear active dog choice.
+      this.familyId = getFamiliesForSpecies(key)[0]?.id ?? null;
+      this.emitSnapshot();
+      return this.dog;
+    }
+    if (families.some((family) => family.id === this.familyId)) {
+      this.emitSnapshot();
+      return this.dog;
+    }
+    return this.setFamily(families[0].id);
+  }
+
   setFamily(familyId) {
-    const breeds = getAuthoredDogBreeds(familyId);
-    if (!breeds.length) return null;
+    const breeds = getDogBreeds(familyId);
+    if (!breeds.length) {
+      this.familyId = familyId;
+      this.speciesId = getSpeciesIdForFamily(familyId) ?? this.speciesId;
+      this.emitSnapshot();
+      return null;
+    }
+    this.speciesId = getSpeciesIdForFamily(familyId) ?? this.speciesId;
     if (breeds.some((breed) => breed.id === this.breedId)) {
       this.familyId = familyId;
       this.emitSnapshot();
@@ -441,6 +663,10 @@ export class DogSimScene {
 
   setSeed(seed) {
     return this.rebuildDog({ seed });
+  }
+
+  setVariant(variantId) {
+    return this.rebuildDog({ variantId });
   }
 
   randomize() {
@@ -481,6 +707,7 @@ export class DogSimScene {
       },
       gallery: () => DOG_REFERENCE_PRESETS.map((p) => p.id),
       catalog: () => ({
+        species: ANIMAL_SPECIES,
         families: DOG_FAMILIES,
         breeds: DOG_BREEDS,
         authoredBreedIds: AUTHORED_DOG_BREED_IDS,
@@ -489,13 +716,20 @@ export class DogSimScene {
       showGalleryPair: (i) => thisRef.showGalleryPair(i),
       nextGalleryPair: () => thisRef.nextGalleryPair(),
       setBehavior: (b) => thisRef.setBehavior(b),
+      setClip: (name) => thisRef.setClip(name),
       setMouthState: (m) => thisRef.setMouthState(m),
       setLiveMotion: (v) => thisRef.setLiveMotion(v),
       setNakedBody: (v) => thisRef.setNakedBody(v),
       setCompareEnabled: (v) => thisRef.setCompareEnabled(v),
+      setStudioLighting: (patch, opts) => thisRef.setStudioLighting(patch, opts),
+      getStudioLighting: () => thisRef.getStudioLighting(),
+      rebakeStudioProbes: () => thisRef.rebakeStudioProbes(),
       setBreed: (id) => thisRef.setBreed(id)?.breedId ?? null,
-      setFamily: (id) => thisRef.setFamily(id)?.familyId ?? null,
+      setSpecies: (id) => thisRef.setSpecies(id)?.speciesId ?? thisRef.speciesId,
+      setFamily: (id) => thisRef.setFamily(id)?.familyId ?? thisRef.familyId,
       setSeed: (seed) => thisRef.setSeed(seed)?.seed ?? null,
+      setVariant: (id) => thisRef.setVariant(id)?.variantId ?? null,
+      getVariants: () => getDogVariants(thisRef.breedId),
       randomize: () => thisRef.randomize()?.seed ?? null,
       setCamera: (pos, target) => {
         thisRef.camera?.position.fromArray(pos);
@@ -506,7 +740,9 @@ export class DogSimScene {
       renderOnce: async () => {
         thisRef.dog?.update(0, { fixed: true });
         thisRef.controls?.update();
-        if (thisRef.renderer && thisRef.scene && thisRef.camera) {
+        if (thisRef.studioLighting) {
+          thisRef.studioLighting.render();
+        } else if (thisRef.renderer && thisRef.scene && thisRef.camera) {
           await thisRef.renderer.renderAsync(thisRef.scene, thisRef.camera);
         }
       },
@@ -525,6 +761,7 @@ export class DogSimScene {
   buildSnapshot() {
     const breed = getDogBreed(this.breedId);
     const preset = DOG_REFERENCE_PRESETS.find((item) => item.id === this.activePresetId);
+    const variants = getDogVariants(this.breedId);
     return {
       status: this.status,
       error: this.error,
@@ -539,20 +776,38 @@ export class DogSimScene {
       bones: this.dog?.boneCount ?? 0,
       verts: this.dog?.vertexCount ?? 0,
       shells: this.dog?.shellCount ?? 0,
+      speciesId: this.speciesId,
+      speciesLabel: ANIMAL_SPECIES.find((entry) => entry.id === this.speciesId)?.label ?? this.speciesId,
       familyId: this.familyId,
       breedId: this.breedId,
       breedLabel: breed?.label ?? 'Golden Retriever',
+      animationClips: this.clipPlayer?.snapshot?.() ?? {
+        enabled: false,
+        ready: false,
+        clip: null,
+        clips: 0,
+        available: [],
+        pinned: null,
+        catalog: null,
+      },
       seed: this.seed,
       breedSummary: breed?.summary ?? null,
       akcRank: breed?.popularity.rank ?? null,
       resolvedTraits: this.dog?.resolvedTraits ?? null,
+      variantId: this.variantId,
+      variantLabel: variants.find((variant) => variant.id === this.variantId)?.label ?? 'Standard',
+      variants,
       referenceImage: preset
-        ? dogRefUrl(preset.refFile ?? 'three-quarter.jpg', this.breedId)
+        ? dogRefUrl(preset.refFile ?? 'three-quarter.jpg', this.breedId, this.variantId)
         : null,
+      referenceImageChain: preset
+        ? dogRefUrlChain(preset.refFile ?? 'three-quarter.jpg', this.breedId, this.variantId)
+        : [],
       preset: this.activePresetId,
       galleryIndex: this.galleryIndex,
       speed: Number((this.dog?.animation.getMoveSpeed() ?? 0).toFixed(2)),
       time: Number((this.dog?.animation.getTime() ?? 0).toFixed(2)),
+      studioLighting: this.studioLighting?.snapshot?.() ?? null,
     };
   }
 
@@ -581,7 +836,17 @@ export class DogSimScene {
     const dt = Math.min(this.clock.getDelta(), 0.05);
     if (this.dog && this.status === 'ready') {
       if (this.liveMotion) {
-        this.dog.update(dt);
+        const clipReady = Boolean(this.clipPlayer?.ready);
+        // Retargeted clips take priority: no procedural body gait when ready.
+        this.dog.animation?.setClipDriven?.(clipReady);
+        this.dog.update(dt, { plantFeet: !clipReady });
+        this.clipPlayer?.update?.(dt, this.dog.animation.getBehavior());
+        // Clip is the sole body pose writer — plant pads after the mixer.
+        // Mouth/jaw/ears reapply after the sample so pant/alert still work.
+        if (clipReady) {
+          this.dog.animation?.applyPostClipOverlays?.();
+          plantDogFeet(this.dog, { getGroundHeight: () => 0 });
+        }
       } else if (!this.harnessMode) {
         // Still advance fur time gently when paused? keep frozen in harness.
         this.dog.furDynamics.update(dt, this.dog.animation.getRootPosition(), {
@@ -592,12 +857,17 @@ export class DogSimScene {
     }
 
     this.controls?.update();
-    if (this.renderer && this.scene && this.camera) {
+    if (this.studioLighting) {
+      this.studioLighting.render();
+    } else if (this.renderer && this.scene && this.camera) {
       this.renderer.render(this.scene, this.camera);
     }
 
-    // Throttle snapshot UI updates.
-    if ((performance.now() * 0.001) % 0.25 < dt) {
+    // Throttle snapshot UI updates (~4 Hz). Avoid recreating ref URL chains
+    // every frame — that reset the compare <img> fallback index and flashed.
+    const now = performance.now();
+    if (now - this._lastSnapshotEmitMs >= 250) {
+      this._lastSnapshotEmitMs = now;
       this.emitSnapshot();
     }
   };
@@ -611,8 +881,12 @@ export class DogSimScene {
     this.resizeObserver = null;
     this.controls?.dispose();
     this.controls = null;
+    this.clipPlayer?.dispose?.();
+    this.clipPlayer = null;
     this.dog?.dispose();
     this.dog = null;
+    this.studioLighting?.dispose?.();
+    this.studioLighting = null;
     this.renderer?.dispose();
     this.renderer = null;
     this.scene = null;

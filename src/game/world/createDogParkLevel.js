@@ -9,9 +9,19 @@ import { getBlockingColliderAt, getGroundHeightAt } from './createBaseLevel.js';
 import { scatterForestPlacements } from './forest/forestPlacement.js';
 import { placementToTrunkCollider } from './forest/forestColliders.js';
 import { createMudDeformField } from './mudDeformField.js';
+import {
+  CITY_SEED,
+  createCityMaterialWarmupGroup,
+  createGeneratorCityLevel,
+  getCityStride,
+} from './createGeneratorCityLevel.js';
 
 const PARK_HALF_X = 30;
 const PARK_HALF_Z = 22.5;
+/** Keep city roads/buildings/furniture outside the fenced lot (+ small buffer). */
+const CITY_CLEAR_MARGIN = 3;
+/** Chebyshev radius of full downtown tiles around the carved park block. */
+const CITY_RING_RADIUS = 1;
 const FLOOR_Y = 0;
 const MUD_Y = 0.052;
 const WATER_Y = 0.04;
@@ -34,14 +44,16 @@ export function createDogParkLevel(qualityPreset = {}, { renderer = null } = {})
   const colliders = [];
   const walkableSurfaces = [];
   const surfaceZones = [];
+  // 256² is enough for dog-scale ruts; 512² was a large empty GPU texture upload
+  // surface and amplified mudField.syncTexture cost in dog-park traces.
   const mudField = createMudDeformField({
-    cellSize: 0.08,
-    resolution: 512,
+    cellSize: 0.1,
+    resolution: 256,
     maxDepth: 0.16,
     depthTau: 110,
     treadTau: 80,
     wetnessTau: 65,
-    maxFootprints: 160,
+    maxFootprints: 120,
     footprintFadeTau: 0.7,
   });
   const mudTexture = mudField.ensureTexture();
@@ -111,28 +123,38 @@ export function createDogParkLevel(qualityPreset = {}, { renderer = null } = {})
 
   // One bounded spring/deposit field spans both authored wallows. It is sparse
   // visually until an impact, but shares the aquarium floor-water mechanics.
+  // Lower-res spring mesh — full 112×64 double-loop update was a top CPU self-time
+  // hotspot in dog-park traces even when barely wet.
   const mudBlob = createMallWaterHeightfield({
     centerX: -5.5,
     centerZ: 1.5,
     width: 44,
     depth: 24,
-    columns: 112,
-    rows: 64,
+    columns: 48,
+    rows: 28,
     floorY: MUD_Y,
     parent: group,
     name: 'Dog Park Ground Mud Blob',
     appearance: 'mud',
   });
   let flopImpactCount = 0;
+  let npcFlopImpactCount = 0;
 
   addFence(group, colliders, materials.fence);
   addPlayStructure(group, colliders, walkableSurfaces, materials);
   addParkFurniture(group, colliders, materials);
 
+  // Neighborhood ring: one carved downtown tile under the park (buildings +
+  // street furniture outside the fence) plus radius-1 neighbor tiles for a
+  // readable skyline. Sync build — dog-park boot already waits on forest.
+  const cityChunks = qualityPreset.dogParkSkipCity === true
+    ? []
+    : buildDogParkCityRing(group, colliders, qualityPreset);
+
   const spawnPoint = new THREE.Vector3(-2, FLOOR_Y, -15.5);
   const dogSpawnPoint = new THREE.Vector3(-2, FLOOR_Y, -9.2);
-  // The shared runtime still creates Mara. This pad keeps her hidden body stable
-  // outside the playable fence while the dog owns the visible camera/gameplay.
+  // The shared runtime still requires a non-null character. This pad keeps its
+  // invisible, geometry-free stub stable while the dog owns camera/gameplay.
   colliders.push({
     name: 'Hidden Player Park',
     minX: -4,
@@ -222,7 +244,7 @@ export function createDogParkLevel(qualityPreset = {}, { renderer = null } = {})
     mudBlob.update(delta);
   }
 
-  function applyDogFlopImpact({ position, headingX = 0, headingZ = 1 } = {}) {
+  function applyDogFlopImpact({ position, headingX = 0, headingZ = 1, trackImpact = true } = {}) {
     if (!position || surfaceClassAt(position.x, position.z, surfaceZones) !== 'mud') return false;
     const length = Math.hypot(headingX, headingZ) || 1;
     const dx = headingX / length;
@@ -249,7 +271,11 @@ export function createDogParkLevel(qualityPreset = {}, { renderer = null } = {})
     // Keep the springy splash close to the torso. A larger aquarium-style
     // deposit hid the entire incoming paw trail after the flop.
     mudBlob.deposit(position.x + dx * 0.05, position.z + dz * 0.05, 0.26, 3.2, dx * 0.85, dz * 0.85);
-    flopImpactCount += 1;
+    // NPC flops use their own counter — the player-facing telemetry below is a
+    // regression-tested exact count for the player's own flop action and must
+    // not drift because background NPC dogs are also playing in the mud.
+    if (trackImpact) flopImpactCount += 1;
+    else npcFlopImpactCount += 1;
     return true;
   }
 
@@ -284,10 +310,28 @@ export function createDogParkLevel(qualityPreset = {}, { renderer = null } = {})
     mudBlob,
     ready,
     isNearFieldReady: () => true,
-    createPipelineWarmupGroup: () => createMaterialWarmupGroup(
-      [...Object.values(materials), mudBlob.mesh.material],
-      'Dog Park Pipeline Warmup',
-    ),
+    // Three r185 can emit an incomplete depthStencil descriptor when this
+    // mixed NodeMaterial/MeshStandardMaterial scene is sent through
+    // compileAsync(scene). The real render-context warmup batches below are
+    // safe and cover the same park materials.
+    skipInitialAsyncCompile: true,
+    createPipelineWarmupGroup: () => {
+      const parkWarmup = createMaterialWarmupGroup(
+        Object.values(materials),
+        'Dog Park Pipeline Warmup',
+      );
+      if (!cityChunks.length) return parkWarmup;
+      // City TSL materials (asphalt, skyscraper, benches, cars…) need the same
+      // prewarm path as the infinite-city mode or first look-around hitches.
+      const cityWarmup = createCityMaterialWarmupGroup();
+      parkWarmup.add(cityWarmup);
+      const parkDispose = parkWarmup.userData.disposeWarmup;
+      parkWarmup.userData.disposeWarmup = () => {
+        parkDispose?.();
+        cityWarmup.userData.disposeWarmup?.();
+      };
+      return parkWarmup;
+    },
     getGroundHeightAt: groundHeightAt,
     getBlockingColliderAt: ({ position, radius, feetY, height, stepHeight }) => getBlockingColliderAt({
       position,
@@ -303,6 +347,10 @@ export function createDogParkLevel(qualityPreset = {}, { renderer = null } = {})
       : sampleLakeWater(position.x, position.z),
     getRoadSurfaceAt: () => null,
     findNearestRoadPoint: () => null,
+    parkBounds: { minX: -PARK_HALF_X, maxX: PARK_HALF_X, minZ: -PARK_HALF_Z, maxZ: PARK_HALF_Z },
+    mudPatches: MUD_PATCHES.map((patch) => ({ ...patch })),
+    lake: { ...LAKE },
+    cityChunks,
     updateStreaming: (position) => {
       forestZone?.setCameraPosition?.(position);
       return null;
@@ -320,12 +368,17 @@ export function createDogParkLevel(qualityPreset = {}, { renderer = null } = {})
       surfaces: ['grass', 'dirt', 'sand', 'mud', 'water'],
       water: sampleLakeWater(LAKE.x, LAKE.z),
       forest: forestZone?.snapshot?.() ?? { forestTrees: 0 },
+      city: {
+        chunks: cityChunks.length,
+        keys: cityChunks.map((chunk) => chunk.chunkKey),
+      },
       playStructureSurfaces: walkableSurfaces.length,
       mud: {
         activeDeformCells: mudField.activeCount,
         pawStampCount: mudField.dogPawStampCount ?? 0,
         visiblePawPrints: pawTrailVisual.count,
         flopImpactCount,
+        npcFlopImpactCount,
         deformTextureActive: Boolean(mudField.texture && mudField.activeCount > 0),
         groundBlob: mudBlob.snapshot(),
       },
@@ -335,11 +388,78 @@ export function createDogParkLevel(qualityPreset = {}, { renderer = null } = {})
       if (forestZone?.group) forestZone.group.removeFromParent();
       forestZone?.dispose?.();
       forestZone = null;
+      for (const chunk of cityChunks) {
+        chunk.group?.removeFromParent();
+        chunk.dispose?.();
+      }
+      cityChunks.length = 0;
       mudBlob.dispose();
       mudField.disposeTexture();
       disposeObject3D(group);
     },
   };
+}
+
+/**
+ * Downtown tile under the park (lot carved out) + one-block ring of neighbors.
+ * Center tile: full physics + furniture outside the fence.
+ * Neighbor tiles: skyline/furniture visuals only (too far for park play; skips
+ * ~2.5k Rapier bodies that would dominate dog-park physics).
+ */
+function buildDogParkCityRing(group, colliders, qualityPreset = {}) {
+  const stride = getCityStride();
+  const radius = Number.isFinite(qualityPreset.dogParkCityRadius)
+    ? Math.max(0, Math.min(2, qualityPreset.dogParkCityRadius | 0))
+    : CITY_RING_RADIUS;
+  const clearRect = {
+    minX: -PARK_HALF_X - CITY_CLEAR_MARGIN,
+    maxX: PARK_HALF_X + CITY_CLEAR_MARGIN,
+    minZ: -PARK_HALF_Z - CITY_CLEAR_MARGIN,
+    maxZ: PARK_HALF_Z + CITY_CLEAR_MARGIN,
+  };
+  const castShadows = qualityPreset.shadows !== false;
+  /** @type {ReturnType<typeof createGeneratorCityLevel>[]} */
+  const chunks = [];
+  const ring = new THREE.Group();
+  ring.name = 'Dog Park City Ring';
+  ring.userData.freezeStaticWorldMatrices = true;
+
+  for (let cz = -radius; cz <= radius; cz += 1) {
+    for (let cx = -radius; cx <= radius; cx += 1) {
+      const isCenter = cx === 0 && cz === 0;
+      const chunkKey = `dog-park:${cx}:${cz}`;
+      const originX = cx * stride.x;
+      const originZ = cz * stride.z;
+      // Distinct seeds per tile so the ring doesn't look like a tiled stamp.
+      const seed = CITY_SEED + 17 + cx * 31 + cz * 97;
+      try {
+        const chunk = createGeneratorCityLevel({
+          seed,
+          cityStyle: 'downtown',
+          chunkKey,
+          chunkX: cx,
+          chunkZ: cz,
+          originX,
+          originZ,
+          // Park lot hole only on the center tile — neighbors are full blocks.
+          clearRect: isCenter ? clearRect : null,
+          includeDebugOverlay: false,
+          // Dog mode doesn't need tower parkour extraction.
+          extractTraversal: false,
+          // Only the carved block casts shadows into the park; ring is skyline.
+          castShadows: castShadows && isCenter,
+        });
+        ring.add(chunk.group);
+        if (isCenter) colliders.push(...chunk.colliders);
+        chunks.push(chunk);
+      } catch (error) {
+        console.warn(`[dog-park] city chunk ${chunkKey} failed`, error);
+      }
+    }
+  }
+
+  if (chunks.length) group.add(ring);
+  return chunks;
 }
 
 function addLawn(group, lawnMaterial) {
@@ -576,12 +696,55 @@ function addFence(group, colliders, fenceMaterial) {
 function addPlayStructure(group, colliders, walkable, materials) {
   const centerX = -9;
   const centerZ = -5.2;
-  addBox(group, colliders, 'Dog Platform', [centerX, 0.62, centerZ], [3.2, 1.2, 3], materials.wood, {
-    collider: true,
-    surfaceClass: 'wood',
+  // Platform box: bottom near ground, top is the walkable deck.
+  const platformSize = Object.freeze({ x: 3.2, y: 1.2, z: 3 });
+  const platformTop = platformSize.y; // deck height (box bottom ~0)
+  const platformCenterY = platformSize.y * 0.5;
+  addBox(
+    group,
+    colliders,
+    'Dog Platform',
+    [centerX, platformCenterY, centerZ],
+    [platformSize.x, platformSize.y, platformSize.z],
+    materials.wood,
+    { collider: true, surfaceClass: 'wood' },
+  );
+  // Analytic deck so snaps land on the top face, not only via collider steps.
+  walkable.push({
+    name: 'Dog Platform Deck',
+    heightAt(px, pz) {
+      if (Math.abs(px - centerX) > platformSize.x * 0.5 || Math.abs(pz - centerZ) > platformSize.z * 0.5) {
+        return null;
+      }
+      return platformTop;
+    },
   });
-  addRamp(group, walkable, 'West Dog Ramp', centerX - 3.1, centerZ, 3, 1.25, 1.2, 1, materials.wood);
-  addRamp(group, walkable, 'East Dog Ramp', centerX + 3.1, centerZ, 3, 1.25, 1.2, -1, materials.wood);
+
+  // Ramps: slope length L, rise matches deck. Overlap high end into the box so
+  // rotation foreshortening never leaves a gap (old layout stopped ~10cm short).
+  const rampSlopeLen = 3.15;
+  const rampWidth = 1.45;
+  const rampOverlap = 0.28;
+  const platformWest = centerX - platformSize.x * 0.5;
+  const platformEast = centerX + platformSize.x * 0.5;
+  addRampToHeight(group, walkable, 'West Dog Ramp', {
+    highEndX: platformWest + rampOverlap,
+    z: centerZ,
+    slopeLength: rampSlopeLen,
+    width: rampWidth,
+    rise: platformTop,
+    direction: 1,
+    material: materials.wood,
+  });
+  addRampToHeight(group, walkable, 'East Dog Ramp', {
+    highEndX: platformEast - rampOverlap,
+    z: centerZ,
+    slopeLength: rampSlopeLen,
+    width: rampWidth,
+    rise: platformTop,
+    direction: -1,
+    material: materials.wood,
+  });
 
   const tunnel = new THREE.Mesh(
     new THREE.CylinderGeometry(0.75, 0.75, 3.8, 32, 1, true),
@@ -594,29 +757,76 @@ function addPlayStructure(group, colliders, walkable, materials) {
   tunnel.receiveShadow = true;
   group.add(tunnel);
 
-  // Static A-frame silhouette with analytic walkable faces.
-  addRamp(group, walkable, 'A Frame West', 15, -7.2, 3.1, 1.45, 1.35, 1, materials.wood);
-  addRamp(group, walkable, 'A Frame East', 18.1, -7.2, 3.1, 1.45, 1.35, -1, materials.wood);
+  // A-frame: two slopes meet at a shared peak with overlap so the ridge seals.
+  const aPeakX = 16.55;
+  const aPeakZ = -7.2;
+  const aRise = 1.35;
+  const aSlope = 3.15;
+  const aWidth = 1.5;
+  const aOverlap = 0.2;
+  addRampToHeight(group, walkable, 'A Frame West', {
+    highEndX: aPeakX + aOverlap * 0.5,
+    z: aPeakZ,
+    slopeLength: aSlope,
+    width: aWidth,
+    rise: aRise,
+    direction: 1,
+    material: materials.wood,
+  });
+  addRampToHeight(group, walkable, 'A Frame East', {
+    highEndX: aPeakX - aOverlap * 0.5,
+    z: aPeakZ,
+    slopeLength: aSlope,
+    width: aWidth,
+    rise: aRise,
+    direction: -1,
+    material: materials.wood,
+  });
 }
 
-function addRamp(group, walkable, name, x, z, length, width, rise, direction, rampMaterial) {
-  const angle = Math.atan2(rise, length);
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(length, 0.14, width), rampMaterial);
+/**
+ * Place a board ramp whose high end sits at `highEndX` and low end on the ground.
+ * `direction` +1 rises toward +X (west approach), -1 rises toward -X (east approach).
+ * Walkable `heightAt` uses world-X span (horizontal projection), not slope length.
+ */
+function addRampToHeight(group, walkable, name, {
+  highEndX,
+  z,
+  slopeLength,
+  width,
+  rise,
+  direction,
+  material: rampMaterial,
+  thickness = 0.14,
+}) {
+  const dir = direction >= 0 ? 1 : -1;
+  const angle = Math.atan2(rise, slopeLength);
+  const horiz = slopeLength * Math.cos(angle);
+  // Center of the slab: midway along the slope in world XZ and half-rise in Y.
+  const centerX = highEndX - dir * (horiz * 0.5);
+  const centerY = rise * 0.5;
+  const lowEndX = highEndX - dir * horiz;
+
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(slopeLength, thickness, width), rampMaterial);
   mesh.name = name;
-  mesh.position.set(x, rise * 0.5, z);
-  mesh.rotation.z = direction * angle;
+  mesh.position.set(centerX, centerY, z);
+  mesh.rotation.z = dir * angle;
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   mesh.userData.surfaceClass = 'wood';
   group.add(mesh);
 
+  const minX = Math.min(lowEndX, highEndX);
+  const maxX = Math.max(lowEndX, highEndX);
+  const halfW = width * 0.5;
+  // Small padding so the walkable surface still reads under the deck overlap.
+  const pad = 0.04;
   walkable.push({
     name,
     heightAt(px, pz) {
-      const along = (px - x) * direction;
-      const cross = pz - z;
-      if (Math.abs(along) > length * 0.5 || Math.abs(cross) > width * 0.5) return null;
-      return THREE.MathUtils.clamp(rise * 0.5 + (along / length) * rise, 0, rise);
+      if (px < minX - pad || px > maxX + pad || Math.abs(pz - z) > halfW) return null;
+      const t = THREE.MathUtils.clamp((px - lowEndX) / (highEndX - lowEndX), 0, 1);
+      return rise * t;
     },
   });
 }

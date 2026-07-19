@@ -124,8 +124,25 @@ export function createMudDeformField({
   // since the last sync (a one-time zero write) — never the whole grid, so a big
   // fine field stays cheap. The texel buffer starts zeroed and cells are only
   // ever non-zero while active, so untouched texels are already correct.
-  function syncTexture() {
-    if (!texture) return;
+  //
+  // GPU writeBuffer was a top self-time hotspot when this ran every frame with
+  // an empty active set (dog park grass). Skip the upload entirely when idle.
+  let texDirty = false;
+  let syncFrame = 0;
+  function markTextureDirty() {
+    texDirty = true;
+  }
+  function syncTexture({ force = false } = {}) {
+    if (!texture) return false;
+    if (!force && active.size === 0 && pendingClear.size === 0 && !texDirty) {
+      return false;
+    }
+    // While only decaying (no new stamps this frame), ~30 Hz uploads are enough
+    // for soft ruts and cut writeBuffer cost roughly in half.
+    syncFrame += 1;
+    if (!force && !texDirty && active.size > 0 && pendingClear.size === 0 && (syncFrame & 1) === 0) {
+      return false;
+    }
     const invMax = 1 / maxDepth;
     for (const i of active) {
       const r = clamp255(depth[i] * invMax);
@@ -153,12 +170,14 @@ export function createMudDeformField({
       orientationData[o + 3] = 0;
     }
     pendingClear.clear();
+    texDirty = false;
     texture.needsUpdate = true;
     orientationTexture.needsUpdate = true;
     // WebGPU node materials can miss a bare needsUpdate on DataTextures that were
     // bound empty at first compile; bumping version forces a re-upload.
     texture.version = (texture.version | 0) + 1;
     orientationTexture.version = (orientationTexture.version | 0) + 1;
+    return true;
   }
   function disposeTexture() {
     texture?.dispose?.();
@@ -268,6 +287,9 @@ export function createMudDeformField({
     }
     depth[i] = Math.min(maxDepth, Math.max(depth[i], d) + add);
     wetness[i] = Math.max(wetness[i], w);
+    // Force GPU upload next sync so new stamps are not deferred by the
+    // every-other-frame decay throttle.
+    texDirty = true;
     tread[i] = Math.max(tread[i], t);
     active.add(i);
     pendingClear.delete(i); // re-stamped before its clear was flushed

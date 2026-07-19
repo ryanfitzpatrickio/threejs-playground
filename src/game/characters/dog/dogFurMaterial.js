@@ -75,6 +75,7 @@ export function createDogFurUniforms(phenotype = null) {
     tipColor: uniform(new THREE.Color(palette.tip ?? 0xf2d9a4)),
     undercoatColor: uniform(new THREE.Color(palette.undercoat ?? 0xecd6a4)),
     guardColor: uniform(new THREE.Color(palette.guard ?? 0xcf9440)),
+    earInnerTint: uniform(new THREE.Vector3(...(coat.earInnerTint ?? [0.12, 0.045, 0.035]))),
     // Soft density field (lower = larger clumps, less grass blades).
     cellsPerMeter: uniform(coat.density ?? 420),
     waveAmpCells: uniform(0.1),
@@ -258,7 +259,7 @@ export function createDogShellMaterial(u, layerIndex, shellCount) {
     const pW = vPosW;
 
     const coatCol = mix(u.undercoatColor, u.guardColor, coat);
-    const innerCol = coatCol.mul(0.42).add(vec3(0.12, 0.045, 0.035));
+    const innerCol = coatCol.mul(0.42).add(u.earInnerTint);
     const baseCol = mix(coatCol, innerCol, earInner.mul(0.78));
     const rootCol = baseCol.mul(u.rootColor).mul(float(0.9));
     const tipCol = baseCol.mul(u.tipColor).mul(float(1.0));
@@ -331,7 +332,7 @@ export function createDogBodyMaterial(u) {
   const earInner = step(float(1.5), coatPayload);
   const coat = coatPayload.sub(earInner.mul(2.0));
   const coatCol = mix(u.undercoatColor.mul(0.9), u.guardColor.mul(0.88), coat);
-  const innerCol = coatCol.mul(0.42).add(vec3(0.12, 0.045, 0.035));
+  const innerCol = coatCol.mul(0.42).add(u.earInnerTint);
   const cleanCol = mix(coatCol, innerCol, earInner.mul(0.78));
   const mudMask = dogMudMask(restPos, coatZone, u);
   const mudCol = mix(u.mudWetColor, u.mudDryColor, u.mudDryness);

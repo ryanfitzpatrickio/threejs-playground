@@ -4,6 +4,7 @@
  */
 
 import * as THREE from 'three';
+import { plantBindSoles, DOG_PAW_MESH_PAD as FOOT_PLANT_PAD } from './dogFootPlant.js';
 
 /** Medium dog (golden-retriever scale), meters. */
 export const DOG_PROPORTIONS = {
@@ -57,38 +58,43 @@ export const DOG_BONE_DEFS = [
   { name: 'EarR1', parent: 'EarR0', pos: [-0.006, -0.042, -0.01], rot: [4, 0, -1] },
   { name: 'EarR2', parent: 'EarR1', pos: [-0.003, -0.048, -0.01], rot: [4, 0, -1] },
 
-  // Front left — standing plantigrade: nearly vertical forearm, short pastern,
-  // paw bone mostly FORWARD (+Z) so the pad lies flat on the ground (not tippy).
-  // Local X pitch only so animation Rx ≈ world swing.
-  { name: 'ShoulderL', parent: 'Chest', pos: [0.105, -0.02, 0.04] },
-  { name: 'UpperArmL', parent: 'ShoulderL', pos: [0.01, -0.13, 0.015], rot: [8, 0, 0] },
-  { name: 'ForearmL', parent: 'UpperArmL', pos: [0.0, -0.155, -0.012], rot: [-10, 0, 0] },
-  // Pastern ends near the ground; slight forward lean.
-  { name: 'PasternL', parent: 'ForearmL', pos: [0.0, -0.105, 0.01], rot: [6, 0, 0] },
-  // Paw: mostly +Z (pad length), small -Y (pad thickness) — flat foot, not toe-tip.
-  { name: 'PawL', parent: 'PasternL', pos: [0.0, -0.012, 0.042] },
+  // Front left — straight column like the fox reference (near-plumb shoulder→
+  // elbow→wrist, short pastern break). Pure -Y + small X pitch.
+  { name: 'ShoulderL', parent: 'Chest', pos: [0.105, -0.005, 0.04], rot: [6, 0, 0] },
+  { name: 'UpperArmL', parent: 'ShoulderL', pos: [0.01, -0.135, 0], rot: [-6, 0, 0] },
+  { name: 'ForearmL', parent: 'UpperArmL', pos: [0.0, -0.215, 0], rot: [-6, 0, 0] },
+  { name: 'PasternL', parent: 'ForearmL', pos: [0.0, -0.06, 0] },
+  { name: 'PawL', parent: 'PasternL', pos: [0.0, -0.012, 0.036] },
 
   // Front right
-  { name: 'ShoulderR', parent: 'Chest', pos: [-0.105, -0.02, 0.04] },
-  { name: 'UpperArmR', parent: 'ShoulderR', pos: [-0.01, -0.13, 0.015], rot: [8, 0, 0] },
-  { name: 'ForearmR', parent: 'UpperArmR', pos: [0.0, -0.155, -0.012], rot: [-10, 0, 0] },
-  { name: 'PasternR', parent: 'ForearmR', pos: [0.0, -0.105, 0.01], rot: [6, 0, 0] },
-  { name: 'PawR', parent: 'PasternR', pos: [0.0, -0.012, 0.042] },
+  { name: 'ShoulderR', parent: 'Chest', pos: [-0.105, -0.005, 0.04], rot: [6, 0, 0] },
+  { name: 'UpperArmR', parent: 'ShoulderR', pos: [-0.01, -0.135, 0], rot: [-6, 0, 0] },
+  { name: 'ForearmR', parent: 'UpperArmR', pos: [0.0, -0.215, 0], rot: [-6, 0, 0] },
+  { name: 'PasternR', parent: 'ForearmR', pos: [0.0, -0.06, 0] },
+  { name: 'PawR', parent: 'PasternR', pos: [0.0, -0.012, 0.036] },
 
-  // Hind left — mild S, hock above pad, hind foot flat forward on ground.
-  { name: 'HipL', parent: 'Pelvis', pos: [0.088, -0.012, -0.015] },
-  { name: 'ThighL', parent: 'HipL', pos: [0.01, -0.125, 0.015], rot: [-14, 0, 0] },
-  { name: 'ShinL', parent: 'ThighL', pos: [0.0, -0.135, 0.03], rot: [24, 0, 0] },
-  { name: 'HockL', parent: 'ShinL', pos: [0.0, -0.12, -0.025], rot: [-18, 0, 0] },
-  // Hind paw mostly +Z along the ground.
-  { name: 'HindPawL', parent: 'HockL', pos: [0.0, -0.012, 0.04], rot: [4, 0, 0] },
+  // Hind left — camped digitigrade S from the paw up (fox mesh reference).
+  // Head = +Z. Bones sit at joints, pure translation (no rest pitch):
+  //   pads → nearly vertical cannon up to high rear hock (Shin bone) →
+  //   tibia up-FORWARD to stifle under the flank (Thigh bone) →
+  //   femur up-BACK to hip.
+  // Stifle must clear the thick haunch loft (+Z under belly); a mild +0.07
+  // buried the forward knee so the silhouette read as a single reverse hock.
+  { name: 'HipL', parent: 'Pelvis', pos: [0.088, -0.006, -0.012] },
+  // The three long segments use the same compact scale. Keeping the femur
+  // forward, tibia back, and cannon nearly vertical preserves the canine
+  // stifle/hock profile without making the rear leg longer than the foreleg.
+  { name: 'ThighL', parent: 'HipL', pos: [0.012, -0.108, 0.116] },
+  { name: 'ShinL', parent: 'ThighL', pos: [0.0, -0.083, -0.154] },
+  { name: 'HockL', parent: 'ShinL', pos: [0.0, -0.125, 0.017] },
+  { name: 'HindPawL', parent: 'HockL', pos: [0.0, -0.016, 0.04] },
 
   // Hind right
-  { name: 'HipR', parent: 'Pelvis', pos: [-0.088, -0.012, -0.015] },
-  { name: 'ThighR', parent: 'HipR', pos: [-0.01, -0.125, 0.015], rot: [-14, 0, 0] },
-  { name: 'ShinR', parent: 'ThighR', pos: [0.0, -0.135, 0.03], rot: [24, 0, 0] },
-  { name: 'HockR', parent: 'ShinR', pos: [0.0, -0.12, -0.025], rot: [-18, 0, 0] },
-  { name: 'HindPawR', parent: 'HockR', pos: [0.0, -0.012, 0.04], rot: [4, 0, 0] },
+  { name: 'HipR', parent: 'Pelvis', pos: [-0.088, -0.006, -0.012] },
+  { name: 'ThighR', parent: 'HipR', pos: [-0.012, -0.108, 0.116] },
+  { name: 'ShinR', parent: 'ThighR', pos: [0.0, -0.083, -0.154] },
+  { name: 'HockR', parent: 'ShinR', pos: [0.0, -0.125, 0.017] },
+  { name: 'HindPawR', parent: 'HockR', pos: [0.0, -0.016, 0.04] },
 ];
 
 const DEFAULT_SKELETON_SHAPE = Object.freeze({
@@ -155,7 +161,15 @@ export function createDogBoneDefs(phenotype = null) {
     base.pos[1] *= shape.headSize;
     base.pos[2] *= shape.headSize;
 
-    if (ear.type === 'erect' || ear.type === 'bat') {
+    if (ear.type === 'rounded') {
+      // A raccoon pinna is a low rounded cup, not a shortened spitz triangle.
+      base.pos = [sign * 0.072 * shape.headSize * (geometry.skullWidth ?? 1), 0.05 * shape.headSize, -0.003 * shape.headSize];
+      base.rot = [-3, 0, sign * -4];
+      mid.pos = [sign * 0.004 * width, 0.025 * length, 0];
+      mid.rot = [-2, 0, sign * -2];
+      tip.pos = [sign * 0.002 * width, 0.02 * length, 0.001];
+      tip.rot = [0, 0, 0];
+    } else if (ear.type === 'erect' || ear.type === 'bat') {
       const bat = ear.type === 'bat' ? 1.18 : 1;
       base.pos = [sign * 0.058 * shape.headSize * width, 0.052 * shape.headSize, -0.006 * shape.headSize];
       base.rot = [sign > 0 ? -4 : -4, 0, sign * -5];
@@ -215,36 +229,68 @@ export function createDogBoneDefs(phenotype = null) {
 
   for (let i = 0; i < DOG_TAIL_BONES.length; i += 1) {
     const def = byName.get(DOG_TAIL_BONES[i]);
-    def.pos[1] *= shape.tailLength;
-    def.pos[2] *= shape.tailLength;
-    if (tail.type === 'curled') {
-      // Tight corkscrew (pug-like short tails) — large cumulative curl is fine
-      // since the tail itself is short and coils close against the rump.
-      const curl = tail.curl ?? 1;
-      def.rot = [-28 - curl * (i === 0 ? 20 : 34), 0, i > 1 ? (i % 2 ? 8 : -8) * curl : 0];
-    } else if (tail.type === 'sickle') {
-      // Open sickle arc (husky/chihuahua): rises from the rump and curls
-      // forward over the back. Note each bone's local rotation orients the
-      // offset to its CHILD, not itself — Tail0's rotation places Tail1, etc.
-      // A ramped-down sequence (large pitch near the base, easing off toward
-      // the tip) is what actually produces a curl-over in this rig; the
-      // previous uniform-per-bone angle just drooped the tail down and back
-      // like a straight tail, never curling above the rump (verified by
-      // querying bone world positions — Y fell monotonically instead of
-      // rising through the middle of the chain).
-      const curl = tail.curl ?? 0.65;
-      def.rot = [-34 - curl * 36 - i * 2, 0, i > 1 ? (i % 2 ? 6 : -6) * curl * 0.5 : 0];
-    } else if (tail.type === 'upright') {
-      def.rot = [-62 + i * 5, 0, 0];
-    } else if (tail.type === 'straight') {
-      def.rot = [-8 + i * 2, 0, 0];
+    if (tail.type === 'sciurid') {
+      // Free tall plume *behind* the rump (rodent-ref S-curve). Prior ramps
+      // with large +pitch curled the tip over the back into a backpack that
+      // fused with the torso. Local chain is mostly +Y with small -Z so the
+      // tip stays caudal of the pelvis; curl only eases a soft tip S.
+      const curl = THREE.MathUtils.clamp(Number(tail.curl) || 0.35, 0, 1.2);
+      const L = shape.tailLength;
+      const tipPull = curl * 0.012 * L;
+      const plumeStations = [
+        [0, 0.048 * L, -0.058 * L],
+        [0, 0.1 * L, -0.02 * L],
+        [0, 0.095 * L, -0.008 * L],
+        [0, 0.08 * L, 0.004 * L + tipPull * 0.4],
+        [0, 0.055 * L, 0.008 * L + tipPull],
+      ];
+      def.pos = plumeStations[i];
+      // Near-zero pitch — vertical stations carry the rise; curl tips distal.
+      const tipOver = i >= 3 ? -curl * 10 * (i - 2) : 0;
+      def.rot = [5 - i * 1.5 + tipOver, 0, 0];
+    } else {
+      def.pos[1] *= shape.tailLength;
+      def.pos[2] *= shape.tailLength;
+      if (tail.type === 'curled') {
+        // Tight corkscrew (pug-like short tails) — large cumulative curl is fine
+        // since the tail itself is short and coils close against the rump.
+        const curl = tail.curl ?? 1;
+        def.rot = [-28 - curl * (i === 0 ? 20 : 34), 0, i > 1 ? (i % 2 ? 8 : -8) * curl : 0];
+      } else if (tail.type === 'sickle') {
+        // Open sickle arc (husky/chihuahua): rises from the rump and curls
+        // forward over the back. Note each bone's local rotation orients the
+        // offset to its CHILD, not itself — Tail0's rotation places Tail1, etc.
+        // A ramped-down sequence (large pitch near the base, easing off toward
+        // the tip) is what actually produces a curl-over in this rig; the
+        // previous uniform-per-bone angle just drooped the tail down and back
+        // like a straight tail, never curling above the rump (verified by
+        // querying bone world positions — Y fell monotonically instead of
+        // rising through the middle of the chain).
+        const curl = tail.curl ?? 0.65;
+        def.rot = [-34 - curl * 36 - i * 2, 0, i > 1 ? (i % 2 ? 6 : -6) * curl * 0.5 : 0];
+      } else if (tail.type === 'upright') {
+        def.rot = [-62 + i * 5, 0, 0];
+      } else if (tail.type === 'straight') {
+        def.rot = [-8 + i * 2, 0, 0];
+      } else if (tail.type === 'paddle') {
+        // Flat horizontal paddle (beaver): laid straight back, near-level. The
+        // wide flat plate is built in dogBodyGeometry; this chain just keeps
+        // it caudal of the rump and roughly horizontal (not raised).
+        def.rot = [-2 + i, 0, 0];
+      }
     }
   }
 
+  // Align with ANIMAL_NUMERIC_RANGES['skeleton.frontLegScale'] (0.45–1.2).
+  const frontLegScale = THREE.MathUtils.clamp(Number(shape.frontLegScale) || 1, 0.45, 1.2);
   for (const chain of Object.values(DOG_LEG_CHAINS)) {
+    const legMul = shape.legLength * (chain.front ? frontLegScale : 1);
     for (const name of chain.bones) {
       const def = byName.get(name);
-      def.pos[1] *= shape.legLength;
+      def.pos[1] *= legMul;
+      // Scale sagittal offsets with leg length so long-legged breeds keep the
+      // same S-curve proportions (otherwise hind Z stays short and pads diverge).
+      if (name !== chain.hip) def.pos[2] *= legMul;
       if (name === chain.hip) {
         def.pos[0] *= chain.front ? shape.chestWidth : shape.hipWidth;
         def.pos[2] *= shape.bodyLength;
@@ -255,10 +301,10 @@ export function createDogBoneDefs(phenotype = null) {
 }
 
 /**
- * Pad thickness under the *pastern/hock* region — used only for uniform ground lift.
+ * Mesh pad hang below sole bones — shared with dogFootPlant bind/runtime plant.
  * Do NOT per-paw warp tip bones every frame (that creates tippy-toe stilts).
  */
-export const DOG_PAW_MESH_PAD = 0.018;
+export const DOG_PAW_MESH_PAD = FOOT_PLANT_PAD;
 
 /** Leg chains for animation (local euler additives). */
 export const DOG_LEG_CHAINS = {
@@ -321,6 +367,7 @@ export const DOG_EAR_BONES = {
  *   restPositions: Map<string, THREE.Vector3>,
  *   boneCount: number,
  *   worldBindPos: Map<string, THREE.Vector3>,
+ *   worldBindQuaternions: Map<string, THREE.Quaternion>,
  * }}
  */
 export function createDogSkeleton(options = {}) {
@@ -358,25 +405,10 @@ export function createDogSkeleton(options = {}) {
 
   root.updateMatrixWorld(true);
 
-  // Uniform ground plant: lift the whole body so the lowest *pad mesh estimate*
-  // (pastern/hock region − pad thickness) sits on y=0. No per-paw tip warping.
-  {
-    const soleBones = ['PasternL', 'PasternR', 'HockL', 'HockR'];
-    let minSoleY = Infinity;
-    for (const name of soleBones) {
-      const p = new THREE.Vector3().setFromMatrixPosition(bonesByName.get(name).matrixWorld);
-      minSoleY = Math.min(minSoleY, p.y);
-    }
-    // Also consider paw bone Y (flat foot tips).
-    for (const name of ['PawL', 'PawR', 'HindPawL', 'HindPawR']) {
-      const p = new THREE.Vector3().setFromMatrixPosition(bonesByName.get(name).matrixWorld);
-      minSoleY = Math.min(minSoleY, p.y);
-    }
-    const pelvis = bonesByName.get('Pelvis');
-    // Mesh pad hangs DOG_PAW_MESH_PAD under the sole bones.
-    pelvis.position.y += -minSoleY + DOG_PAW_MESH_PAD;
-    root.updateMatrixWorld(true);
-  }
+  // Breed-agnostic sole plant: pelvis lift + per-leg CCD so front/hind match
+  // despite legLength phenotype (see dogFootPlant.js). Geometry is built after
+  // this so bind skinning matches the planted rest pose.
+  plantBindSoles({ root, bonesByName, skeleton: null }, FOOT_PLANT_PAD);
 
   const skeleton = new THREE.Skeleton(bones);
 
@@ -386,6 +418,8 @@ export function createDogSkeleton(options = {}) {
   const restPositions = new Map();
   /** @type {Map<string, THREE.Vector3>} */
   const worldBindPos = new Map();
+  /** @type {Map<string, THREE.Quaternion>} */
+  const worldBindQuaternions = new Map();
 
   for (const bone of bones) {
     restQuaternions.set(bone.name, bone.quaternion.clone());
@@ -393,6 +427,10 @@ export function createDogSkeleton(options = {}) {
     worldBindPos.set(
       bone.name,
       new THREE.Vector3().setFromMatrixPosition(bone.matrixWorld),
+    );
+    worldBindQuaternions.set(
+      bone.name,
+      bone.getWorldQuaternion(new THREE.Quaternion()),
     );
   }
 
@@ -405,6 +443,7 @@ export function createDogSkeleton(options = {}) {
     restQuaternions,
     restPositions,
     worldBindPos,
+    worldBindQuaternions,
     boneCount: bones.length,
     boneDefs,
     phenotype,

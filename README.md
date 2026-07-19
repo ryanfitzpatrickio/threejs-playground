@@ -1,220 +1,453 @@
-# Three.js Playground
+# Dreamfall
 
-An experimental browser playground for building and testing real-time 3D ideas with Three.js. It combines small game prototypes, procedural world generation, animation, physics, terrain editing, and rendering experiments in one Vite-powered workspace.
+An experimental **browser 3D playground** (Vite + Solid + **Three.js r185 WebGPU/TSL** + **Rapier**) for real-time gameplay, procedural worlds, vehicles, combat, animation, and rendering experiments.
 
-This repository is intentionally exploratory rather than a finished game or reusable engine. Features may be incomplete, replaced, or kept as reference implementations while new ideas are tested.
+This is a **prototype workspace**, not a finished game or drop-in engine. Systems are often complete enough to study, partial, or kept as reference while new ideas are tried. Prefer the scene sections below when looking for a technique to port elsewhere.
 
-## What’s in the Playground
+| | |
+|---|---|
+| **Run** | `npm install` → `npm run pull:forest-textures` (once after clone) → `npm run dev` → [http://127.0.0.1:5173](http://127.0.0.1:5173) |
+| **Build / smoke** | `npm run build` · `npm run visual-smoke` |
+| **Stack** | Three WebGPU + TSL · Rapier · Solid UI · Vite · Cloudflare Pages deploy |
+| **Docs** | Deep plans live in [`docs/`](docs/) — this README stays high-level |
 
-- Open salt-plane base level.
-- FBX climber model loaded from `public/assets/models/climber.fbx`.
-- New Mixamo pack zips extracted into `public/assets/animation-packs/`.
-- Basic locomotion states use targeted clips from `locomotion-pack-2` and `magic-locomotion-pack`.
-- Curated animation manifest wired into the runtime state machine, with a procedural fallback model if FBX loading fails.
-- Runtime-owned animation state that starts only after the base level is loaded.
-- Keyboard movement, brace, and jump states wired through game systems.
-- Great-sword combat: draw/sheathe, armed locomotion, light/heavy attacks + combo, and swing-driven CSG cuts on contact.
-- Sparse Solid HUD fed by runtime snapshots.
-- Playwright visual smoke check for desktop and mobile rendering.
+---
 
-## Commands
+## Scenes & techniques
+
+Each main-menu experience (and a few tools / modes) is listed with **gameplay ideas** and **graphics ideas**, named features to search for, and **how to research or rebuild the idea in another project**. Details are intentionally approximate—use names as search keys into `src/` and `docs/`.
+
+Shared stack used by most playable modes: fixed-step **PhysicsSystem**, **MovementSystem** + traversal chain, **VehicleSystem**, **WeatherSystem** / **SkySystem**, post stack (SSAO / SSR / bloom / god rays), quality presets.
+
+---
+
+### City — infinite freerun
+
+**What you play:** Endless generated city blocks — streets, rooftops, parkour, grapple, wingsuit, offices, vehicles.
+
+**Level:** `createInfiniteCityLevel` / `createGeneratorCityLevel` · worker `cityChunkWorker.js`  
+**Docs:** city performance plans, `hook-swing-system-plan.md`, `wingsuit-plan.md`, `office-interior-wfc-plan.md`
+
+#### Gameplay techniques
+
+| Feature | Idea to research / replicate |
+|---|---|
+| **Chunk-streamed procedural city** | Generate blocks on a grid with a seeded PRNG. Stream skeleton placeholders, then full chunks under a per-frame budget. Keep **collision layout PRNG draws in lockstep** with render so roof heights never drift. |
+| **Collider spatial index** | Broadphase queries over many building colliders without scanning the whole city each frame. |
+| **Parkour surface extraction** | Derive ledges, wall-run strips, climb faces, and rope anchors from building geometry once per chunk—not from raw mesh every jump. |
+| **Traversal stack** | Ordered modes (wall run, climb, ledge hang, vault, slide, rope) each may override the movement result after a base character controller. |
+| **Hook / multi-tether swing** | Raycast façades for anchors; momentum swing with re-hook midair (Spider-Man–style research: swing graphs, rope constraint, camera lag). |
+| **Wingsuit** | Deploy midair; trade altitude for speed; separate cloth/membrane presentation from flight model. |
+| **Enterable interiors (WFC offices)** | Door prompt → teleport into a below-map or cached interior; Wave Function Collapse for layout; keep exterior streaming independent. |
+| **Vehicles + mount** | Drive city roads; seat enter/exit then resume freerun. |
+
+#### Visual / graphics techniques
+
+| Feature | Idea to research / replicate |
+|---|---|
+| **Procedural skyscraper / sidewalk generators** | Rule-based massing + window grids (Three CityGenerator family). |
+| **Wet road / weather-driven materials** | Shared rain wetness uniforms on asphalt materials. |
+| **Furniture / prop batching** | Instanced street props; watch **WebGPU sampler limits** (array textures help). |
+| **Far skyline LODs** | Cheap lit boxes / window strips for unloaded distance. |
+| **Volumetric sky + post** | Atmosphere LUT / clouds when quality allows; SSAO/SSR/bloom gated by preset. |
+
+**Keywords:** procedural city · chunk streaming · PRNG lockstep · parkour extraction · grapple · WFC interiors · wet roads  
+
+---
+
+### World — streaming open world map
+
+**What you play:** Drive and freerun on **streaming heightfield terrain** built from the World Map editor (roads, rivers, forests, optional city zones).
+
+**Level:** `createStreamingTerrainLevel` / `createComposedWorldLevel`  
+**Docs:** `terrain-infinite-distance-plan.md`, `hextile-terrain-texture-plan.md`, `forest-zone-plan.md`, road/river plans
+
+#### Gameplay techniques
+
+| Feature | Idea to research / replicate |
+|---|---|
+| **Infinite heightfield streaming** | Continuous procedural height + authored overlays; load/unload chunks; **heightfield colliders** where vehicles go (characters can often use analytic height alone). |
+| **Spline road / river corridors** | Flatten or carve terrain along polylines; tunnels, bridges, surface classes (dirt/mud/asphalt). |
+| **Composed systems** | One world query API over terrain + city zones + blueprints—don’t run separate disconnected ground samples. |
+| **Blueprint entities** | Editor-placed prefabs (props, spawners) hydrate at runtime from store data. |
+| **Forest zones** | Polygon masks for instanced trees, trunk colliders, litter. |
+
+#### Visual / graphics techniques
+
+| Feature | Idea to research / replicate |
+|---|---|
+| **Biome terrain shading** | Height/slope blends (sand → grass → rock → snow); world-XZ UVs. |
+| **Hex-tiling terrain textures** | Mikkelsen-style hex tile blend to hide repetition (`hexTilingNodes`). |
+| **Horizon / parallax / distant forest** | Fake infinite distance with layers instead of full geometry. |
+| **Mud / dirt road deformation** | GPU deform field driven by tires/feet (shared idea with Rally). |
+| **Trackside cross-sections** | Extrude curb/fence/prop bands along road frames. |
+
+**Keywords:** chunked heightfield · spline corridors · biome blend · hex tile · zone forests · blueprints  
+
+---
+
+### Rally — Pine Ridge dirt stage
+
+**What you play:** Timed dirt stage loop with **loose-surface driving**, rain-wet roads, mud ruts, spectators.
+
+**Level:** streaming terrain + built-in rally world map · **mode** `RallyModeController`  
+**Docs:** `rally-dirt-road-plan.md`, `rally-mud-tread-plan.md`, `advanced-wet-roads-plan.md`, `spectator-crowd-system-plan.md`, `driving-camera-redesign-plan.md`
+
+#### Gameplay techniques
+
+| Feature | Idea to research / replicate |
+|---|---|
+| **Surface-dependent grip** | Sample road surface class under each tire; scale friction / slip (gravel vs mud vs wet). |
+| **Rally vehicle builds** | Garage presets (chassis, tires, tune) as data, not hard-coded per car mesh. |
+| **Mud physics ↔ VFX field** | One deform map feeds sink depth, wetness, tread—and visual ruts. |
+| **Chase / comfort camera** | Speed-scaled lag, steer offset, FOV pump (GTA/Forza-style chase research). |
+| **Stage cross-sections** | Track style (stage vs spectator) swaps ropes, marshals, barriers along the same centerline. |
+
+#### Visual / graphics techniques
+
+| Feature | Idea to research / replicate |
+|---|---|
+| **Wet road PBR (TSL)** | Rain + persistent wetness; puddles, graze-angle gloss, optional env reflections on standing water. |
+| **Hex-tiled dirt/mud atlases** | Same hex path as terrain; mud brown base + rut darkening. |
+| **Tire spray / dust** | Layered particle/instanced VFX driven by slip and surface. |
+| **Spectator crowds** | Baked pose flipbooks or instanced characters reacting to the car. |
+| **Engine / tire audio** | RPM+load layered loops; gravel/mud tire layers. |
+
+**Keywords:** dirt rally · multi-surface tires · mud GPU field · wet-road TSL · chase camera · trackside dressing  
+
+---
+
+### Wilds — alpine valley & forest
+
+**What you play:** Finite eroded valley with **dense instanced trees**—exploration sandbox, lighter systems than City.
+
+**Level:** `createWildsLevel`  
+**Docs:** `wilds-nature-system-plan.md`, forest LOD notes
+
+#### Gameplay techniques
+
+| Feature | Idea to research / replicate |
+|---|---|
+| **Single heightfield sandbox** | One generator grid → one Rapier heightfield; simpler than infinite streaming. |
+| **Character exploration** | Standard freerun movement without full city parkour extraction. |
+
+#### Visual / graphics techniques
+
+| Feature | Idea to research / replicate |
+|---|---|
+| **Procedural terrain generator materials** | Low-texture or zero-texture TSL looks to save sampler budget under shadow maps. |
+| **Mega tree instancing** | Huge `InstancedMesh` forest with distance cull; **exclude trees from expensive BVH raycasts**. |
+| **Forest LOD / impostors** (shared forest stack) | Weber–Penn skeletons, leaf cards, billboard impostors (SeedThree lineage). |
+
+**Keywords:** procedural valley · mass instancing · heightfield · foliage LOD  
+
+---
+
+### Shooting Range — warehouse breach
+
+**What you play:** Timed (~60s) **first-person** warehouse course—tag hostiles, spare friendlies.
+
+**Level:** `createShootingRangeLevel` · **mode** `RangeModeController`  
+**Docs:** `first-person-weapon-system-plan.md`, `powerful-shooting-feedback-plan.md`, `advanced-reload-system-plan.md`
+
+#### Gameplay techniques
+
+| Feature | Idea to research / replicate |
+|---|---|
+| **Scenario scoring** | Timed run with friend/foe tags and spawn script. |
+| **First-person weapons** | Hitscan or projectile; ADS FOV; recoil; ammo; weapon switch; hand/body IK. |
+| **Presentation vs damage** | Separate tracers, muzzle flash, shells, audio from pure hit math. |
+
+#### Visual / graphics techniques
+
+| Feature | Idea to research / replicate |
+|---|---|
+| **Indoor-ish PBR set** | Brick/wood/concrete atlases; hex-tile large floors. |
+| **God rays** | Post volumetric shafts from a sun direction through window bands. |
+| **Tight shadow volume** | Shadow camera fitted to arena size for sharper local shadows. |
+
+**Keywords:** FPS range · hitscan · ADS/IK · god rays · scenario AI targets  
+
+---
+
+### Horde — robot wave arena
+
+**What you play:** Mall → shipping → train yard **wave defense**—melee CSG cuts, guns, set pieces.
+
+**Level:** `createHordeModeLevel` · **feature** `HordeRuntimeFeature`  
+**Docs:** `horde-mode-plan.md`, `horde-flow-mob-plan.md`, `enemy-sword-csg-cut-plan.md`, `horde-gi-plan.md`, propane/aquarium plans
+
+#### Gameplay techniques
+
+| Feature | Idea to research / replicate |
+|---|---|
+| **Wave spawn + population caps** | Gate spawns; hard limits on live enemies and corpses. |
+| **Flow-field / flock AI** | Coarse navigation field + local steering/separation (crowd sim research). |
+| **Far enemy proxies** | Impostors or cheap LODs outside combat radius. |
+| **Sword CSG limb cuts + ragdoll** | Clip skinned mesh on hit; partial bodies + Rapier ragdolls for severed parts. |
+| **Hybrid melee + firearms** | One enemy record accepts blade cuts and bullets. |
+| **Destructible set pieces** | Propane tanks, aquarium breach—scripted damage volumes + VFX. |
+
+#### Visual / graphics techniques
+
+| Feature | Idea to research / replicate |
+|---|---|
+| **Large static merge + instancing** | Bake arena shells; instance props/furniture. |
+| **Local GI probes** | LightProbeGrid-style bounce for atriums without path tracing. |
+| **Specialty TSL materials** | Water, glass, emissive storefronts budgeted per arena. |
+
+**Keywords:** wave combat · flow fields · CSG skinned cuts · proxies · probe GI  
+
+---
+
+### Household (Sims) — residential lot
+
+**What you play:** Point-and-click **Sims-like** lot—select agents, click-to-move; main freerun avatar is parked.
+
+**Level:** `createSimLotLevel` · **feature** `SimsRuntimeFeature`  
+**Docs:** `sims-scene-plan.md`, `psx-household-assets.md`, garment/creator plans
+
+#### Gameplay techniques
+
+| Feature | Idea to research / replicate |
+|---|---|
+| **RTS / click-to-move agents** | Hide the FPS/TPP hero; independent actors with pick + path/steer on a flat lot. |
+| **Avatar / outfit pipeline** | Presets for body, face, garments as versioned data. |
+| **Authored garment cloth** | Pattern → XPBD cloth sim (visual soft body, not full physics engine cloth). |
+
+#### Visual / graphics techniques
+
+| Feature | Idea to research / replicate |
+|---|---|
+| **TSL skin shading** | Subsurface-style skin materials on humanoid rigs. |
+| **Hex-tiled lawn / path PBR** | Shared outdoor surface language with Dog Park / Rally. |
+| **PSX household props** | Low-poly furniture packs for dressing prototypes. |
+| **Pattern editor + 3D preview** | 2D sewing view beside live 3D human. |
+
+**Keywords:** Sims control · XPBD cloth · character creator · lot prototype  
+
+---
+
+### Dog Park — procedural dog playground
+
+**What you play:** Control a **procedural dog** in a finite lakeside park (breeds, mud, splash, freecam).
+
+**Level:** `createDogParkLevel` · **feature** `DogParkRuntimeFeature`  
+**Studio:** Dog Studio (`?view=dog-sim`) for breed gallery  
+**Docs:** `dog-park-scene-plan.md`, `dog-breed-variants-plan.md`
+
+#### Gameplay techniques
+
+| Feature | Idea to research / replicate |
+|---|---|
+| **Procedural creature as player** | Phenotype from breed/family/seed; kinematic controller owns world root motion. |
+| **Clip-driven gait + soft steer** | Offline retarget (e.g. horse→dog); controller aims body gently; clips drive local bones. |
+| **Surface-tagged park** | Grass / dirt / sand / mud zones + agility props under one collider API. |
+| **One-shot actions** | Jump/bark/flop clips with hold frames and recover blends. |
+| **Mud interaction** | Foot stamps + body flop deform field + coat dirtiness. |
+| **Dog chase camera / photo mode** | Close third-person with turn push/pull; freecam (K) without fighting chase cam. |
+
+#### Visual / graphics techniques
+
+| Feature | Idea to research / replicate |
+|---|---|
+| **Shell fur / coat fields** | Layered shell meshes + zone length masks (face short, ruff long). |
+| **Shared water + forest** | Same water material / SeedThree forest as open world, park-scale. |
+| **Scene surface PBR + hex tile** | `createSceneSurfaceMaterial` for lawn/paths/props. |
+| **Deformable mud wallows** | Same GPU mud field idea as Rally, footprint-first. |
+
+**Keywords:** procedural animal · retargeted gait · surface materials · mud coat · creature camera  
+
+---
+
+### Deathmatch — Rail Crucible arena
+
+**What you play:** Vertical **arena FPS** layout (solo preview; multiplayer WIP).
+
+**Level:** `createDeathmatchArenaLevel` from pure map data `railCrucibleMap.js`  
+**Docs:** `multiplayer-deathmatch-partykit-plan.md`
+
+#### Gameplay techniques
+
+| Feature | Idea to research / replicate |
+|---|---|
+| **Pure map descriptor** | One data table for volumes/spawns/pickups builds client meshes **and** can validate server hits. |
+| **Arena loop** | Vertical tiers, ramps, weapon/ammo/health pickups (Quake/Unreal arena research). |
+| **Net authority (planned)** | Server health/hits; client predict move; cosmetic ragdolls local-only. |
+
+#### Visual / graphics techniques
+
+| Feature | Idea to research / replicate |
+|---|---|
+| **Shared industrial PBR language** | Reuse range/horde materials with distinct layout. |
+| **Readable vertical bands** | Landmark color/lighting per tier so routes read at a glance. |
+
+**Keywords:** arena FPS · pure map data · pickups · authoritative multiplayer  
+
+---
+
+### Highway — Matrix freeway chase *(level mode; boot with `?level=highway`)*
+
+**What you play:** Infinite **highway ribbon**—traffic, roof-surf, car leaps, combat on moving beds.
+
+**Level:** `createMatrixHighwayLevel` · **mode** `HighwayModeController`  
+**Docs:** `matrix-highway-scene-plan.md`, `matrix-highway-optimization-plan.md`
+
+#### Gameplay techniques
+
+| Feature | Idea to research / replicate |
+|---|---|
+| **Infinite road recenter** | Visual wrap of segments + move a fixed physics slab so the player never reaches “end of world.” |
+| **Pooled traffic convoy** | Object-pool cars at flow speed; relative-velocity combat fantasy. |
+| **Roof-surf while steering** | Exterior stance that still drives the vehicle. |
+| **Car leap / hijack** | Inherit platform velocity; dedicated leap actions (Just Cause / Mad Max research). |
+| **Combat on moving platforms** | Trailers as tiny arenas; ragdolls keep vehicle velocity. |
+
+#### Visual / graphics techniques
+
+| Feature | Idea to research / replicate |
+|---|---|
+| **Batched road instancing** | Few instanced road batches instead of hundreds of meshes. |
+| **Fog to hide recycle edge** | Distance fog/atmosphere masks the seam. |
+| **Traffic car presentation** | LODs / shared materials for dense traffic. |
+
+**Keywords:** infinite highway · pooling · moving platforms · roof surf · velocity inheritance  
+
+---
+
+### Editors & tool scenes
+
+#### World Map editor
+
+**Techniques:** Schema-driven **roads / rivers / zones / blueprints** (`worldMapSchema`); 2D authoring with **3D playable preview** via the same level factory as World mode. Research: content pipeline where editor and runtime share one contract.
+
+#### Map Builder (terrain sculpt)
+
+**Techniques:** Chunked height **sculpt** on a continuous procedural base; seam-safe neighbors; export runtime JSON / GLB. Research: “procedural infinity + local paint” terrain editors.
+
+#### Garage & Bodyshop
+
+**Techniques:** Vehicle **builds as data** (chassis, tires, engines); Bodyshop classifies mesh parts for glass/lights; optional LightProbeGrid preview. Research: separate content tools from the driving sim.
+
+#### Dog Studio / Sim Creator / Gunsmith / PSX viewer
+
+**Techniques:** Isolated **product viewers** (breed gallery, human+garment authoring, gun annotation, prop browser) without loading full combat worlds. Research: tool views vs level modes.
+
+#### Cut Test / robot viewers
+
+**Techniques:** Isolated CSG cut and asset harnesses for iteration without Horde load times.
+
+---
+
+## Cross-cutting systems (reuse map)
+
+| Domain | Look for | Appears in |
+|---|---|---|
+| Fixed-step physics | `PhysicsSystem` 1/60, step hooks | vehicles, mud, ragdolls, highway |
+| Freerun character | `MovementSystem` + traversal systems | City, World, partial elsewhere |
+| Vehicles | `VehicleSystem`, garage builds, damage/suspension | City, World, Rally, Highway |
+| FPS / combat | `WeaponSystem`, `FirstPersonWeaponSystem`, `CombatSystem`, `EnemyCutSystem` | Range, Horde, Deathmatch, Highway |
+| Weather / sky | `WeatherSystem`, `SkySystem`, volumetric `cloud/*` | open outdoor modes, Rally rain |
+| Post FX | SSAO, SSR, Dual Kawase bloom, god rays | quality tiers; Range god rays |
+| Determinism | seeded PRNG, pure level factories | City workers, maps, Horde waves |
+| Surface PBR + hex | `createRallySurfaceMaterial`, `createSceneSurfaceMaterial`, `hexTilingNodes` | Rally, World, Range floors, Dog Park, Sims lot |
+
+---
+
+## Quick start & structure
 
 ```sh
 npm install
-npm run pull:forest-textures   # forest zone bark + needle PBR from SeedThree (required after clone)
-npm run dev
+npm run pull:forest-textures   # bark + needle PBR for forests (after clone)
+npm run dev                    # http://127.0.0.1:5173
 npm run build
-npm run visual-smoke
+npm run visual-smoke           # Playwright smoke (dev server running)
 ```
 
-The dev server defaults to `http://127.0.0.1:5173/`.
+Useful deep checks (see `package.json`): `verify:fixed-step`, `verify:determinism`, `verify:vehicle-*`, `verify:post-effects`, `verify:game-runtime-boundary`.
 
-## Controls
+| Path | Role |
+|---|---|
+| `src/main.js` / `src/bootstrap.jsx` | Entry + Solid mount |
+| `src/ui/` | App shell, HUD, menus, editors |
+| `src/game/core/` | Thin `GameRuntime` facade, frame loop |
+| `src/game/runtime/` | Kernel, services, frame plan, mode features |
+| `src/game/systems/` | Physics, movement, vehicles, combat, weather, … |
+| `src/game/world/` | Level factories (city, terrain, range, horde, dog park, …) |
+| `src/game/characters/` | Player, dogs, enemies |
+| `src/world/terrain/` | Pure chunk heightfield modules (tooling-friendly) |
+| `src/map/` | Map Builder / world map editor |
+| `docs/` | Design plans for major systems |
+| `scripts/` | Asset pipelines + `verify-*.mjs` regressions |
+| `public/assets/` | Runtime GLB/FBX/textures/audio |
 
-- `WASD` / arrow keys: move.
-- `Shift`: brace.
-- `Space`: jump.
-- `Q`: draw / sheathe the great sword (enters/exits armed locomotion).
-- Mouse left: light attack (chains a 3-hit combo).
-- Mouse right: heavy attack (finisher — bisects on contact).
-- `V` (hold): legacy manual aim-and-slice cut mode (debug).
+**Runtime rule of thumb:** new systems wire through `createRuntimeServices` / lifecycle / `runtimeFramePlan`—not by editing the closed `GameRuntime.js` facade (`npm run verify:game-runtime-boundary`).
 
-## Structure
+### Controls (city freerun baseline)
 
-- `src/main.js`: loader only.
-- `src/bootstrap.jsx`: Solid mount.
-- `src/ui/`: Solid canvas and HUD components.
-- `src/game/core/`: runtime and frame loop.
-- `src/game/systems/`: renderer, scene, camera, level, character, input, movement, animation state.
-- `src/game/world/`: base level construction.
-- `src/game/characters/`: character model factories.
-- `src/world/terrain/`: reusable chunked heightfield terrain (Procedural, TerrainChunk, ChunkManager).
-- `src/map/MapBuilder.js`: the modular map builder (separate "page" in the app).
+| Input | Action |
+|---|---|
+| WASD | Move |
+| Shift | Brace / sprint layer |
+| Space | Jump |
+| Q | Draw / sheathe great sword |
+| LMB / RMB | Light / heavy attack (melee) |
+| E | Mount / interact (context) |
+| K | Photo / freecam camera mode |
+| V | Legacy cut-mode debug (hold) |
 
-## Map Builder (separate page)
+Vehicle, FPS, dog, and Sims modes remap many of these—use in-game Controls guide and scene HUDs.
 
-Press the **Map Builder** button in the floating mode switcher (top center) or hit `Ctrl/Cmd + M` / `?` to switch from the game view.
+---
 
-- **Sculpting**: Left-click + drag on terrain in Sculpt mode. Brush modes: raise, lower, smooth, flatten, noise, set.
-- **Navigation**: Alt / right-drag / middle-drag to orbit or pan. Scroll wheel to zoom. Double-click terrain to focus.
-- **Hotkeys** (while builder is active): `[ ]` brush size, `B` toggle sculpt/view, `Ctrl/Cmd+Z` undo, `Shift+Ctrl+Z` redo, `Shift+R` reset visible edges to procedural.
-- **Seams & infinity**: Chunks are always initialized from a continuous world-space procedural sampler. Editing maintains exact edge matching between loaded neighbors. Use "Reset Edges" to force perimeter verts back to pure procedural values so the authored region continues seamlessly into "procedural infinity".
-- **Scope**: Brush normally affects everything under the cursor. Use chunk selection + "Confine to selection" to limit deformation to specific authored chunks.
-- **Persistence**: Autosaves to localStorage. Explicit Save / Load Project buttons produce portable `.json`.
-- **Exports**:
-  - **Export Runtime JSON**: Clean height data + generator params. Designed to be loaded by a future `ChunkManager` + `createTerrainChunkMesh` at game runtime (or baked into `createBaseLevel`).
-  - **Export GLB (visible / authored)**: Produces a single binary GLB with layered structure per chunk:
-    - `DreamfallTerrain_v1 / chunk_CX_CZ / visual` (sculpted mesh)
-    - `... / collision` (matching geometry, ready for trimesh or later decimation)
-    - `... / metadata` (Object3D carrying `userData.heights` + resolution for round-tripping)
+## Deploy (Cloudflare Pages)
 
-Switch back to **Play** at any time — the playground runtime and level are untouched.
+Static Vite build → `dist/`.
 
-The terrain modules under `src/world/terrain/` are intentionally pure and importable without the builder or any Solid/Three renderer, for future game integration or tooling.
-
-## Publishing (Cloudflare Pages)
-
-The project is a static Vite + Solid app. Production build outputs to `dist/`.
-
-### Preparation (already applied)
-- Switched `three` to the published `^0.185.0` package.
-- Vendored the custom CityGenerator / Skyscraper / Sidewalk procedural addons (from the dev three checkout) into `src/three-addons/`.
-- `npm run build` produces a working static bundle.
-
-### Cloudflare Pages setup
-
-1. Push to GitHub (main branch).
-2. In Cloudflare dashboard → Workers & Pages → Create → Pages → Connect to Git.
-3. Select this repo.
-4. Build settings:
-   - **Build command**: `npm ci && npm run build`
-   - **Build output directory**: `dist`
-   - (No root directory override needed)
-5. Save and Deploy.
-
-The site will be available at `your-project.pages.dev`.
-
-### Important limits (as of 2026)
-- 20,000 files max (Free) / 100k (paid)
-- **25 MiB max per file**
-
-All model assets are now well under the 25 MiB limit after optimization (largest ~3.9 MB). See `scripts/optimize-models.mjs` + Blender conversion for the process.
-
-**Current deploy will fail** on file size until the large models are addressed:
-- Compress / re-export the GLBs/FBXs with Draco / Meshopt / quantization.
-- Or move the heaviest binaries to Cloudflare R2 and load them by absolute URL at runtime.
-- Or reduce poly counts / remove unused animation data.
-
-Total asset size is ~290 MiB (mostly animation FBX + a few big models). First-time loads will be heavy; consider progressive / on-demand loading for animations.
-
-### Quick direct deploy (no Git)
 ```sh
-npm ci
-npm run build
+npm ci && npm run build
 npx wrangler pages deploy dist --project-name=dreamfall
 ```
 
-(Install wrangler globally or use npx. First time prompts for login + project creation.)
+**Limits:** Cloudflare free tier file count + **25 MiB per file**. Large models should go through `scripts/optimize-models.mjs` (or R2 for oversized assets). Total runtime assets are large; first load is heavy—prefer progressive loading for new work.
 
-### Other notes
-- No server functions needed (pure client + Web Workers for city chunks).
-- The `cityChunkWorker` and GLTFExporter chunks are correctly emitted.
-- `public/` assets (models, animation packs) are copied verbatim.
-- Dev-only Codex bridge in `vite.config.js` is inert during `vite build`.
-- Update the title/description in `index.html` before going public.
-- Consider adding `public/_headers` for long-term caching of hashed assets.
+Dog product can deploy separately (`dog.html`, `deploy/dog-asset-manifest.json`, `og-image-dog.png`).
 
-After first successful deploy you can attach a custom domain in the dashboard.
+---
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
 
-## References & Credits
+---
 
-Several core effects are ports or direct adaptations of techniques from open Three.js experiments (ported to TSL + WebGPU where needed). Third-party libraries, vendored addons, and asset sources are listed below under their original permissive licenses or terms of use.
+## References & credits
 
-### Core Libraries (npm)
+Ports and adaptations (high level). Third-party terms remain with their authors.
 
-| Project | Role in Dreamfall |
-|--------|-------------------|
-| [Three.js](https://github.com/mrdoob/three.js) | WebGPU renderer, TSL, glTF loading, animation, math |
-| [Solid.js](https://github.com/solidjs/solid) | UI shell, HUD, settings, editor controls |
-| [Vite](https://github.com/vitejs/vite) | Dev server and production bundling |
-| [@dimforge/rapier3d-compat](https://github.com/dimforge/rapier) | Vehicle, character, terrain, and prop physics |
-| [three-mesh-bvh](https://github.com/gkjohnson/three-mesh-bvh) | Accelerated raycasts and level geometry indexing |
-| [three-simplecloth](https://www.npmjs.com/package/three-simplecloth) | Player jacket cloth simulation on WebGPU |
-| [@gltf-transform](https://github.com/donmccurdy/glTF-Transform) + [Draco](https://github.com/google/draco) | Asset verification, compression, and pipeline tooling |
-| [Playwright](https://github.com/microsoft/playwright) | Visual smoke and headless verification scripts |
+| Area | Sources / lineage |
+|---|---|
+| **Three.js / TSL / WebGPU** | [mrdoob/three.js](https://github.com/mrdoob/three.js); custom generators vendored under `src/three-addons/` |
+| **UI** | [Solid](https://github.com/solidjs/solid) · [Vite](https://vitejs.dev) |
+| **Physics** | [Rapier](https://rapier.rs) (`@dimforge/rapier3d-compat`) |
+| **Rain / wet / lightning** | Adapted from [RainSystemThreeJS](https://github.com/achrefelouafi/RainSystemThreeJS) → weather + wet surface nodes |
+| **Parallax occlusion** | [threejs-silhouette-pom](https://github.com/SkyeShark/threejs-silhouette-pom) → `ParallaxOcclusion.js` |
+| **Hex tiling** | [mmikk/hextile-demo](https://github.com/mmikk/hextile-demo) → `hexTilingNodes.js` |
+| **City generators** | three.js city/skyscraper lineage (e.g. PR #33906 family) in `three-addons/generators/` |
+| **Volumetric sky / clouds** | Production WebGPU sky reference notes (`volumetric-sky-cloud-analysis.md`) → `render/cloud/` |
+| **Trees** | [SeedThree](https://github.com/SkyeShark/SeedThree) + Weber–Penn; `npm run pull:forest-textures` for leaf PBR |
+| **WFC interiors** | Wave Function Collapse family ([mxgmn](https://github.com/mxgmn/WaveFunctionCollapse)); local `office/wfc/` |
+| **Engine audio** | Layered RPM model inspired by [engine-audio](https://github.com/markeasting/engine-audio) |
+| **Characters / packs** | Mixamo packs, Mesh2Motion routes, Tripo-sourced meshes where noted |
 
-Additional Three.js helpers are vendored under `src/three-addons/` when the pinned release predates a needed node or generator (LightProbeGrid, SSAO, Dual Kawase bloom, LoftGeometry, etc.).
+Fuller credit tables and planned audio packs remain in git history / `docs/` if you need the long form.
 
-### Rain, Wetness, Lightning, and Puddles
+---
 
-- Rain streaks, animated ripple normals for standing water, water beading/droplets, lightning strikes + scheduling, and flash compositing: [achrefelouafi/RainSystemThreeJS](https://github.com/achrefelouafi/RainSystemThreeJS)
-  - `src/game/render/createRainEffect.js` (streaks)
-  - `src/game/render/createLightningBolt.js`
-  - `src/game/systems/WeatherSystem.js`
-  - `src/game/materials/wetSurfaceNodes.js`, `createTerrainBiomeMaterial.js`, vehicle wet overlays, and CityGenerator road material
+## Development notes
 
-### Parallax & Surface Detail
-
-- Parallax Occlusion Mapping (POM) with silhouette clipping and curved horizons: [SkyeShark/threejs-silhouette-pom](https://github.com/SkyeShark/threejs-silhouette-pom) (vendored at `src/three-addons/tsl/utils/ParallaxOcclusion.js`)
-- Hex-tiling noise reduction for rally mud/terrain textures: Mikkelsen's hex-tile demo ([mmikk/hextile-demo](https://github.com/mmikk/hextile-demo)) — TSL port in `src/game/materials/hexTilingNodes.js`
-
-### Procedural City
-
-- City block / skyscraper / sidewalk / street-furniture generators: vendored from the three.js dev branch / [PR #33906](https://github.com/mrdoob/three.js/pull/33906) into `src/three-addons/generators/`
-
-### Volumetric Sky, Clouds, and Atmosphere
-
-- LUT atmosphere, volumetric cloud march, temporal reprojection, cloud shadows, and god rays: ported from an analyzed production WebGPU sky reference (reverse-engineering notes in [`volumetric-sky-cloud-analysis.md`](volumetric-sky-cloud-analysis.md))
-  - `src/game/render/cloud/` (`CloudSkyProvider`, `CloudMarchNode`, `AtmosphereLUTNode`, etc.)
-  - `src/game/systems/SkySystem.js`
-
-### Forest & Vegetation
-
-- **Procedural trees ([SeedThree](https://github.com/SkyeShark/SeedThree)):** generator modules vendored from [SkyeShark/SeedThree](https://github.com/SkyeShark/SeedThree) (MIT) into `src/game/world/forest/seedthree/` — Weber–Penn skeleton, branch meshing, leaf cards, impostors, wind, and the original pine / Douglas fir / loblolly species presets. Dreamfall wraps these in `src/game/world/forest/` for zone placement, LOD rebinning, instancing, and colliders.
-  - Live reference app: [skyeshark.github.io/SeedThree](https://skyeshark.github.io/SeedThree/)
-  - Forest zone runtime: `createForestZone.js`, `forestTreeBuilder.js`, `forestLod.js`, `forestSpecies.js`
-- **Forest PBR textures:** bark under `public/assets/textures/forest/{species}/` (base pine, Douglas fir, loblolly tracked in git). Needle PBR for all catalog species lives in gitignored `data/forest-leaves/` — run `npm run pull:forest-textures` after clone. Leaves are served at `/assets/forest-leaves/` via the Vite plugin and copied into `dist/` on build. Sources are pulled from [SeedThree](https://github.com/SkyeShark/SeedThree) with per-species tweaks in `forestSpeciesTextures.js`.
-- Parametric tree skeleton follows the **Weber–Penn** paper ([PDF](https://courses.cs.duke.edu/fall02/cps124/resources/p119-weber.pdf)) — `seedthree/weber-penn.js`
-- Leaf-card placement also follows Blender Sapling / [dgreenheck/ez-tree](https://github.com/dgreenheck/ez-tree) conventions (also cited by SeedThree)
-- Backlit foliage translucency: Barré–Brisebois subsurface-scattering approach (Unreal Two-Sided Foliage family) in `seedthree/leaf-cards.js` and `seedthree/impostor.js`
-
-### Crowds & Spectators
-
-- Rally sideline flipbook crowd (baked pose instancing, unlit texture path): adapted from an earlier in-house **3js-rocks** crowd prototype; runtime in `src/game/world/spectatorCrowd.js`, asset build in `scripts/build-crowd-glb.py`
-- Ambient city sidewalk crowd (soldier bake + instancing): `src/game/systems/CrowdSystem.js`
-- Spectator base mesh + Mixamo-style gesture clips under `assets-source/models/crowd/` and `assets-source/animations/crowd-gestures/`
-
-### Office Interiors
-
-- Socket-based Wave Function Collapse solver: vendored from SkyeShark's **level-maker** workspace into `src/game/world/office/wfc/` (same author as the POM repo above); algorithm family from [mxgmn/WaveFunctionCollapse](https://github.com/mxgmn/WaveFunctionCollapse)
-
-### Characters, Animation, and Models
-
-- Default player mesh: Mixamo-compatible T-pose body (`player-tpose.glb`) driven by Mixamo packs under `public/assets/animation-packs/` (`?playerModel=player`)
-- Previous Mara/climber body kept for A/B: `climber.glb` (`?playerModel=climber` or `?playerModel=mixamo`)
-- Alternate skeleton route: [Mesh2Motion](https://github.com/Mesh2Motion/mesh2motion-app) (`playernew-mesh2motion.glb`, `?playerModel=mesh2motion`); assets CC0 per Mesh2Motion
-- Several character and vehicle meshes (climber, soldier, crowd base, overlays): [Tripo](https://www.tripo3d.ai/) exports retargeted onto Mixamo-compatible armatures
-
-### Audio
-
-- **Engine audio (RPM + load layered simulation)**: modeled on [markeasting/engine-audio](https://github.com/markeasting/engine-audio) (MIT © 2025 Mark Oosting). Uses on-load / off-load loop layers at multiple RPM ranges, crossfading by RPM and throttle, pitch detuning, limiter, and transmission whine. The "BAC Mono" profile matches the reference's `bac_mono` configuration (samples under `public/assets/audio/engine/`). See `EngineAudio.js` and `engineProfiles.js`. Boxer profile is a local extension with one-shot accents.
-- Rain ambience, thunder, tire gravel/mud layers, stone pings, and screech synthesis: original procedural generation via the Web Audio API (filtered white noise, bandpass/lowpass layers, envelope sweeps). See `WeatherSystem.js` (RainAmbienceAudio, ThunderAudio) and `TireEffects.js` (TireScreechAudioSystem + procedural layers).
-- Other sampled clips (tire turn/brake, crashes, cabin rain on glass, exterior idle): custom assets under `public/assets/audio/`.
-- **First-person weapon SFX (planned)**: [Snake's Authentic Gun Sounds](https://f8studios.itch.io/snakes-authentic-gun-sounds) by [SnakeF8 / F8 Studios](https://f8studios.itch.io) — studio-recorded gunshots (incl. 5.56 / 7.62 variants), reloads, bolt/pump cycling, and related weapon handling. Free pack; commercial use allowed; credit not required but appreciated. Not wired into the runtime yet (temporary Web Audio clicks in `WeaponSystem`); samples will live under `public/assets/audio/guns/` when integrated. Related sequel pack (9mm / .308 / shotgun): [Snake's Second Authentic Gun Sounds Pack](https://f8studios.itch.io/snakes-second-authentic-gun-sounds-pack).
-
-### Other / Planned
-
-- Additional reverse-engineering and research notes at repo root: [`volumetric-sky-cloud-analysis.md`](volumetric-sky-cloud-analysis.md), [`ragdoll_research.md`](ragdoll_research.md), [`multiplayer_pain_points.md`](multiplayer_pain_points.md).
-
-## Development Notes
-
-- Player models are selected by source-skeleton profile. The default is `mesh2motion`; use `?playerModel=mixamo` or `?playerModel=mesh2motion` to test either rig and its compatible animation routes.
-- Use the in-game **Cloth** button to fit bone-attached collider spheres against the live jacket simulation. Profiles autosave per player model and can be imported/exported as JSON.
-- Jacket setup uses two independent weight systems. Mesh2Motion skeletal weights are transferred automatically from the fitted jacket to the nearest player-body triangles; `clothWeight` uses `0` for simulated vertices and `1` for vertices pinned to skinning. The runtime generates a bone-aware mask when that attribute is absent.
-- Editor data (`data/dreamfall.db`, autosaves, your maps) lives in `data/` and is gitignored.
-- The repository contains a large number of animation and model assets. Initial clone may take a while.
-- Many diagnostic scripts live under `scripts/`. Most are for development/debugging specific systems.
+- Player skeleton profile: default mesh2motion; `?playerModel=mixamo` for Mixamo route.
+- Jacket cloth: bone colliders + weight mask; Cloth editor button in-game.
+- Local editor state: `data/` (gitignored SQLite / caches)—do not commit.
+- Prefer targeted `scripts/verify-*.mjs` over full suite when changing one subsystem.
+- WebGPU gotchas: 16 samplers/fragment stage; de-interleave skinned attributes when needed; headless Chromium FPS is not production truth.

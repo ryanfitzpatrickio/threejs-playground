@@ -77,6 +77,8 @@ export function createDogAnimation(rig, opts = {}) {
   let mouthOpenBlend = 0;
   let alertEarBlend = 0;
   let pantPhase = 0;
+  /** Last jaw pitch (deg) from mouth state — reapplied after clip mixer. */
+  let lastJawPitchDeg = 0;
 
   const rootPos = new THREE.Vector3();
   const rootYaw = { value: 0 };
@@ -160,17 +162,17 @@ export function createDogAnimation(rig, opts = {}) {
   }
 
   /**
-   * Local-X pitch: for down-pointing leg bones, negative X swings the paw +Z (forward).
-   * Stance keeps feet near rest height — no tip-bone warping (that made tippy toes).
+   * Car-like root yaw toward desiredDir. Shared by procedural gait and
+   * clip-driven locomotion (clips own body bones; controller still needs turn).
    * @param {number} dt
-   * @param {typeof GAIT.walk} gait
+   * @param {typeof GAIT.walk | null} [gait]
    */
-  function updateGait(dt, gait) {
-    const frequency = gait.frequency * Math.sqrt(motion.speed ?? 1);
-    const strideAmp = gait.strideAmp * (motion.stride ?? 1);
-    const moveSpeed = gait.speed * (motion.speed ?? 1);
-    gaitPhase = (gaitPhase + dt * frequency) % 1;
-
+  function updateRootSteer(dt, gait = null) {
+    if (!gait) {
+      yawRate = THREE.MathUtils.lerp(yawRate, 0, 1 - Math.exp(-6 * dt));
+      applyRootTransform();
+      return;
+    }
     // Gentle car-like steer: soft exponential toward the stick, rate-capped so
     // the body arcs instead of snapping. Trot turns a bit wider than walk.
     let dyaw = Math.atan2(desiredDir.x, desiredDir.z) - rootYaw.value;
@@ -183,6 +185,22 @@ export function createDogAnimation(rig, opts = {}) {
     rootYaw.value += yawStep;
     const rateAlpha = 1 - Math.exp(-10 * dt);
     yawRate = THREE.MathUtils.lerp(yawRate, yawStep / Math.max(dt, 1e-5), rateAlpha);
+    applyRootTransform();
+  }
+
+  /**
+   * Local-X pitch: for down-pointing leg bones, negative X swings the paw +Z (forward).
+   * Stance keeps feet near rest height — no tip-bone warping (that made tippy toes).
+   * @param {number} dt
+   * @param {typeof GAIT.walk} gait
+   */
+  function updateGait(dt, gait) {
+    const frequency = gait.frequency * Math.sqrt(motion.speed ?? 1);
+    const strideAmp = gait.strideAmp * (motion.stride ?? 1);
+    const moveSpeed = gait.speed * (motion.speed ?? 1);
+    gaitPhase = (gaitPhase + dt * frequency) % 1;
+
+    updateRootSteer(dt, gait);
 
     _forward.set(Math.sin(rootYaw.value), 0, Math.cos(rootYaw.value));
     moveVel.copy(_forward).multiplyScalar(moveSpeed);
@@ -245,32 +263,35 @@ export function createDogAnimation(rig, opts = {}) {
     moveVel.set(0, 0, 0);
     yawRate = THREE.MathUtils.lerp(yawRate, 0, 1 - Math.exp(-6 * dt));
 
-    // Drop whole body so folded rump sits near ground.
-    const sitY = -0.18 * sitBlend * legLength * (motion.sitDepth ?? 1);
+    // Drop whole body so folded rump sits near ground. Milder than pre-S rest
+    // because the camped hind chain already reaches lower when folded.
+    const sitY = -0.12 * sitBlend * legLength * (motion.sitDepth ?? 1);
     rootPos.y = THREE.MathUtils.damp(rootPos.y, sitY, 3.5, dt);
     applyRootTransform();
 
     // Pelvis: negative pitch lifts chest relative to hips / drops rump feel.
-    addLocalEuler('Pelvis', -sitBlend * 32, 0, 0);
-    addLocalEuler('Spine', sitBlend * 20, 0, 0);
+    addLocalEuler('Pelvis', -sitBlend * 28, 0, 0);
+    addLocalEuler('Spine', sitBlend * 18, 0, 0);
     addLocalEuler('Chest', -sitBlend * 8, 0, 0);
     addLocalEuler('Neck', sitBlend * 12, 0, 0);
 
     for (const key of ['hindL', 'hindR']) {
       const chain = DOG_LEG_CHAINS[key];
-      // Drop hip sockets so folded haunches reach the floor.
+      // Slight hip socket settle — keep mild so pads don't punch through floor.
       const hipBone = bones.get(chain.hip);
       const hipRest = rig.restPositions.get(chain.hip);
       if (hipBone && hipRest) {
         hipBone.position.copy(hipRest);
-        hipBone.position.y -= sitBlend * 0.1;
-        hipBone.position.z += sitBlend * 0.02;
+        hipBone.position.y -= sitBlend * 0.04;
+        hipBone.position.z += sitBlend * 0.03;
       }
-      // Thigh folds forward (negative X), shin tucks hard, hock plants on pad.
-      addLocalEuler(chain.upper, -sitBlend * 78, 0, 0);
-      addLocalEuler(chain.lower, sitBlend * 112, 0, 0);
-      addLocalEuler(chain.pastern, -sitBlend * 58, 0, 0);
-      addLocalEuler(chain.paw, sitBlend * 26, 0, 0);
+      // Thigh folds forward (negative X), shin tucks, hock plants on pad.
+      // Camped hind S already has long cranial femur + caudal tibia — hard
+      // 78/112 over-folded the paw through the floor.
+      addLocalEuler(chain.upper, -sitBlend * 58, 0, 0);
+      addLocalEuler(chain.lower, sitBlend * 62, 0, 0);
+      addLocalEuler(chain.pastern, -sitBlend * 36, 0, 0);
+      addLocalEuler(chain.paw, sitBlend * 18, 0, 0);
       // Slight outward splay so haunches read wider.
       const side = chain.side === 'L' ? 1 : -1;
       addLocalEuler(chain.hip, 0, 0, side * sitBlend * 14);
@@ -297,8 +318,7 @@ export function createDogAnimation(rig, opts = {}) {
     }
   }
 
-  function updateEars(dt) {
-    const earDynamics = motion.earDynamics ?? phenotype?.ears?.dynamics ?? 1;
+  function updateEarSprings(dt) {
     // Alert mouth: ears pull back and pin in (twinged) — not a floppy flop.
     alertEarBlend = THREE.MathUtils.damp(alertEarBlend, mouthState === 'alert' ? 1 : 0, 7, dt);
     for (const side of ['L', 'R']) {
@@ -314,7 +334,14 @@ export function createDogAnimation(rig, opts = {}) {
       s.vz *= Math.exp(-8 * dt);
       s.x += s.vx * dt;
       s.z += s.vz * dt;
+    }
+  }
 
+  function applyEarBones() {
+    const earDynamics = motion.earDynamics ?? phenotype?.ears?.dynamics ?? 1;
+    for (const side of ['L', 'R']) {
+      const s = earSpring[side];
+      const sideSign = side === 'L' ? 1 : -1;
       const names = DOG_EAR_BONES[side];
       for (let i = 0; i < names.length; i += 1) {
         const k = (i + 1) / names.length;
@@ -328,14 +355,18 @@ export function createDogAnimation(rig, opts = {}) {
     }
   }
 
+  function updateEars(dt) {
+    updateEarSprings(dt);
+    applyEarBones();
+  }
+
   /**
    * @param {number} dt
-   * @param {{ bones?: boolean }} [opts] When bones is false, only mesh face
-   *   features update — used while AnimationMixer owns Head/Neck/Jaw (clip
-   *   one-shots). Additive bone rotates must not run without a rest reset or
-   *   they accumulate (head spun a full turn over the Death hold).
+   * @param {{ bones?: boolean, mouthMesh?: boolean }} [opts]
+   *   bones: Head/Neck/Jaw additives (need a rest reset same frame).
+   *   mouthMesh: tongue/interior meshes — always safe during clip-driven body.
    */
-  function updateFace(dt, { bones: affectBones = true } = {}) {
+  function updateFace(dt, { bones: affectBones = true, mouthMesh = true } = {}) {
     breath += dt * 2.1;
     if (!frozenBlink) {
       blinkT += dt;
@@ -374,8 +405,9 @@ export function createDogAnimation(rig, opts = {}) {
     const pantWobble = showTongue
       ? mouthOpenBlend * (Math.sin(pantPhase * Math.PI * 2) * 0.5 + 0.5)
       : 0;
+    lastJawPitchDeg = mouthOpenBlend * JAW_OPEN_DEG + pantWobble * PANT_WOBBLE_DEG;
     if (affectBones) {
-      addLocalEuler('Jaw', mouthOpenBlend * JAW_OPEN_DEG + pantWobble * PANT_WOBBLE_DEG, 0, 0);
+      addLocalEuler('Jaw', lastJawPitchDeg, 0, 0);
     }
     // Slow, irrational-ratio sine mix so the tongue's side-lean/curl wander
     // over several seconds instead of holding one fixed pose or ticking like
@@ -383,14 +415,17 @@ export function createDogAnimation(rig, opts = {}) {
     // bias on top (in dogHeadFeatures.js) so no two dogs pant identically.
     const driftYaw = Math.sin(time * 0.41) * 0.6 + Math.sin(time * 0.71 + 1.3) * 0.4;
     const driftCurl = Math.sin(time * 0.53 + 2.1) * 0.5 + 0.5;
-    // Mesh mouth/tongue still ok during clip-driven hold (jaw bone stays put).
-    face?.setMouthOpen(
-      affectBones ? mouthOpenBlend : 0,
-      affectBones ? pantWobble : 0,
-      affectBones ? driftYaw : 0,
-      affectBones ? driftCurl : 0,
-      affectBones && showTongue,
-    );
+    // Mesh mouth/tongue keep animating under clip-driven body (jaw bone is
+    // reapplied after the mixer via applyPostClipOverlays).
+    if (mouthMesh) {
+      face?.setMouthOpen(
+        mouthOpenBlend,
+        pantWobble,
+        driftYaw,
+        driftCurl,
+        showTongue,
+      );
+    }
 
     if (affectBones) {
       const chest = bones.get('Chest');
@@ -402,7 +437,39 @@ export function createDogAnimation(rig, opts = {}) {
     }
 
     face?.setBlink(blinkAmount);
-    face?.setGaze(affectBones ? gazeYaw : 0, affectBones ? gazePitch : 0);
+    // Gaze mesh still tracks; head bone stays with the clip when !affectBones.
+    face?.setGaze(gazeYaw, gazePitch);
+  }
+
+  /**
+   * After AnimationMixer samples body bones: re-author Jaw (and ears) from rest
+   * + mouth/ear state so pant/alert work while clips own the skeleton.
+   * Safe every frame — copies rest first, never accumulates.
+   */
+  function applyPostClipOverlays() {
+    if (!clipDriven) return;
+
+    const jaw = bones.get('Jaw');
+    const jawRest = rig.restQuaternions.get('Jaw');
+    if (jaw && jawRest) {
+      jaw.quaternion.copy(jawRest);
+      if (Math.abs(lastJawPitchDeg) > 1e-4) {
+        jaw.rotateX(THREE.MathUtils.degToRad(lastJawPitchDeg));
+      }
+    }
+
+    // Ears are usually not in the retarget tracks — keep alert pin / flop alive.
+    for (const side of ['L', 'R']) {
+      for (const name of DOG_EAR_BONES[side]) {
+        const bone = bones.get(name);
+        const restQ = rig.restQuaternions.get(name);
+        if (bone && restQ) bone.quaternion.copy(restQ);
+      }
+    }
+    applyEarBones();
+
+    rig.root.updateMatrixWorld(true);
+    rig.skeleton.update();
   }
 
   /**
@@ -416,13 +483,15 @@ export function createDogAnimation(rig, opts = {}) {
     for (let s = 0; s < steps; s += 1) {
       time += stepDt;
 
-      // Clip one-shots (Death splash, Jump, …) own bone TRS via AnimationMixer.
-      // Resetting to rest here would yank the body off the last death frame.
-      // Face mesh can still blink, but Head/Neck/Jaw bone additives must not
-      // run — without a rest reset they accumulate (full head spin on hold).
+      // Clip library owns body TRS via AnimationMixer. Skip gait/sit pose.
+      // Root yaw steering still runs — left/right aim is controller-owned.
+      // Mouth mesh + state advance here; Jaw/ears reapply after mixer.
       if (clipDriven) {
-        updateFace(stepDt, { bones: false });
-        applyRootTransform();
+        if (behavior === 'walk') updateRootSteer(stepDt, GAIT.walk);
+        else if (behavior === 'trot') updateRootSteer(stepDt, GAIT.trot);
+        else updateRootSteer(stepDt, null);
+        updateEarSprings(stepDt); // bone write is post-mixer via applyPostClipOverlays
+        updateFace(stepDt, { bones: false, mouthMesh: true });
         rig.root.updateMatrixWorld(true);
         rig.skeleton.update();
         continue;
@@ -469,6 +538,8 @@ export function createDogAnimation(rig, opts = {}) {
     getExternalRootMotion: () => externalRootMotion,
     setClipDriven: (value) => { clipDriven = Boolean(value); },
     getClipDriven: () => clipDriven,
+    /** Call after clip mixer sample so Jaw/ears + mouth stay authored. */
+    applyPostClipOverlays,
     setMouthState,
     getMouthState: () => mouthState,
     setAutopilot: (v) => { autopilot = Boolean(v); },

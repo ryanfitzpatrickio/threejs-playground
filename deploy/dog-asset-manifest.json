@@ -1,11 +1,11 @@
 {
   "$comment": "Allowlist + verify contract for the standalone dog product (docs/dog-park-standalone-deploy-plan.md). Cloudflare project: dog-park (wrangler.dog.jsonc). Consumed by vite/dogDeployAssetsPlugin.mjs (build-time copy) and scripts/verify-dog-bundle.mjs / verify-dog-asset-manifest.mjs (verify).",
   "product": "dog-park",
-  "phase": "studio",
+  "phase": "park",
   "budgets": {
     "maxFileBytes": 26214400,
-    "maxTotalBytes": 16777216,
-    "maxJsChunkBytes": 8000000,
+    "maxTotalBytes": 83886080,
+    "maxJsChunkBytes": 12000000,
     "unit": "raw-on-disk"
   },
   "verify": {
@@ -23,23 +23,45 @@
       "/assets/guns/",
       "pine-ridge-rally"
     ],
-    "requireJsSubstrings": ["dog-sim-shell", "golden-retriever"],
+    "requireJsSubstrings": ["dog-park-hud", "golden-retriever"],
     "forbidModulePaths": ["src/ui/App.jsx", "src/game/core/GameRuntime.js"]
   },
   "include": [
     { "from": "public/_headers", "to": "_headers" },
     { "from": "public/og-image-dog.png", "to": "og-image-dog.png", "optional": true },
-    { "from": "public/og-image-dog.png", "to": "og-image.png", "optional": true },
-    { "from": "public/favicon.ico", "to": "favicon.ico", "optional": true }
+    { "from": "public/og-image-dog.png", "to": "og-image.png", "optional": true }
   ],
   "includeGlobs": [
-    { "from": "public/assets/dog-ref/**", "toPrefix": "assets/dog-ref/" }
+    { "from": "public/assets/dog-ref/**", "toPrefix": "assets/dog-ref/" },
+    { "from": "public/assets/dog-anims/**", "toPrefix": "assets/dog-anims/" },
+    { "from": "public/assets/rodent-anims/**", "toPrefix": "assets/rodent-anims/" },
+    { "from": "public/assets/equid-anims/**", "toPrefix": "assets/equid-anims/" },
+    { "from": "public/assets/bovid-anims/**", "toPrefix": "assets/bovid-anims/" },
+    { "from": "public/assets/audio/forest/**", "toPrefix": "assets/audio/forest/" },
+    { "from": "public/assets/textures/rally/surfaces/grass/**", "toPrefix": "assets/textures/rally/surfaces/grass/" },
+    { "from": "public/assets/textures/rally/surfaces/dirt/**", "toPrefix": "assets/textures/rally/surfaces/dirt/" },
+    { "from": "public/assets/textures/range/woodwall/**", "toPrefix": "assets/textures/range/woodwall/" },
+    { "from": "public/assets/textures/range/woodwall2/**", "toPrefix": "assets/textures/range/woodwall2/" },
+    { "from": "public/assets/textures/range/concrete/**", "toPrefix": "assets/textures/range/concrete/" },
+    { "from": "public/assets/textures/range/pillarmiddle/**", "toPrefix": "assets/textures/range/pillarmiddle/" },
+    { "from": "public/assets/textures/forest/bald-cypress/**", "toPrefix": "assets/textures/forest/bald-cypress/" },
+    { "from": "public/assets/textures/forest/pine/**", "toPrefix": "assets/textures/forest/pine/" },
+    { "from": "data/forest-leaves/**", "toPrefix": "assets/forest-leaves/", "includeBasenames": [
+      "bald_cypress_needle_albedo.png",
+      "bald_cypress_needle_normal.png",
+      "bald_cypress_needle_roughness.png",
+      "bald_cypress_needle_translucency.png",
+      "pine_needle_albedo.png",
+      "pine_needle_normal.png",
+      "pine_needle_roughness.png",
+      "pine_needle_translucency.png"
+    ] }
   ],
   "excludeGlobs": [
     "**/.DS_Store"
   ],
   "notes": {
     "studio": "Procedural dog needs no GLB. dog-ref INCLUDED (compare on by default); _headers for cache/security parity with the main playground deploy.",
-    "park": "Phase P (not yet promoted): add forest species dirs (exact IDs from createDogParkLevel), forest-leaves subset, dog-anims/; dog-ref optional drop. Do not flip \"phase\" to \"park\" until docs/dog-park-standalone-deploy-plan.md §4.3.1 checklist L1-L9 is green."
+    "park": "Phase P: park is the standalone default; dog-ref remains for ?dogMode=studio. Runtime assets include dog-anims + rodent-anims (clip packs), dog-park forest ambience, grass/dirt and structural PBR sets, plus the bald-cypress/pine bark + leaf sets authored by createDogParkLevel."
   }
 }

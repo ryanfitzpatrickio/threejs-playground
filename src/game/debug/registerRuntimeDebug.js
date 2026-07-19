@@ -49,6 +49,7 @@ import {
   snapshotHordeDebug,
 } from '../config/hordeDebugConfig.js';
 import { HORDE_MAX_ENEMY_COUNT } from '../config/hordePerformanceConfig.js';
+import { dogDebugState, setDogDebugField } from '../config/dogDebugConfig.js';
 
 /** Local overlay state (not always in snapshot). */
 const overlayState = {
@@ -111,6 +112,7 @@ function setSpectatorCrowdAndReload(on) {
  */
 export function registerRuntimeDebug(runtime = null) {
   registerShaderDebugFolder('Runtime', { expanded: true });
+  registerShaderDebugFolder('Dog', { expanded: true });
   registerShaderDebugFolder('First Person', { expanded: true });
   registerShaderDebugFolder('Third Person', { expanded: true });
   registerShaderDebugFolder('Sunglasses Socket', { expanded: true });
@@ -124,6 +126,16 @@ export function registerRuntimeDebug(runtime = null) {
   registerShaderDebugFolder('Horde', { expanded: true });
   registerShaderDebugFolder('Melee', { expanded: false });
   registerShaderDebugFolder('Propane Tank', { expanded: true });
+  registerShaderDebugParam({
+    id: 'runtime.dogFootIkEnabled',
+    label: 'Foot IK',
+    folder: 'Dog',
+    type: 'bool',
+    pinPolicy: 'allow',
+    help: 'Enable the final ground-contact solve and flat front-paw correction for Studio, the park player, and dog NPCs.',
+    get: () => dogDebugState.footIkEnabled,
+    set: (value) => setDogDebugField('footIkEnabled', value),
+  });
 
   registerHordeDebug(runtime);
 

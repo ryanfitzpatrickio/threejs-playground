@@ -14,9 +14,20 @@ const browser = await chromium.launch({
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
   const errors = [];
+  const requestedUrls = [];
+  const missingAssetResponses = [];
+  page.on('request', (request) => requestedUrls.push(request.url()));
+  page.on('response', (response) => {
+    const url = response.url();
+    if (response.status() >= 400 && new URL(url).pathname.startsWith('/assets/')) {
+      missingAssetResponses.push(`${response.status()} ${url}`);
+    }
+  });
   page.on('pageerror', (error) => errors.push(String(error?.message ?? error)));
   page.on('console', (message) => {
-    if (message.type() === 'error') errors.push(message.text());
+    if (message.type() === 'error' || /vehicle spawn budget exceeded/i.test(message.text())) {
+      errors.push(message.text());
+    }
   });
   await page.addInitScript(() => {
     localStorage.setItem('dreamfall:controls-dismissed', 'true');
@@ -42,17 +53,25 @@ try {
       dogPark: snapshot.dogPark,
       level: snapshot.level,
       playerVisible: dbg.getCharacter()?.group?.visible,
+      characterSource: dbg.getCharacter()?.source,
       hiddenForDogPark: dbg.getCharacter()?.hiddenForDogPark,
       dogObject: Boolean(dbg.getScene().getObjectByName(`ProceduralDog_${snapshot.dogPark.breedId}`)),
-      hud: Boolean(document.querySelector('.dog-park-hud')),
+      hudHint: Boolean(document.querySelector('.dog-park-hint')),
+      customizeBtn: Boolean(document.querySelector('.dog-customize-btn')),
+      npcCount: snapshot.dogPark?.npc?.count ?? null,
     };
   });
   assert.equal(initial.dogPark.mode, 'dog-park');
   assert.equal(initial.dogPark.animationClips.clips, 14);
-  assert.equal(initial.playerVisible, false, 'parked Mara should be hidden');
+  assert.equal(initial.playerVisible, false, 'runtime stub should be hidden');
+  assert.equal(initial.characterSource, 'dog-park-stub', 'dog park must not load Mara');
   assert.equal(initial.hiddenForDogPark, true, 'hiddenForDogPark flag should stick');
   assert.equal(initial.dogObject, true, 'procedural dog should be in scene');
-  assert.equal(initial.hud, true, 'dog breed HUD should be mounted');
+  assert.equal(initial.hudHint, true, 'dog park control hint should be mounted');
+  assert.equal(initial.customizeBtn, true, 'customize button should be mounted');
+  if (initial.npcCount != null) {
+    assert.ok(initial.npcCount <= 12, `npc pack too large: ${initial.npcCount}`);
+  }
   assert.ok(initial.level.city?.forest?.forestTrees >= 8, 'park should load shared forest trees');
 
   // Lazy tree-impostor baking can briefly occupy the first running frames.
@@ -213,20 +232,47 @@ try {
   });
   assert.equal(rebound, true, 'breed rebuild safely rebinds shared body/shell mud uniforms');
 
-  // Product entry: the Dog card must select the runtime park, while the Studio
-  // button remains the explicit isolated-viewer path.
-  await page.evaluate(() => localStorage.removeItem('dreamfall:skip-menu'));
-  await page.goto(dreamfallAppUrl({ level: null, autostart: null }, { skipAutostart: true }), {
-    waitUntil: 'domcontentloaded',
-    timeout: 60_000,
-  });
-  await page.waitForSelector('[data-testid="experience-dog"]', { timeout: 90_000 });
-  await page.click('[data-testid="experience-dog"]');
-  await page.waitForFunction(
-    () => globalThis.__DREAMFALL_DEBUG__?.snapshot?.()?.stage === 'running'
-      && globalThis.__DREAMFALL_DEBUG__.snapshot().dogPark?.mode === 'dog-park',
-    { timeout: 150_000 },
+  const forbiddenRequests = requestedUrls.filter(isForbiddenDogParkRequest);
+  assert.deepEqual(
+    forbiddenRequests,
+    [],
+    `dog park requested non-product assets:\n${forbiddenRequests.join('\n')}`,
   );
+  assert.deepEqual(
+    missingAssetResponses,
+    [],
+    `dog park has missing runtime assets:\n${missingAssetResponses.join('\n')}`,
+  );
+
+  // Product entry: the Dog card must select the runtime park, while the Studio
+  // button remains the explicit isolated-viewer path. The standalone product
+  // has no MainMenu, so verify its Studio -> Play park round-trip instead.
+  const standaloneProduct = await page.locator('.dog-product-shell').count() > 0;
+  if (standaloneProduct) {
+    await page.click('.dog-park-hud__actions button:last-child');
+    await page.waitForSelector('.dog-sim-shell');
+    assert.equal(new URL(page.url()).searchParams.get('dogMode'), 'studio');
+    await page.click('.dog-product-mode-toggle');
+    await page.waitForFunction(
+      () => globalThis.__DREAMFALL_DEBUG__?.snapshot?.()?.stage === 'running'
+        && globalThis.__DREAMFALL_DEBUG__.snapshot().dogPark?.mode === 'dog-park',
+      { timeout: 150_000 },
+    );
+    assert.equal(new URL(page.url()).searchParams.has('dogMode'), false);
+  } else {
+    await page.evaluate(() => localStorage.removeItem('dreamfall:skip-menu'));
+    await page.goto(dreamfallAppUrl({ level: null, autostart: null }, { skipAutostart: true }), {
+      waitUntil: 'domcontentloaded',
+      timeout: 60_000,
+    });
+    await page.waitForSelector('[data-testid="experience-dog"]', { timeout: 90_000 });
+    await page.click('[data-testid="experience-dog"]');
+    await page.waitForFunction(
+      () => globalThis.__DREAMFALL_DEBUG__?.snapshot?.()?.stage === 'running'
+        && globalThis.__DREAMFALL_DEBUG__.snapshot().dogPark?.mode === 'dog-park',
+      { timeout: 150_000 },
+    );
+  }
 
   const mobilePage = await browser.newPage({ viewport: { width: 390, height: 844 } });
   mobilePage.on('pageerror', (error) => errors.push(String(error?.message ?? error)));
@@ -266,9 +312,30 @@ try {
     await mobilePage.screenshot({ path: process.env.DOG_PARK_MOBILE_SCREENSHOT, fullPage: true });
   }
   await mobilePage.close();
-  const fatal = errors.filter((error) => /failed to start|is not defined|cannot read|uncaught|WebGPU.*error/i.test(error));
+  const fatal = errors.filter((error) =>
+    /failed to start|is not defined|cannot read|uncaught|WebGPU.*(?:error|fail)|createRenderPipelineAsync|depthStencil|AttributeNode.*not found|vehicle spawn budget exceeded/i.test(error));
   assert.deepEqual(fatal, [], `fatal browser errors: ${fatal.join(' | ')}`);
-  console.log('verify-dog-park-mode: mud coat run/flop/grass gating, desktop/mobile HUD, and clean breed rebuild OK');
+  console.log('verify-dog-park-mode: standalone boot/network, studio round-trip, mud behavior, desktop/mobile HUD, and breed rebuild OK');
 } finally {
   await browser.close();
+}
+
+function isForbiddenDogParkRequest(rawUrl) {
+  const { pathname } = new URL(rawUrl);
+  if (/\/assets\/(animation-packs|simoutfits|guns)\//.test(pathname)) return true;
+  if (/\/assets\/models\/(player-tpose|horse-rigged)\.(glb|fbx)$/.test(pathname)) return true;
+  if (pathname.startsWith('/assets/textures/urban-track/')) return true;
+  if (/^\/assets\/textures\/fx\/bullet-hole-atlas-7x7\.(png|catalog\.json)$/.test(pathname)) return true;
+  if (pathname.startsWith('/assets/textures/range/')) {
+    return !['woodwall', 'woodwall2', 'concrete', 'pillarmiddle']
+      .some((folder) => pathname.startsWith(`/assets/textures/range/${folder}/`));
+  }
+  if (pathname.startsWith('/assets/textures/forest/')) {
+    return !pathname.startsWith('/assets/textures/forest/bald-cypress/')
+      && !pathname.startsWith('/assets/textures/forest/pine/');
+  }
+  if (pathname.startsWith('/assets/forest-leaves/')) {
+    return !/\/(bald_cypress|pine)_needle_(albedo|normal|roughness|translucency)\.png$/.test(pathname);
+  }
+  return false;
 }

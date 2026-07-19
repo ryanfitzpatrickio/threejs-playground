@@ -279,6 +279,13 @@ export function createMallWaterHeightfield({
     let sum = 0;
     const livePulses = pulses.filter((p) => p.age < p.life);
 
+    // Quiet mud: alternate frames when there is almost no water and no splash
+    // pulses — full grid spring/diffuse was a dog-park CPU hotspot.
+    frame += 1;
+    if (isMud && livePulses.length === 0 && totalAmount < 0.04 && (frame & 1) === 0) {
+      return;
+    }
+
     // Diffuse amount (puddles merge / spread like viscous fluid).
     nextAmount.set(amount);
     for (let zIndex = 1; zIndex < rowCount - 1; zIndex += 1) {
@@ -353,7 +360,6 @@ export function createMallWaterHeightfield({
 
     geometry.attributes.position.needsUpdate = true;
     amountAttr.needsUpdate = true;
-    frame += 1;
     if (frame % 8 === 0) geometry.computeVertexNormals();
 
     totalAmount = sum;
