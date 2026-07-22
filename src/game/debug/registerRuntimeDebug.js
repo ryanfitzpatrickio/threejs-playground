@@ -136,6 +136,26 @@ export function registerRuntimeDebug(runtime = null) {
     get: () => dogDebugState.footIkEnabled,
     set: (value) => setDogDebugField('footIkEnabled', value),
   });
+  registerShaderDebugParam({
+    id: 'runtime.dogProceduralLegIkEnabled',
+    label: 'Procedural Leg IK',
+    folder: 'Dog',
+    type: 'bool',
+    pinPolicy: 'allow',
+    help: 'Per-leg analytic IK for the default procedural gait (walk/trot ground contact + slope conform). On by default; off falls back to pure FK swing.',
+    get: () => dogDebugState.proceduralLegIkEnabled,
+    set: (value) => setDogDebugField('proceduralLegIkEnabled', value),
+  });
+  registerShaderDebugParam({
+    id: 'runtime.dogClipLegIkEnabled',
+    label: 'Clip Leg IK',
+    folder: 'Dog',
+    type: 'bool',
+    pinPolicy: 'allow',
+    help: 'Same per-leg analytic IK, applied on top of retargeted clip animations (walk/trot only) for slope ground contact. Off if it fights a clip\'s authored leg silhouette.',
+    get: () => dogDebugState.clipLegIkEnabled,
+    set: (value) => setDogDebugField('clipLegIkEnabled', value),
+  });
 
   registerHordeDebug(runtime);
 

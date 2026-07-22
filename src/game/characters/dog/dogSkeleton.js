@@ -106,6 +106,13 @@ const DEFAULT_SKELETON_SHAPE = Object.freeze({
   headSize: 1,
   muzzleLength: 1,
   tailLength: 1,
+  // Y lift of the whole topline (Pelvis/Spine/Spine1/Chest). The rig roots the
+  // legs at a fixed shoulder/hip height and hangs them to the ground via CCD
+  // sole-planting, so a long-legged breed (legLength > ~1.1) over-reaches and
+  // the leg buckles — dropping the elbow to the floor and reading as
+  // short-legged/stocky. Lifting the topline lifts the leg roots with it so the
+  // full leg length stands straight and the body sits tall (leggier ungulate).
+  withersLift: 0,
 });
 
 /** Generate breed bind offsets while preserving the shared bone-name contract. */
@@ -125,11 +132,32 @@ export function createDogBoneDefs(phenotype = null) {
     const def = byName.get(name);
     if (name === 'Pelvis') def.pos[2] *= shape.bodyLength;
     else def.pos[2] *= shape.bodyLength;
+    // Topline lift carries the leg roots (Shoulder on Chest, Hip on Pelvis) and
+    // neck/head/tail up with it; CCD re-plants the paws straight at the ground.
+    def.pos[1] += shape.withersLift ?? 0;
   }
   for (const name of ['Neck', 'Head']) {
     const def = byName.get(name);
     def.pos[1] *= shape.neckLength;
     def.pos[2] *= shape.neckLength;
+  }
+  // Neck carriage (equids): raise the neck column toward vertical by rotating
+  // the Neck/Head offsets up around X. Offsets only — bone rest ROTATIONS are
+  // untouched, so the head keeps facing forward instead of pitching skyward.
+  {
+    const carriage = Math.min(Math.max(shape.neckCarriage ?? 0, 0), 1);
+    if (carriage > 0) {
+      const ang = carriage * 0.7;
+      const cos = Math.cos(ang);
+      const sin = Math.sin(ang);
+      for (const name of ['Neck', 'Head']) {
+        const def = byName.get(name);
+        const y = def.pos[1];
+        const z = def.pos[2];
+        def.pos[1] = y * cos + z * sin;
+        def.pos[2] = z * cos - y * sin;
+      }
+    }
   }
   const jaw = byName.get('Jaw');
   jaw.pos[0] *= shape.headSize;
@@ -169,6 +197,17 @@ export function createDogBoneDefs(phenotype = null) {
       mid.rot = [-2, 0, sign * -2];
       tip.pos = [sign * 0.002 * width, 0.02 * length, 0.001];
       tip.rot = [0, 0, 0];
+    } else if ((ear.type === 'erect' || ear.type === 'bat') && geometry.headShape === 'equid') {
+      // Horse ears: narrow-set at the POLL (well back on the long skull,
+      // near where head meets neck — not mid-skull like a canid pinna),
+      // nearly parallel/upright, tips leaning slightly forward and inward
+      // instead of splaying laterally.
+      base.pos = [sign * 0.024 * shape.headSize * width, 0.058 * shape.headSize, -0.05 * shape.headSize];
+      base.rot = [-16, 0, sign * -2];
+      mid.pos = [sign * 0.003 * width, 0.05 * length, 0.006];
+      mid.rot = [-4, 0, sign * -1];
+      tip.pos = [sign * 0.001 * width, 0.046 * length, 0.005];
+      tip.rot = [0, 0, sign * -1];
     } else if (ear.type === 'erect' || ear.type === 'bat') {
       const bat = ear.type === 'bat' ? 1.18 : 1;
       base.pos = [sign * 0.058 * shape.headSize * width, 0.052 * shape.headSize, -0.006 * shape.headSize];
@@ -277,12 +316,33 @@ export function createDogBoneDefs(phenotype = null) {
         // wide flat plate is built in dogBodyGeometry; this chain just keeps
         // it caudal of the rump and roughly horizontal (not raised).
         def.rot = [-2 + i, 0, 0];
+      } else if (tail.type === 'dock') {
+        // Equid dock: hangs down-back from the rump (low carriage).
+        def.rot = [i === 0 ? -52 : -14, 0, 0];
       }
     }
   }
 
   // Align with ANIMAL_NUMERIC_RANGES['skeleton.frontLegScale'] (0.45–1.2).
   const frontLegScale = THREE.MathUtils.clamp(Number(shape.frontLegScale) || 1, 0.45, 1.2);
+  // Cursorial (equid) hind kit: much straighter stifle/hock at rest and a
+  // long cannon under a shorter femur — a horse stands column-legged, not
+  // crouch-ready. Same bones, retuned rest offsets/pitches only.
+  if (shape.legStyle === 'cursorial') {
+    for (const side of ['L', 'R']) {
+      const sign = side === 'L' ? 1 : -1;
+      const thigh = byName.get(`Thigh${side}`);
+      const shin = byName.get(`Shin${side}`);
+      const hock = byName.get(`Hock${side}`);
+      thigh.pos = [sign * 0.01, -0.095, 0.03];
+      thigh.rot = [20, 0, 0];
+      shin.pos = [0, -0.12, 0];
+      shin.rot = [-20, 0, 0];
+      hock.pos = [0, -0.135, -0.006];
+      hock.rot = [4, 0, 0];
+    }
+  }
+
   for (const chain of Object.values(DOG_LEG_CHAINS)) {
     const legMul = shape.legLength * (chain.front ? frontLegScale : 1);
     for (const name of chain.bones) {

@@ -33,6 +33,10 @@ export const ANIMAL_TAIL_TYPES = Object.freeze([
   'sickle',
   // Tall vertical sciurid plume (grey squirrel) — rises above the rump.
   'sciurid',
+  // Equid dock — hangs down-back with long hair (horse).
+  'dock',
+  // Equid dock — hangs down-back with long hair (horse).
+  'dock',
   // Flat horizontal scaly paddle (beaver) — laid against the rump, not raised.
   'paddle',
 ]);
@@ -78,6 +82,7 @@ export const ANIMAL_COAT_PATTERNS = Object.freeze([
   'cat-van',
   'cat-mike',
   // Ungulate / herbivore patterns
+  'bay-points',
   'goat-pied',
   'dorsal-stripe',
   // Iconic-species coat kit
@@ -275,6 +280,10 @@ export const ANIMAL_NUMERIC_RANGES = Object.freeze({
   'skeleton.legLength': { min: 0.35, max: 1.5 },
   // Optional front-column scale relative to legLength (sciurid / jerboa short forelegs).
   'skeleton.frontLegScale': { min: 0.45, max: 1.2 },
+  // Y lift of the topline so a long-legged breed stands on straight legs
+  // instead of buckling (elbow drops to the ground when legLength > ~1.1).
+  // Model units pre-root-scale; ~0.09 for a warmblood horse.
+  'skeleton.withersLift': { min: 0, max: 0.2 },
   'skeleton.chestWidth': { min: 0.5, max: 1.45 },
   'skeleton.hipWidth': { min: 0.5, max: 1.4 },
   // Max padded for giraffe neck (~1.95).
@@ -335,6 +344,9 @@ export const ANIMAL_NUMERIC_RANGES = Object.freeze({
   'coat.tail': { min: 0.02, max: 1.8 },
   'coat.gravityDroop': { min: 0, max: 1 },
   'coat.density': { min: 180, max: 900 },
+  'coat.sheen': { min: 0, max: 1 },
+  'coat.lean': { min: 0, max: 1.5 },
+  'coat.maskSharpness': { min: 0, max: 1 },
 
   'furnishings.brows': { min: 0, max: 1.5 },
   'furnishings.beard': { min: 0, max: 1.5 },

@@ -58,6 +58,14 @@ export const DEFAULT_SHELL_COUNT = 64;
 export function createDogFurUniforms(phenotype = null) {
   const coat = phenotype?.coat ?? {};
   const palette = coat.palette ?? {};
+  // Optional third coat color at mask 0.5. Defaulting to the undercoat/guard
+  // midpoint makes the piecewise mix identical to the old linear mix, so
+  // breeds without a midcoat render exactly as before.
+  const undercoat = new THREE.Color(palette.undercoat ?? 0xecd6a4);
+  const guard = new THREE.Color(palette.guard ?? 0xcf9440);
+  const midcoat = palette.midcoat != null
+    ? new THREE.Color(palette.midcoat)
+    : undercoat.clone().lerp(guard, 0.5);
   return {
     time: uniform(0),
     breeze: uniform(0.14),
@@ -73,8 +81,21 @@ export function createDogFurUniforms(phenotype = null) {
     // albedo mix, so they stay near-white — root/tip are tints, not colors.
     rootColor: uniform(new THREE.Color(palette.root ?? 0xd8b57e)),
     tipColor: uniform(new THREE.Color(palette.tip ?? 0xf2d9a4)),
-    undercoatColor: uniform(new THREE.Color(palette.undercoat ?? 0xecd6a4)),
-    guardColor: uniform(new THREE.Color(palette.guard ?? 0xcf9440)),
+    undercoatColor: uniform(undercoat),
+    midcoatColor: uniform(midcoat),
+    guardColor: uniform(guard),
+    // Anisotropic groom-sheen strength (glossy coats read wet-brushed at ~0.3).
+    sheenStrength: uniform(coat.sheen ?? 0.12),
+    // How far tips lean along groom (1 = retriever lay). High-contrast
+    // patterns need lower lean: every shell displaces the same per-vertex
+    // pattern sideways, so a strong lay smears patches into streaks.
+    groomLean: uniform(coat.lean ?? 1),
+    // Per-fragment re-sharpening of the coat mask toward its 0 / 0.5 / 1
+    // plateaus. The coarse torso loft interpolates the per-vertex mask over
+    // ~9cm and shell inflation drags it along the surface — bold patterns
+    // smear into gradient streaks unless the mask is re-quantized. 0 keeps
+    // the plain linear mix (all pre-existing breeds).
+    maskSharpness: uniform(coat.maskSharpness ?? 0),
     earInnerTint: uniform(new THREE.Vector3(...(coat.earInnerTint ?? [0.12, 0.045, 0.035]))),
     // Soft density field (lower = larger clumps, less grass blades).
     cellsPerMeter: uniform(coat.density ?? 420),
@@ -109,6 +130,22 @@ const acesTonemap = Fn(([x]) => {
 
 function zoneMask(zone, id) {
   return step(float(id - 0.45), zone).mul(step(zone, float(id + 0.45)));
+}
+
+/**
+ * Undercoat → midcoat → guard tri-color from the packed mask, with optional
+ * per-fragment re-sharpening + dither (u.maskSharpness) so bold patterns stay
+ * crisp despite the coarse loft's long vertex-interpolation spans.
+ */
+function triCoatColor(u, coat, rest, underCol, midCol, guardCol) {
+  const cell = floor(rest.mul(240.0));
+  const dn = hash(cell.x.add(cell.y.mul(23.0)).add(cell.z.mul(89.0))).sub(0.5);
+  const m = clamp(coat.add(dn.mul(u.maskSharpness).mul(0.14)), 0.0, 1.0);
+  const t1 = clamp(m.mul(2.0), 0.0, 1.0);
+  const t2 = clamp(m.mul(2.0).sub(1.0), 0.0, 1.0);
+  const tt1 = mix(t1, smoothstep(float(0.35), float(0.65), t1), u.maskSharpness);
+  const tt2 = mix(t2, smoothstep(float(0.35), float(0.65), t2), u.maskSharpness);
+  return mix(mix(underCol, midCol, tt1), guardCol, tt2);
 }
 
 /** Irregular anatomical coating from the existing rest-position + zone streams. */
@@ -181,7 +218,7 @@ export function createDogShellMaterial(u, layerIndex, shellCount) {
   const groomN = normalize(groomDir.add(wind).add(bend).add(gravity));
   // Volume near roots (normal), tips lean along groom → plush not grass.
   const extrudeDir = normalize(
-    mix(normalLocal, groomN, float(0.22).add(layerT.mul(0.55))),
+    mix(normalLocal, groomN, float(0.22).add(layerT.mul(0.55)).mul(u.groomLean)),
   );
   // Visible coat height (this was crushed when fur "disappeared").
   const shellHeight = furLen.mul(layerT).mul(u.maxFurLength.div(float(0.05)));
@@ -258,7 +295,9 @@ export function createDogShellMaterial(u, layerIndex, shellCount) {
     const nW = normalize(vNormalW);
     const pW = vPosW;
 
-    const coatCol = mix(u.undercoatColor, u.guardColor, coat);
+    // Piecewise undercoat → midcoat → guard: mask 0.5 lands exactly on the
+    // midcoat, giving tri-color patterns (tortie) a true third color.
+    const coatCol = triCoatColor(u, coat, vRest, u.undercoatColor, u.midcoatColor, u.guardColor);
     const innerCol = coatCol.mul(0.42).add(u.earInnerTint);
     const baseCol = mix(coatCol, innerCol, earInner.mul(0.78));
     const rootCol = baseCol.mul(u.rootColor).mul(float(0.9));
@@ -288,7 +327,7 @@ export function createDogShellMaterial(u, layerIndex, shellCount) {
     const sinTV = sqrt(max(float(0.0), sub(float(1.0), TdotV.mul(TdotV))));
     const sinTL = sqrt(max(float(0.0), sub(float(1.0), TdotL.mul(TdotL))));
     const kk = pow(max(float(0.0), sinTV.mul(sinTL).sub(TdotV.mul(TdotL))), float(48.0));
-    const sheen = vec3(1.0, 0.97, 0.9).mul(kk).mul(0.12).mul(lt);
+    const sheen = vec3(1.0, 0.97, 0.9).mul(kk).mul(u.sheenStrength).mul(lt);
 
     // Tight wet highlight; it vanishes continuously through the drying phase.
     const H = normalize(L.add(V));
@@ -331,7 +370,10 @@ export function createDogBodyMaterial(u) {
   const coatPayload = packedCoat.sub(coatZone.mul(4.0));
   const earInner = step(float(1.5), coatPayload);
   const coat = coatPayload.sub(earInner.mul(2.0));
-  const coatCol = mix(u.undercoatColor.mul(0.9), u.guardColor.mul(0.88), coat);
+  const coatCol = triCoatColor(
+    u, coat, restPos,
+    u.undercoatColor.mul(0.9), u.midcoatColor.mul(0.89), u.guardColor.mul(0.88),
+  );
   const innerCol = coatCol.mul(0.42).add(u.earInnerTint);
   const cleanCol = mix(coatCol, innerCol, earInner.mul(0.78));
   const mudMask = dogMudMask(restPos, coatZone, u);

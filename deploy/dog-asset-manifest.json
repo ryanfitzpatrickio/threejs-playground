@@ -33,6 +33,7 @@
   ],
   "includeGlobs": [
     { "from": "public/assets/dog-ref/**", "toPrefix": "assets/dog-ref/" },
+    { "from": "public/assets/equid-ref/**", "toPrefix": "assets/equid-ref/" },
     { "from": "public/assets/dog-anims/**", "toPrefix": "assets/dog-anims/" },
     { "from": "public/assets/rodent-anims/**", "toPrefix": "assets/rodent-anims/" },
     { "from": "public/assets/equid-anims/**", "toPrefix": "assets/equid-anims/" },

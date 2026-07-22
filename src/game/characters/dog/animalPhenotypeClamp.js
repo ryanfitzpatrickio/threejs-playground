@@ -417,6 +417,7 @@ export function phenotypeToAuthorRecipe(phenotype) {
       ...phenotype.coat,
       palette: {
         undercoat: colorToCssHex(palette.undercoat) ?? '#888888',
+        ...(palette.midcoat != null ? { midcoat: colorToCssHex(palette.midcoat) } : {}),
         guard: colorToCssHex(palette.guard) ?? '#444444',
         root: colorToCssHex(palette.root) ?? '#666666',
         tip: colorToCssHex(palette.tip) ?? '#aaaaaa',

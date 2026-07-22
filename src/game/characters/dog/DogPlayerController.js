@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { advanceLocomotionSpeed } from './animalLocalAvoidance.js';
 
 const forward = new THREE.Vector3();
 const right = new THREE.Vector3();
@@ -17,13 +18,12 @@ const SURFACE_SPEED = Object.freeze({
   wood: 0.92,
 });
 
-// Jump timing mirrors the retargeted horse Jump clip: it crouches ~0.42s,
-// launches, peaks ~0.55s later, and touches down around t=1.5s. The clip is
-// rotation-only (rootTranslationLocked), so the controller owns the arc —
-// gravity is picked for the clip's timing, not for earth physics.
-const JUMP_CROUCH_SECONDS = 0.42;
-const JUMP_APEX_METERS = 0.55;
-const JUMP_RISE_SECONDS = 0.55;
+// Jump timing matches the *trimmed* Jump clip middle (idle lead-in/out removed
+// in DogClipPlayer.trimJumpIdlePads). Clip is rotation-only — controller owns
+// the arc. Short crouch so we enter the athletic middle quickly.
+const JUMP_CROUCH_SECONDS = 0.14;
+const JUMP_APEX_METERS = 0.52;
+const JUMP_RISE_SECONDS = 0.48;
 
 /** Kinematic dog controller. The actor group owns world position; dogAnimation owns pose/yaw. */
 export class DogPlayerController {
@@ -46,6 +46,9 @@ export class DogPlayerController {
     this.horizontalSpeed = 0;
     /** Stick magnitude projected onto dog facing (−1..1). */
     this.forwardIntent = 0;
+    /** Accel/decel-ramped movement speed (m/s) — feeds both translation and gait cadence. */
+    this.currentSpeed = 0;
+    this._lastMoveDir = new THREE.Vector3(0, 0, 1);
     this._hadPrevPos = false;
     this.dog.animation.setAutopilot(false);
     this.dog.animation.setExternalRootMotion(true);
@@ -61,6 +64,8 @@ export class DogPlayerController {
     this.jumpStartedThisFrame = false;
     this.horizontalSpeed = 0;
     this.forwardIntent = 0;
+    this.currentSpeed = 0;
+    this._lastMoveDir.set(0, 0, 1);
     this._hadPrevPos = false;
     dog.animation.setAutopilot(false);
     dog.animation.setExternalRootMotion(true);
@@ -90,16 +95,12 @@ export class DogPlayerController {
     this.lookRemaining = Math.max(0, this.lookRemaining - dt);
     const sit = !locked && Boolean(input.crouchHeld || input.crouchPressed) && !moving;
     const look = !locked && this.lookRemaining > 0 && !moving && !sit;
-    const sprint = !locked && Boolean(input.brace);
-    // Stick aims the dog; gait steers gently toward that heading.
-    this.dog.animation.setMoveIntent({
-      x: locked ? 0 : desired.x,
-      z: locked ? 0 : desired.z,
-      moving,
-      sprint,
-      sit,
-      look,
-    });
+    // Run = Shift/brace OR stick pushed hard (mobile nipple force / full WASD).
+    // Partial stick stays walk so you can pace the park without always sprinting.
+    const sprint = !locked && (
+      Boolean(input.brace)
+      || inputMagnitude >= 0.62
+    );
 
     const position = this.dog.root.position;
     if (this._hadPrevPos) {
@@ -117,30 +118,52 @@ export class DogPlayerController {
     bodyForward.set(Math.sin(dogYaw), 0, Math.cos(dogYaw));
     this.forwardIntent = moving ? bodyForward.dot(desired) : 0;
 
+    const phenotypeSpeed = this.dog.phenotype?.motion?.speed ?? 1;
+    const baseSpeed = sprint ? 3.9 : 1.85;
+    const surfaceSpeed = SURFACE_SPEED[this.surfaceClass] ?? 1;
+    // Car-like drive: mostly along the body, with a little side-slip so the
+    // stick still feels responsive while the dog is mid-turn.
+    const align = THREE.MathUtils.clamp(this.forwardIntent, -1, 1);
+    // Slow slightly while carving a sharp turn (less scrubbing).
+    const turnSlow = THREE.MathUtils.lerp(0.62, 1, THREE.MathUtils.smoothstep(align, -0.2, 0.85));
+
     if (moving) {
-      const phenotypeSpeed = this.dog.phenotype?.motion?.speed ?? 1;
-      const baseSpeed = sprint ? 3.9 : 1.85;
-      const surfaceSpeed = SURFACE_SPEED[this.surfaceClass] ?? 1;
-      // Car-like drive: mostly along the body, with a little side-slip so the
-      // stick still feels responsive while the dog is mid-turn.
-      const align = THREE.MathUtils.clamp(this.forwardIntent, -1, 1);
-      // Slow slightly while carving a sharp turn (less scrubbing).
-      const turnSlow = THREE.MathUtils.lerp(0.62, 1, THREE.MathUtils.smoothstep(align, -0.2, 0.85));
       moveDir
         .copy(bodyForward)
         .multiplyScalar(0.78)
         .addScaledVector(desired, 0.22);
       if (moveDir.lengthSq() > 1e-6) moveDir.normalize();
       else moveDir.copy(bodyForward);
+      this._lastMoveDir.copy(moveDir);
+    }
 
-      const distance = baseSpeed * phenotypeSpeed * surfaceSpeed * inputMagnitude * turnSlow * dt;
-      candidate.copy(position).addScaledVector(moveDir, distance);
+    // Accel-clamped ramp toward the commanded speed (0 when input released) —
+    // reads as real momentum building up/shedding instead of an instant snap,
+    // and also drives the gait's walk/trot blend via speedMps below.
+    const targetSpeed = moving ? baseSpeed * phenotypeSpeed * surfaceSpeed * inputMagnitude * turnSlow : 0;
+    this.currentSpeed = advanceLocomotionSpeed(this.currentSpeed, targetSpeed, dt, { accel: 7, decel: 10 });
+    if (this.currentSpeed > 1e-4) {
+      const distance = this.currentSpeed * dt;
+      candidate.copy(position).addScaledVector(this._lastMoveDir, distance);
       this.moveWithCollision(position, candidate);
     }
+
+    // Stick aims the dog; gait steers gently toward that heading.
+    this.dog.animation.setMoveIntent({
+      x: locked ? 0 : desired.x,
+      z: locked ? 0 : desired.z,
+      moving,
+      sprint,
+      sit,
+      look,
+      speedMps: this.currentSpeed,
+    });
 
     // Jump: crouch anticipation (matches the clip), then a launched arc. The
     // Jump clip is rotation-only, so without this arc the dog never leaves
     // the ground. Re-jump is locked out until touchdown.
+    // Jump is allowed during clip one-shots only if the feature does not set
+    // actionLocked (Jump/Bark must not hard-lock locomotion).
     this.jumpStartedThisFrame = false;
     if (!locked && input.jumpPressed && this.jumpPhase === 'none') {
       this.jumpPhase = 'crouch';
@@ -175,6 +198,7 @@ export class DogPlayerController {
     if (this.jumpPhase === 'air') {
       this.verticalVelocity -= this.jumpGravity * dt;
       position.y += this.verticalVelocity * dt;
+      // Preserve horizontal speed while airborne (run→jump keeps momentum).
       if (this.verticalVelocity <= 0 && position.y <= floorY) {
         position.y = floorY;
         this.jumpPhase = 'none';

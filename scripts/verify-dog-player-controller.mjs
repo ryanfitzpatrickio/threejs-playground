@@ -40,16 +40,26 @@ assert.equal(intent.external, true, 'controller should own external root motion'
 controller.update(0, { deferFootPlant: true });
 assert.equal(dogUpdateOptions?.plantFeet, false, 'clip-driven pose must defer the procedural foot plant');
 
-controller.update(0.1, { moveZ: -1, moveX: 0, brace: false });
+// Movement now ramps in (accel-clamped speed, real momentum) rather than
+// snapping to target speed on the first tick, so hold the input over several
+// frames — same as a real play session holding a stick direction — before
+// asserting displacement.
+// Partial stick (< 0.62) = walk; full stick or brace = run/trot.
+for (let i = 0; i < 20; i += 1) controller.update(0.1, { moveZ: -0.45, moveX: 0, brace: false });
 assert.equal(dogUpdateOptions?.plantFeet, true, 'procedural-only pose should plant in the controller');
 assert.equal(intent.behavior, 'walk');
 assert.ok(root.position.z < -0.08, `forward input should move camera-forward, z=${root.position.z}`);
 assert.equal(root.position.y, 1.25, 'controller should snap world root to level ground');
 
 const walkZ = root.position.z;
-controller.update(0.1, { moveZ: -1, moveX: 0, brace: true });
-assert.equal(intent.behavior, 'trot');
+for (let i = 0; i < 20; i += 1) controller.update(0.1, { moveZ: -1, moveX: 0, brace: false });
+assert.equal(intent.behavior, 'trot', 'full stick should auto-run without brace');
 assert.ok(root.position.z - walkZ < -0.15, 'trot should move farther than walk');
+
+const runZ = root.position.z;
+for (let i = 0; i < 20; i += 1) controller.update(0.1, { moveZ: -1, moveX: 0, brace: true });
+assert.equal(intent.behavior, 'trot');
+assert.ok(root.position.z - runZ < -0.05, 'brace run keeps trot speed');
 
 controller.update(1 / 60, { crouchHeld: true });
 assert.equal(intent.behavior, 'sit');
@@ -145,6 +155,8 @@ const deathClip = new THREE.AnimationClip('Death', 1, []);
 const idleClip = new THREE.AnimationClip('Idle', 1, []);
 clipPlayer.actions.set('Death', clipPlayer.mixer.clipAction(deathClip));
 clipPlayer.actions.set('Idle', clipPlayer.mixer.clipAction(idleClip));
+// Clips are default; still force-enable for this headless stub (no library load).
+clipPlayer.enabled = true;
 clipPlayer.ready = true;
 assert.equal(clipPlayer.playPuddleSplash(), true);
 let impactEdges = 0;

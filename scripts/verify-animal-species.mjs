@@ -228,6 +228,8 @@ const BREEDS = [
   /** @param {string} speciesId */
   function expectedKind(speciesId) {
     const orderId = getAnimalSpecies(speciesId)?.orderId ?? null;
+    // Birds use embedded GLB clips (animalClipLibraryKind → null).
+    if (orderId === 'aves') return 'bird';
     if (orderId === 'rodentia') return 'rodent';
     if (
       orderId === 'perissodactyla'
@@ -241,19 +243,26 @@ const BREEDS = [
     return 'dog';
   }
 
-  const counts = { dog: 0, rodent: 0, equid: 0, bovid: 0 };
+  const counts = { dog: 0, rodent: 0, equid: 0, bovid: 0, bird: 0 };
   for (const sp of ANIMAL_SPECIES) {
     const expected = expectedKind(sp.id);
     const got = animalClipLibraryKind({ speciesId: sp.id });
-    assert.equal(got, expected, `${sp.id} clip kind ${got} !== ${expected}`);
+    // Bird species return null (embedded GLB clips), recorded as 'bird' here.
+    const recorded = got == null && expected === 'bird' ? 'bird' : got;
+    assert.equal(
+      recorded,
+      expected,
+      `${sp.id} clip kind ${got} (recorded ${recorded}) !== ${expected}`,
+    );
     counts[expected] += 1;
   }
   assert.equal(counts.rodent, 15, `expected 15 rodent routes, got ${counts.rodent}`);
   assert.equal(counts.equid, 5, `expected 5 equid routes, got ${counts.equid}`);
   assert.equal(counts.bovid, 8, `expected 8 bovid routes, got ${counts.bovid}`);
   assert.equal(counts.dog, 13, `expected 13 dog routes, got ${counts.dog}`);
+  assert.equal(counts.bird, 10, `expected 10 bird routes, got ${counts.bird}`);
   assert.equal(
-    counts.dog + counts.rodent + counts.equid + counts.bovid,
+    counts.dog + counts.rodent + counts.equid + counts.bovid + counts.bird,
     ANIMAL_SPECIES.length,
   );
 
@@ -294,7 +303,7 @@ const BREEDS = [
   if (prevLocation === undefined) delete globalThis.location;
   else globalThis.location = prevLocation;
 
-  ok(`clip routing exhaustive: dog ${counts.dog} / rodent ${counts.rodent} / equid ${counts.equid} / bovid ${counts.bovid} + breedId + procedural`);
+  ok(`clip routing exhaustive: dog ${counts.dog} / rodent ${counts.rodent} / equid ${counts.equid} / bovid ${counts.bovid} / bird ${counts.bird} + breedId + procedural`);
 }
 
 // --- Catalog-wide clip flag exclusivity (every rat/horse flag matches route set) ---

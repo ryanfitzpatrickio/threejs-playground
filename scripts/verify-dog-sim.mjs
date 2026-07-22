@@ -227,27 +227,40 @@ for (let i = 0; i < 60; i += 1) {
 const zRange = Math.max(...pawZs) - Math.min(...pawZs);
 assert(zRange > 0.06, `walk stride too small on Z (range=${zRange.toFixed(3)})`);
 
-// Catalog size is the current authored animal set (canids + non-canine extensions).
-assert(DOG_BREEDS.length === 121, `expected 121 catalog breeds, got ${DOG_BREEDS.length}`);
+// Catalog size is the current authored animal set (quadrupeds + Aves MVP
+// + Insecta catalog + the cat-rig "Tortoiseshell (Procedural)" entry
+// + the horse-rig "Domestic Horse v2 (Procedural)" entry).
+assert(DOG_BREEDS.length === 158, `expected 158 catalog breeds, got ${DOG_BREEDS.length}`);
 assert(
   new Set(DOG_BREEDS.map((breed) => breed.id)).size === DOG_BREEDS.length,
   'catalog breed IDs must be unique',
 );
 assert(new Set(DOG_FAMILIES.map((family) => family.id)).size === DOG_FAMILIES.length, 'family IDs must be unique');
-assert(AUTHORED_DOG_BREED_IDS.length === 120, `expected 120 authored breeds, got ${AUTHORED_DOG_BREED_IDS.length}`);
+// Authored quadrupeds only — bird-rig and insect breeds are excluded.
+assert(AUTHORED_DOG_BREED_IDS.length === 120, `expected 120 authored quadruped breeds, got ${AUTHORED_DOG_BREED_IDS.length}`);
 
-// Species: Carnivora 13 + Rodentia 15 + Perissodactyla 3 + Artiodactyla 10 = 41
-assert(ANIMAL_ORDERS.length === 4, `expected 4 animal orders, got ${ANIMAL_ORDERS.length}`);
-assert(ANIMAL_SPECIES.length === 41, `expected 41 taxonomic species, got ${ANIMAL_SPECIES.length}`);
-assert(new Set(ANIMAL_SPECIES.map((s) => s.id)).size === 41, 'species IDs must be unique');
+// Species: Carnivora 13 + Rodentia 15 + Perissodactyla 3 + Artiodactyla 10 + Aves 10 + Insecta 24 = 75
+assert(ANIMAL_ORDERS.length === 6, `expected 6 animal orders, got ${ANIMAL_ORDERS.length}`);
+assert(ANIMAL_SPECIES.length === 75, `expected 75 taxonomic species, got ${ANIMAL_SPECIES.length}`);
+assert(new Set(ANIMAL_SPECIES.map((s) => s.id)).size === 75, 'species IDs must be unique');
 const carnivoraCount = ANIMAL_SPECIES.filter((s) => s.orderId === 'carnivora').length;
 const rodentiaCount = ANIMAL_SPECIES.filter((s) => s.orderId === 'rodentia').length;
 const perissoCount = ANIMAL_SPECIES.filter((s) => s.orderId === 'perissodactyla').length;
 const artioCount = ANIMAL_SPECIES.filter((s) => s.orderId === 'artiodactyla').length;
+const avesCount = ANIMAL_SPECIES.filter((s) => s.orderId === 'aves').length;
+const insectaCount = ANIMAL_SPECIES.filter((s) => s.orderId === 'insecta').length;
 assert(carnivoraCount === 13, `expected 13 carnivora species, got ${carnivoraCount}`);
 assert(rodentiaCount === 15, `expected 15 rodentia species, got ${rodentiaCount}`);
 assert(perissoCount === 3, `expected 3 perissodactyla species, got ${perissoCount}`);
 assert(artioCount === 10, `expected 10 artiodactyla species, got ${artioCount}`);
+assert(avesCount === 10, `expected 10 aves species, got ${avesCount}`);
+assert(insectaCount === 24, `expected 24 insecta species, got ${insectaCount}`);
+assert(isSpeciesPopulated('coccinellidae'), 'coccinellidae should have seven-spotted-ladybug');
+assert(isSpeciesPopulated('formicidae'), 'formicidae should have pavement-ant');
+assert(isSpeciesPopulated('nymphalidae'), 'nymphalidae should have monarch-butterfly');
+assert(isSpeciesPopulated('tyrannidae'), 'tyrannidae should have eastern-phoebe');
+assert(isSpeciesPopulated('trochilidae'), 'trochilidae should have ruby-throated-hummingbird');
+assert(isSpeciesPopulated('psittacidae'), 'psittacidae should have scarlet-macaw');
 assert(isSpeciesPopulated('canidae'), 'canidae should have authored breeds');
 assert(isSpeciesPopulated('felidae'), 'felidae should have authored breeds');
 assert(isSpeciesPopulated('procyonidae'), 'procyonidae should have authored breeds');
@@ -346,8 +359,10 @@ assert(resolveDogPhenotype({ breedId: 'golden-retriever', seed: 1 }).skeleton.sc
   assert(coon.familyId === 'feline', 'authored feline should stay in feline family');
   assert(coon.coat.pattern === 'cat-tabby', 'maine-coon should use the cat-tabby pattern');
   assert(coon.ears.type === 'erect', 'maine-coon should keep erect feline ears');
+  // 43 dog-rig felines + the cat-rig "Tortoiseshell (Procedural)" entry
+  // (catalog-only here — it builds via createProceduralCat, see verify-cat.mjs).
   const felineCount = DOG_BREEDS.filter((b) => b.familyId === 'feline').length;
-  assert(felineCount === 43, `expected 43 feline breeds, got ${felineCount}`);
+  assert(felineCount === 44, `expected 44 feline breeds, got ${felineCount}`);
   const felineAuthored = AUTHORED_DOG_BREED_IDS.filter((id) => DOG_BREEDS.find((b) => b.id === id)?.familyId === 'feline');
   assert(felineAuthored.length === 43, `expected 43 authored feline breeds, got ${felineAuthored.length}`);
 }

@@ -29,11 +29,11 @@ const golden = {
     length: 1, body: 1, head: 1, muzzle: 1, ears: 1, legs: 1, paws: 1, tail: 1,
     grooming: 'feathered', fiber: 'soft', pattern: 'golden-shade',
     palette: { undercoat: 0xecd6a4, guard: 0xcf9440, root: 0xd8b57e, tip: 0xf2d9a4 },
-    gravityDroop: 0.58, density: 420,
+    gravityDroop: 0.58, density: 420, sheen: 0.12, lean: 1,
   },
   // beard drives chin goatee; mustache + neckSkirt default from beard when omitted.
   // mane: dedicated flared lion-mane collar loft (ruffed longhair cats).
-  furnishings: { brows: 0, beard: 0, mustache: 0, neckSkirt: 0, ruff: 0.35, mane: 0 },
+  furnishings: { brows: 0, beard: 0, mustache: 0, neckSkirt: 0, ruff: 0.35, mane: 0, crestMane: 0 },
   motion: { stride: 1, speed: 1, sitDepth: 1, earDynamics: 1, tailMotion: 1 },
   extremities: { foot: 'paw', hoofSize: 1, dewclaw: 0, bareBelow: 0.75 },
   headgear: {
@@ -656,15 +656,26 @@ export const DOG_PHENOTYPE_PROFILES = deepFreeze({
       irisColor: 0xaec24e, lidColor: 0x2a2420, lidDarkColor: 0x1a1614,
     },
     coat: {
-      length: 0.28, body: 0.3, head: 0.24, muzzle: 0.16, ears: 0.18, legs: 0.34, paws: 0.22, tail: 0.32,
-      grooming: 'short', pattern: 'tortoiseshell',
-      // undercoat = muted ginger, guard = warm near-black (colorMask 0→ginger, 1→black).
-      // Refs read duller than a marmalade tabby — keep the orange desaturated.
-      palette: { undercoat: 0xbf742e, guard: 0x120e0a, root: 0x8a5a30, tip: 0xe8b46a },
+      // Longhair tortie: retriever-plush shell volume (golden-retriever body
+      // fur is the length reference), feathered britches/tail plume, short
+      // face so eyes/nose stay readable.
+      // Tail multiplies the 0.06m plume base — keep it low or the thin cat
+      // tail drowns in a translucent fur halo that reads as one-sided fog.
+      length: 0.85, body: 1.0, head: 0.42, muzzle: 0.16, ears: 0.4, legs: 0.6, paws: 0.28, tail: 0.5,
+      grooming: 'feathered', pattern: 'tortoiseshell',
+      // Tri-color mask: 0 → ginger undercoat, 0.5 → chocolate midcoat,
+      // 1 → warm near-black guard. Refs read duller than a marmalade tabby —
+      // keep the orange desaturated.
+      palette: { undercoat: 0xbf742e, midcoat: 0x6e4526, guard: 0x120e0a, root: 0x8a5a30, tip: 0xe8b46a },
       // Inner pinna stays dark (ref ears are near-black inside; the default
       // tint reads rust under the warm key light).
       earInnerTint: [0.035, 0.022, 0.02],
-      gravityDroop: 0.14, density: 640,
+      // Long coat with modest lay: high lean/droop slides the shells along
+      // the groom, smearing the bold tortie patches into glassy streaks.
+      gravityDroop: 0.4, density: 440, sheen: 0.22, lean: 0.5,
+      // Re-quantize the interpolated mask to orange/brown/black plateaus
+      // per-fragment — without it the coarse loft smears patches into streaks.
+      maskSharpness: 0.85,
     },
     furnishings: { ruff: 0.05 },
     motion: { stride: 0.58, speed: 0.88, sitDepth: 0.55, earDynamics: 0.32, tailMotion: 0.9 },
@@ -2493,30 +2504,32 @@ export const DOG_PHENOTYPE_PROFILES = deepFreeze({
   'domestic-horse': mergeProfile({
     skeleton: {
       scale: 1.36, bodyLength: 1.14, legLength: 1.32, chestWidth: 0.86, hipWidth: 0.82,
-      neckLength: 1.2, headSize: 0.94, muzzleLength: 1.36, tailLength: 0.85,
+      neckLength: 1.26, headSize: 1.14, muzzleLength: 1.44, tailLength: 1.15,
+      legStyle: 'cursorial', neckCarriage: 0.8,
     },
     geometry: {
       torsoWidth: 0.9, torsoDepth: 1.04, backArch: 0.02, frontTaper: 0.92,
-      neckWidth: 0.8, skullWidth: 0.82, skullHeight: 0.92,
-      skullLength: 1.18, cheekFullness: 0.48, muzzleWidth: 0.58,
+      neckWidth: 0.84, skullWidth: 0.72, skullHeight: 0.76,
+      skullLength: 1.32, cheekFullness: 0.4, muzzleWidth: 0.4, muzzleHeight: 0.66,
+      headShape: 'equid',
       legThickness: 0.78, hindLegThickness: 0.9, pawSize: 0.95,
     },
-    ears: { type: 'erect', length: 0.72, width: 0.48, dynamics: 0.3 },
-    tail: { type: 'straight', thickness: 0.55, taper: 0.55, curl: 0.04, motion: 0.55 },
+    ears: { type: 'erect', length: 0.62, width: 0.52, dynamics: 0.3 },
+    tail: { type: 'dock', thickness: 0.82, taper: 0.42, curl: 0, motion: 0.32 },
     face: {
-      eyeScale: 1.08, eyeSpacing: 1.08, eyeHeight: 1.0, eyeForward: 1.0, noseScale: 0.92, brow: 0.12,
-      eyeStyle: 'caprine', pupilAspect: 2.6, scleraAmount: 0.18,
+      eyeScale: 0.98, eyeSpacing: 0.82, eyeHeight: 1.0, eyeForward: 0.62, noseScale: 0.92, brow: 0.12,
+      eyeStyle: 'caprine', pupilAspect: 2.6, scleraAmount: 0, eyeLateral: 1.45,
       irisColor: 0x5a3a1c, lidColor: 0x2a1c12, lidDarkColor: 0x16100a,
-      hideTeeth: false, noseColor: 0x1a120c, noseBlendColor: 0x4a3220,
+      hideTeeth: true, noseColor: 0x1a120c, noseBlendColor: 0x4a3220,
     },
     coat: {
-      length: 0.28, body: 0.32, head: 0.24, muzzle: 0.14, ears: 0.18, legs: 0.22, paws: 0.08, tail: 0.9,
-      grooming: 'short', pattern: 'solid',
-      palette: { undercoat: 0xc8a070, guard: 0x6a4220, root: 0x9a6840, tip: 0xd8b888 },
+      length: 0.28, body: 0.32, head: 0.24, muzzle: 0.14, ears: 0.18, legs: 0.08, paws: 0.05, tail: 4.5,
+      grooming: 'short', pattern: 'bay-points',
+      palette: { undercoat: 0xc06f38, guard: 0x16120e, root: 0xa5643a, tip: 0xd88a50 },
       gravityDroop: 0.14, density: 560,
     },
     // Light dorsal mane read via crest + ruff.
-    furnishings: { ruff: 0.22, dorsalCrest: 0.35 },
+    furnishings: { ruff: 0.1, dorsalCrest: 0, crestMane: 1 },
     extremities: { foot: 'solid-hoof', hoofSize: 1.08, dewclaw: 0.15, bareBelow: 0.88 },
     motion: { stride: 1.22, speed: 1.18, sitDepth: 0.72, earDynamics: 0.3, tailMotion: 0.55 },
     variation: { scale: 0.04, build: 0.04, coatShade: 0.12, coatLength: 0.05, energy: 0.24, trainability: 0.22 },

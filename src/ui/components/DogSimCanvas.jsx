@@ -11,6 +11,9 @@ import {
   RODENT_CLIP_CATALOG,
   FARM_CLIP_CATALOG,
 } from '../../game/characters/dog/DogClipPlayer.js';
+import { GOOSE_CLIP_CATALOG } from '../../game/characters/goose/createProceduralGoose.js';
+import { LADYBUG_CLIP_CATALOG } from '../../game/characters/insect/ladybugAnimation.js';
+import { registerAnimalBodyDebug } from '../../game/debug/registerAnimalBodyDebug.js';
 
 const BEHAVIORS = [
   { id: 'idle', label: 'Idle' },
@@ -20,6 +23,40 @@ const BEHAVIORS = [
   { id: 'look', label: 'Look' },
 ];
 
+const LADYBUG_BEHAVIORS = [
+  { id: 'idle', label: 'Idle' },
+  { id: 'walk', label: 'Crawl' },
+  { id: 'run', label: 'Run' },
+  { id: 'look', label: 'Alert' },
+  { id: 'alert', label: 'Threat' },
+];
+
+/** Bird-facing labels for the same behavior ids (map to Flap/Glide clips). */
+const BIRD_BEHAVIORS = [
+  { id: 'idle', label: 'Idle' },
+  { id: 'walk', label: 'Walk' },
+  { id: 'trot', label: 'Flap' },
+  { id: 'sit', label: 'Perch' },
+  { id: 'look', label: 'Glide' },
+];
+
+/** Canada goose procedural FSM — ground + flight states. */
+const GOOSE_BEHAVIORS = [
+  { id: 'idle', label: 'Idle' },
+  { id: 'walk', label: 'Walk' },
+  { id: 'hiss', label: 'Hiss' },
+  { id: 'swim', label: 'Swim' },
+  { id: 'flap', label: 'Flap' },
+  { id: 'takeoff', label: 'Takeoff' },
+  { id: 'fly_flap', label: 'Fly Flap' },
+  { id: 'fly_glide', label: 'Fly Glide' },
+  { id: 'fly_dive', label: 'Fly Dive' },
+  { id: 'land_feet', label: 'Land Feet' },
+  { id: 'land_water', label: 'Land Water' },
+  { id: 'look', label: 'Alert' },
+  { id: 'sit', label: 'Rest' },
+];
+
 const MOUTH_STATES = [
   { id: 'closed', label: 'Mouth closed' },
   { id: 'open', label: 'Panting' },
@@ -27,8 +64,8 @@ const MOUTH_STATES = [
 ];
 
 /**
- * Procedural dog simulation viewer.
- * Boot: main menu "Dog" or ?view=dog-sim
+ * Procedural animal studio viewer (dogs, birds, rodents, …).
+ * Boot: main menu "Dog Studio", dog-park HUD Studio, or ?view=dog-sim
  * Harness: ?harness — deterministic presets + gallery API.
  */
 export function DogSimCanvas(props) {
@@ -39,6 +76,13 @@ export function DogSimCanvas(props) {
   const [referenceFailed, setReferenceFailed] = createSignal(false);
 
   onMount(() => {
+    // Ensure P-menu Dog Body / Bird Body folders exist even when GameRuntime
+    // never booted (playground Dog Studio path).
+    try {
+      registerAnimalBodyDebug();
+    } catch (err) {
+      console.warn('[DogSim] animal body debug register failed', err);
+    }
     scene = new DogSimScene({
       canvas,
       onSnapshot: setSnapshot,
@@ -94,15 +138,35 @@ export function DogSimCanvas(props) {
   const familyBreeds = createMemo(() => getDogBreeds(snapshot()?.familyId));
   const speciesHasBreeds = createMemo(() => isSpeciesPopulated(snapshot()?.speciesId ?? 'canidae'));
   const variants = createMemo(() => snapshot()?.variants ?? []);
-  /** Prefer live library catalog (dog / rodent / equid / bovid farm packs). */
+  const isBird = createMemo(() => snapshot()?.animationClips?.library === 'bird'
+    || snapshot()?.animationClips?.library === 'goose'
+    || Boolean(snapshot()?.resolvedTraits?.rigKind === 'bird')
+    || Boolean(snapshot()?.resolvedTraits?.rigKind === 'goose')
+    || Boolean(snapshot()?.isBird));
+  // All birds share the goose body + procedural FSM (variety recolors/scales).
+  const isGoose = createMemo(() => snapshot()?.animationClips?.library === 'goose'
+    || Boolean(snapshot()?.resolvedTraits?.rigKind === 'goose')
+    || isBird());
+  const isLadybug = createMemo(() => snapshot()?.animationClips?.library === 'ladybug'
+    || Boolean(snapshot()?.resolvedTraits?.rigKind === 'insect')
+    || Boolean(snapshot()?.isInsect && snapshot()?.breedId === 'seven-spotted-ladybug'));
+  /** Prefer live library catalog (dog / rodent / equid / bovid / bird / goose packs). */
   const clipCatalog = createMemo(() => {
     const live = snapshot()?.animationClips?.catalog;
     if (Array.isArray(live) && live.length) return live;
     const lib = snapshot()?.animationClips?.library;
+    if (lib === 'ladybug') return LADYBUG_CLIP_CATALOG;
+    if (lib === 'bird' || lib === 'goose') return GOOSE_CLIP_CATALOG;
     if (lib === 'rodent') return RODENT_CLIP_CATALOG;
     if (lib === 'equid' || lib === 'bovid') return FARM_CLIP_CATALOG;
     return DOG_CLIP_CATALOG;
   });
+  const behaviorButtons = createMemo(() => (
+    isLadybug() ? LADYBUG_BEHAVIORS
+      : isGoose() ? GOOSE_BEHAVIORS
+        : isBird() ? BIRD_BEHAVIORS
+          : BEHAVIORS
+  ));
   createEffect(() => {
     const key = refChainKey();
     // Depend only on the stable key string.
@@ -112,7 +176,10 @@ export function DogSimCanvas(props) {
   });
 
   return (
-    <div class="cut-test-shell horde-viewer-shell dog-sim-shell">
+    <div
+      class="cut-test-shell horde-viewer-shell dog-sim-shell"
+      classList={{ 'dog-sim-shell--free-roam': snapshot()?.freeRoam }}
+    >
       <canvas
         ref={canvas}
         class="cut-test-canvas"
@@ -135,6 +202,7 @@ export function DogSimCanvas(props) {
               <div class="dog-sim-compare__placeholder">
                 Missing still — add JPG under
                 <code> public/assets/dog-ref/ </code>
+                (or bird-ref / cat-ref / …)
                 ({snapshot()?.preset})
               </div>
             )}
@@ -165,6 +233,27 @@ export function DogSimCanvas(props) {
           shared gait rig, seeded conformation, and face features.
           {snapshot()?.harness ? ' Harness mode: frozen blink/breeze, fixed settle.' : ''}
         </p>
+
+        <Show when={!snapshot()?.harness}>
+          <div class="horde-viewer-section-label">Mode</div>
+          <div class="horde-viewer-gate-grid">
+            <button
+              type="button"
+              class={`tb-btn horde-gate-btn ${snapshot()?.freeRoam ? 'active' : ''}`}
+              title="Walk any animal with the dog-park third-person camera (WASD, LMB orbit, RMB free-look, scroll zoom). Esc exits."
+              onClick={() => scene?.setFreeRoam(!snapshot()?.freeRoam)}
+            >
+              Free roam
+            </button>
+          </div>
+          <Show when={snapshot()?.freeRoam}>
+            <p class="horde-viewer-hint dog-sim-free-roam-hint">
+              <strong>Free roam</strong> — WASD move · Shift sprint · C sit · LMB orbit · RMB look · scroll zoom · R recenter · Esc exit.
+              Same chase cam as Dog Park (scale-aware).
+              {snapshot()?.speed != null ? ` · ${snapshot()?.speed?.toFixed?.(2) ?? snapshot()?.speed} m/s` : ''}
+            </p>
+          </Show>
+        </Show>
 
         <div class="cut-test-controls">
           <div class="horde-viewer-section-label">Generator</div>
@@ -237,6 +326,18 @@ export function DogSimCanvas(props) {
               authored families/breeds yet — planned for the park catalog.
             </p>
           </Show>
+          <Show when={snapshot()?.isInsect && snapshot()?.animationClips?.library !== 'ladybug'}>
+            <p class="horde-viewer-hint dog-sim-species-empty">
+              Insecta catalog entry — breed/variants selectable, mesh/rig not built yet
+              (previous animal remains on stage).
+            </p>
+          </Show>
+          <Show when={snapshot()?.animationClips?.library === 'ladybug'}>
+            <p class="horde-viewer-hint dog-sim-species-empty">
+              Procedural ladybug — 15-bone rig, hard elytra spots, soft belly shells.
+              Try Crawl / Alert (elytra flare). Naked body toggles soft shells.
+            </p>
+          </Show>
           <div class="dog-sim-seed-row">
             <span>Seed</span>
             <code>{snapshot()?.seed ?? 1}</code>
@@ -273,8 +374,8 @@ export function DogSimCanvas(props) {
               <p class="horde-viewer-hint">
                 {snapshot()?.animationClips?.enabled === false
                   || snapshot()?.harness
-                  ? 'Clip library off (harness or ?dogAnims=procedural).'
-                  : 'Loading horse→dog retarget clips…'}
+                  ? 'Clip library off (harness or ?dogAnims=procedural). Procedural gait is fallback only.'
+                  : 'Loading skeleton retarget clips…'}
               </p>
             )}
           >
@@ -298,9 +399,11 @@ export function DogSimCanvas(props) {
             </div>
           </Show>
 
-          <div class="horde-viewer-section-label">Procedural behavior</div>
+          <div class="horde-viewer-section-label">
+            {isLadybug() ? 'Ladybug motion' : isGoose() ? 'Goose motion' : isBird() ? 'Bird motion' : 'Procedural behavior'}
+          </div>
           <div class="horde-viewer-gate-grid">
-            <For each={BEHAVIORS}>
+            <For each={behaviorButtons()}>
               {(b) => (
                 <button
                   type="button"

@@ -62,7 +62,10 @@
             "neckLength": { "type": "number" },
             "headSize": { "type": "number" },
             "muzzleLength": { "type": "number" },
-            "tailLength": { "type": "number" }
+            "tailLength": { "type": "number" },
+            "withersLift": { "type": "number" },
+            "neckCarriage": { "type": "number" },
+            "legStyle": { "type": "string", "enum": ["default", "cursorial"] }
           }
         },
         "geometry": {
@@ -86,7 +89,7 @@
             "hump": { "type": "number" },
             "headShape": {
               "type": "string",
-              "enum": ["canid", "caviid", "suid", "hydrochoerine"]
+              "enum": ["canid", "caviid", "suid", "hydrochoerine", "equid"]
             }
           }
         },
@@ -115,7 +118,7 @@
           "properties": {
             "type": {
               "type": "string",
-              "enum": ["plume", "straight", "saber", "upright", "curled", "sickle", "sciurid", "paddle"]
+              "enum": ["plume", "straight", "saber", "upright", "curled", "sickle", "sciurid", "paddle", "dock"]
             },
             "thickness": { "type": "number" },
             "curl": { "type": "number" },
@@ -197,13 +200,17 @@
               "additionalProperties": false,
               "properties": {
                 "undercoat": { "$ref": "#/$defs/hexColor" },
+                "midcoat": { "$ref": "#/$defs/hexColor" },
                 "guard": { "$ref": "#/$defs/hexColor" },
                 "root": { "$ref": "#/$defs/hexColor" },
                 "tip": { "$ref": "#/$defs/hexColor" }
               }
             },
             "gravityDroop": { "type": "number" },
-            "density": { "type": "number" }
+            "density": { "type": "number" },
+            "sheen": { "type": "number" },
+            "lean": { "type": "number" },
+            "maskSharpness": { "type": "number" }
           }
         },
         "furnishings": {
@@ -216,6 +223,7 @@
             "neckSkirt": { "type": "number" },
             "ruff": { "type": "number" },
             "mane": { "type": "number" },
+            "crestMane": { "type": "number" },
             "topknot": { "type": "number" },
             "anklePuffs": { "type": "number" },
             "tailPom": { "type": "number" },

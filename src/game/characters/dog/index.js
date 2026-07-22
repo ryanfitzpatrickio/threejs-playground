@@ -1,7 +1,9 @@
 export {
   ANIMAL_ORDERS,
   ANIMAL_SPECIES,
+  AUTHORED_BIRD_BREED_IDS,
   AUTHORED_DOG_BREED_IDS,
+  AUTHORED_INSECT_BREED_IDS,
   DOG_BREEDS,
   DOG_FAMILIES,
   DOG_LINEAGE_KEYS,
@@ -18,6 +20,13 @@ export {
   getPopulatedFamiliesForSpecies,
   getSpeciesIdForBreed,
   getSpeciesIdForFamily,
+  isAvianSpecies,
+  isBirdBreed,
+  isCatRigBreed,
+  isHorseRigBreed,
+  isInsectBreed,
+  isInsectSpecies,
+  isLadybugBreed,
   isSpeciesPopulated,
   normalizeDogBreedId,
   normalizeDogVariantId,
@@ -63,6 +72,42 @@ export {
   validateAndClampAnimalRecipe,
 } from './animalPhenotypeClamp.js';
 export { createProceduralDog } from './createProceduralDog.js';
+export { createProceduralLadybug } from '../insect/createProceduralLadybug.js';
+export { LADYBUG_CLIP_CATALOG } from '../insect/ladybugAnimation.js';
+export { LADYBUG_DIMS, createLadybugSkeleton } from '../insect/ladybugSkeleton.js';
+export {
+  BIRD_BREED_PRESENTATION,
+  BIRD_CLIP_CATALOG,
+  BIRD_MODEL_URL,
+  birdModelUrlForBreed,
+  createAuthoredBird,
+  varyBirdPresentation,
+  warmBirdTemplate,
+} from './createAuthoredBird.js';
+export {
+  BODY_PLAN_PROFILES,
+  BIRD_SHAPE_KIT,
+  CANADA_GOOSE_ENVELOPE,
+  CANADA_GOOSE_LANDMARKS,
+  CANADA_GOOSE_MESH_BOUNDS,
+  CANADA_GOOSE_PALETTE,
+  getBodyPlanProfile,
+  planStationRadii,
+  sampleEnvelope,
+  waterfowlStationRadii,
+} from './birdProportionProfile.js';
+export {
+  createGoosePlumageMaterial,
+} from './birdGooseMaterial.js';
+export {
+  BIRD_ZONE,
+  buildBirdBodyGeometry,
+  remapBirdSkinIndices,
+} from './buildBirdBodyGeometry.js';
+export {
+  createBirdPlumageMaterial,
+  resolveBirdZoneColor,
+} from './birdPlumageMaterial.js';
 export {
   COAT_ZONE,
   colorMaskAt,

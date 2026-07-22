@@ -21,6 +21,12 @@ try {
   assert.ok(level.geometryIndex.entries.length >= 30, 'park architecture should be raycastable');
   assert.ok(level.snapshot().forest.forestTrees >= 8, 'shared forest path should populate park trees');
   assert.equal(level.snapshot().city?.chunks, 1, 'center downtown tile wraps the park lot');
+  // Cheap continuous facade ring (default backdrop; city tiles are optional).
+  assert.ok(level.snapshot().city?.skylineMatte?.segments >= 8, 'skyline matte rings the park');
+  assert.ok(
+    level.group.getObjectByName('Dog Park City Skyline Matte'),
+    'skyline matte mesh present',
+  );
   // City roads/buildings must not steal the lawn under the dog spawn.
   assert.equal(level.getSurfaceAt(0, 0), 'grass');
   const cityColliderOnLawn = level.colliders.some((c) => (

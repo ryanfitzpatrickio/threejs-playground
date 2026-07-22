@@ -12,16 +12,29 @@ import {
   DOG_EAR_BONES,
   resetDogRestPose,
 } from './dogSkeleton.js';
+import { DOG_PAW_MESH_PAD, DOG_GROUND_CONTACT_COMPRESSION } from './dogFootPlant.js';
+import { solveDogLegIk } from './dogLegIk.js';
+import { dogDebugState } from '../../config/dogDebugConfig.js';
 
 const FIXED_DT = 1 / 60;
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
+const X_AXIS = new THREE.Vector3(1, 0, 0);
+const Z_AXIS = new THREE.Vector3(0, 0, 1);
 // Jaw hinge swing for a relaxed open-mouth pant (degrees), plus a fast small
 // oscillation layered on top so a held-open mouth reads as panting, not stuck.
 const JAW_OPEN_DEG = 26;
 const PANT_WOBBLE_DEG = 4;
 const PANT_FREQUENCY = 5.4;
+// Leading-pivot turn: chest/shoulders arc toward the new heading ahead of the
+// hips (SotC-horse-style); clamp keeps the spine twist from reading as broken
+// on a sudden reversal.
+const MAX_SPINE_TWIST_DEG = 30;
+// Whole-body pitch/roll conforming to ground slope under the stance
+// footprint — clamped so one bad ground sample (a cliff edge, a seam) can't
+// flip the dog over.
+const MAX_BODY_TILT_DEG = 28;
 
-/** @typedef {'idle'|'walk'|'trot'|'sit'|'look'|'lie'} DogBehavior */
+/** @typedef {'idle'|'walk'|'trot'|'sit'|'look'|'lie'|'flop'} DogBehavior */
 /** @typedef {'closed'|'open'|'alert'} DogMouthState */
 
 const GAIT = {
@@ -67,6 +80,9 @@ export function createDogAnimation(rig, opts = {}) {
   let gazeTargetPitch = 0;
   let breath = 0;
   let sitBlend = 0;
+  /** 0..1 procedural side-flop timeline (for mud splash → ragdoll handoff). */
+  let flopProgress = 0;
+  let flopActive = false;
   let frozenBlink = false;
   let frozenBreeze = false;
   /** When true, AnimationMixer owns body bones — skip procedural pose writes. */
@@ -82,12 +98,36 @@ export function createDogAnimation(rig, opts = {}) {
 
   const rootPos = new THREE.Vector3();
   const rootYaw = { value: 0 };
+  /** Chest/shoulder lead yaw (rad) — turns toward desiredDir ahead of rootYaw. */
+  let frontYaw = 0;
+  /** Current pelvis→chest twist (rad), consumed by updateGait/applyPostClipOverlays. */
+  let spineTwist = 0;
   /** Smoothed yaw velocity (rad/s) for chase-cam push/pull. */
   let yawRate = 0;
+  /** Whole-body slope-conform tilt (rad), see updateGroundConformance. */
+  let bodyPitch = 0;
+  let bodyRoll = 0;
+  /** Live measured/ramped speed (m/s) from setMoveIntent; null = no live speed fed. */
+  let targetSpeedMps = null;
+  /** getGroundHeight from the most recent update() — reused by applyPostClipOverlays,
+   * which runs later in the same frame (after the clip mixer samples this tick's pose). */
+  let lastGetGroundHeight;
   const moveVel = new THREE.Vector3();
   const desiredDir = new THREE.Vector3(0, 0, 1);
   const _forward = new THREE.Vector3();
   const _yawQ = new THREE.Quaternion();
+  const _pitchQ = new THREE.Quaternion();
+  const _rollQ = new THREE.Quaternion();
+  const _confFL = new THREE.Vector3();
+  const _confFR = new THREE.Vector3();
+  const _confHL = new THREE.Vector3();
+  const _confHR = new THREE.Vector3();
+  const _confMidFront = new THREE.Vector3();
+  const _confMidHind = new THREE.Vector3();
+  const _confMidLeft = new THREE.Vector3();
+  const _confMidRight = new THREE.Vector3();
+  const _ikPawPos = new THREE.Vector3();
+  const _ikTarget = { x: 0, y: 0, z: 0 };
 
   const earSpring = {
     L: { x: 0, z: 0, vx: 0, vz: 0 },
@@ -107,15 +147,116 @@ export function createDogAnimation(rig, opts = {}) {
     else desiredDir.normalize();
   }
 
-  function setMoveIntent({ x = 0, z = 0, sprint = false, moving = null, sit = false, look = false } = {}) {
+  function setMoveIntent({
+    x = 0, z = 0, sprint = false, moving = null, sit = false, look = false, speedMps = null,
+  } = {}) {
     autopilot = false;
+    // Live measured speed (already accel/decel-ramped by the controller) —
+    // drives the continuous walk/trot gait blend in updateGait. Callers that
+    // never pass this (autopilot/studio) keep the old discrete-table gait.
+    targetSpeedMps = Number.isFinite(speedMps) ? Math.max(0, speedMps) : null;
+    // Procedural flop owns the body until finished / ragdoll takes over.
+    if (flopActive) return;
     const hasDirection = x * x + z * z > 1e-6;
     if (hasDirection) setDesiredDirection(x, z);
     const wantsMove = moving ?? hasDirection;
+    // Sprint flag or live speed past walk → Run clip / trot gait.
+    const speedRun = Number.isFinite(targetSpeedMps) && targetSpeedMps >= 2.35;
     if (sit) setBehavior('sit');
     else if (look) setBehavior('look');
-    else if (wantsMove) setBehavior(sprint ? 'trot' : 'walk');
+    else if (wantsMove) setBehavior(sprint || speedRun ? 'trot' : 'walk');
     else setBehavior('idle');
+  }
+
+  /**
+   * Start a procedural side-flop (crouch → roll → settle). Progress 0..1.
+   * Impact / ragdoll handoff typically at ~0.42.
+   */
+  function startFlop() {
+    flopActive = true;
+    flopProgress = 0;
+    sitBlend = 0;
+    setBehavior('flop');
+  }
+
+  /**
+   * @param {number} dt
+   * @param {number} [durationSec=0.85]
+   * @returns {number} flopProgress 0..1
+   */
+  function advanceFlop(dt, durationSec = 0.85) {
+    if (!flopActive) return flopProgress;
+    const dur = Math.max(0.2, durationSec);
+    flopProgress = Math.min(1, flopProgress + Math.max(0, dt) / dur);
+    return flopProgress;
+  }
+
+  function clearFlop() {
+    flopActive = false;
+    flopProgress = 0;
+    if (behavior === 'flop') setBehavior('idle');
+  }
+
+  function getFlopProgress() {
+    return flopProgress;
+  }
+
+  function isFlopping() {
+    return flopActive;
+  }
+
+  /**
+   * Soft side-flop pose (t∈[0,1]). Kept modest so the handoff to physics
+   * doesn't start from a broken-looking joint configuration.
+   * 0–0.35 crouch · 0.3–0.7 slow tip onto side · 0.65–1 settle.
+   */
+  function updateFlopPose(dt) {
+    const t = flopProgress;
+    const crouch = THREE.MathUtils.smoothstep(t, 0, 0.35);
+    const roll = THREE.MathUtils.smoothstep(t, 0.28, 0.72);
+    const settle = THREE.MathUtils.smoothstep(t, 0.6, 1.0);
+    moveVel.set(0, 0, 0);
+    yawRate = THREE.MathUtils.lerp(yawRate, 0, 1 - Math.exp(-6 * dt));
+    frontYaw = THREE.MathUtils.damp(frontYaw, rootYaw.value, 7, dt);
+    spineTwist = THREE.MathUtils.damp(spineTwist, 0, 8, dt);
+
+    // Gentle drop — stay near ground without burying the mesh.
+    const dropY = (-0.07 * crouch - 0.04 * roll) * legLength;
+    rootPos.y = THREE.MathUtils.damp(rootPos.y, dropY, 4, dt);
+    applyRootTransform();
+
+    // ~70° side roll total (not 90°+) — readable flop without twisted spine.
+    addLocalEuler('Pelvis', -crouch * 22 - roll * 10, roll * 6, roll * 62 + settle * 4);
+    addLocalEuler('Spine', crouch * 12 - roll * 4, 0, roll * 14);
+    addLocalEuler('Spine1', crouch * 6, 0, roll * 10);
+    addLocalEuler('Chest', -crouch * 8 + roll * 4, 0, roll * 12);
+    addLocalEuler('Neck', crouch * 10 - roll * 8, roll * 4, roll * -6);
+    addLocalEuler('Head', roll * -6, 0, roll * 8);
+
+    // Hind: fold under calmly; no flail.
+    for (const key of ['hindL', 'hindR']) {
+      const chain = DOG_LEG_CHAINS[key];
+      const side = chain.side === 'L' ? 1 : -1;
+      const under = chain.side === 'R' ? 1 : 0.55;
+      addLocalEuler(chain.upper, -crouch * 36 * under + settle * 8, 0, side * roll * 10);
+      addLocalEuler(chain.lower, crouch * 40 * under, 0, side * settle * 6);
+      addLocalEuler(chain.pastern, -crouch * 18, 0, 0);
+      addLocalEuler(chain.hip, 0, 0, side * (crouch * 6 + roll * 12));
+    }
+    // Front: soft plant, slight outward ease as weight rolls over.
+    for (const key of ['frontL', 'frontR']) {
+      const chain = DOG_LEG_CHAINS[key];
+      const side = chain.side === 'L' ? 1 : -1;
+      addLocalEuler(chain.upper, crouch * 12 + roll * 14, 0, side * roll * 16);
+      addLocalEuler(chain.lower, -crouch * 10 + settle * 8, 0, side * settle * 8);
+      addLocalEuler(chain.pastern, crouch * 6, 0, 0);
+      addLocalEuler(chain.hip, 0, 0, side * (crouch * 4 + roll * 10));
+    }
+    // Soft tail curl over the hip.
+    for (let i = 0; i < DOG_TAIL_BONES.length; i += 1) {
+      const k = (i + 1) / DOG_TAIL_BONES.length;
+      addLocalEuler(DOG_TAIL_BONES[i], settle * 12 * k, roll * -18 * k, 0);
+    }
   }
 
   function setMouthState(next) {
@@ -141,10 +282,18 @@ export function createDogAnimation(rig, opts = {}) {
 
   function applyRootTransform() {
     rig.root.position.copy(rootPos);
-    // Quaternion path avoids euler/quaternion desync on Bone.
+    // Quaternion path avoids euler/quaternion desync on Bone. Yaw (world
+    // heading) composes outermost so ground-conform pitch/roll (body-local
+    // slope tilt) always rides along with wherever the dog is currently
+    // facing, instead of fighting it.
     _yawQ.setFromAxisAngle(Y_AXIS, rootYaw.value);
-    rig.root.quaternion.copy(_yawQ);
-    rig.root.rotation.set(0, rootYaw.value, 0, 'XYZ');
+    if (Math.abs(bodyPitch) > 1e-5 || Math.abs(bodyRoll) > 1e-5) {
+      _pitchQ.setFromAxisAngle(X_AXIS, bodyPitch);
+      _rollQ.setFromAxisAngle(Z_AXIS, bodyRoll);
+      rig.root.quaternion.copy(_yawQ).multiply(_pitchQ).multiply(_rollQ);
+    } else {
+      rig.root.quaternion.copy(_yawQ);
+    }
   }
 
   function updateAutopilot(dt) {
@@ -170,6 +319,8 @@ export function createDogAnimation(rig, opts = {}) {
   function updateRootSteer(dt, gait = null) {
     if (!gait) {
       yawRate = THREE.MathUtils.lerp(yawRate, 0, 1 - Math.exp(-6 * dt));
+      frontYaw = THREE.MathUtils.damp(frontYaw, rootYaw.value, 8, dt);
+      spineTwist = THREE.MathUtils.damp(spineTwist, 0, 8, dt);
       applyRootTransform();
       return;
     }
@@ -185,7 +336,126 @@ export function createDogAnimation(rig, opts = {}) {
     rootYaw.value += yawStep;
     const rateAlpha = 1 - Math.exp(-10 * dt);
     yawRate = THREE.MathUtils.lerp(yawRate, yawStep / Math.max(dt, 1e-5), rateAlpha);
+
+    // Leading pivot: chest arcs toward desiredDir well ahead of the hips —
+    // frontYaw converges faster/tighter than rootYaw, and the gap between
+    // them (spineTwist) is what updateGait/applyPostClipOverlays distribute
+    // across Spine/Spine1/Chest/Neck as a Y twist, so the front legs (parented
+    // to Chest) swing into the turn before the hind legs (parented to Pelvis).
+    let frontDyaw = Math.atan2(desiredDir.x, desiredDir.z) - frontYaw;
+    while (frontDyaw > Math.PI) frontDyaw -= Math.PI * 2;
+    while (frontDyaw < -Math.PI) frontDyaw += Math.PI * 2;
+    let frontStep = frontDyaw * (1 - Math.exp(-turnGain * 2.6 * dt));
+    frontStep = THREE.MathUtils.clamp(frontStep, -maxTurnRate * 2.2 * dt, maxTurnRate * 2.2 * dt);
+    frontYaw += frontStep;
+
+    let twist = frontYaw - rootYaw.value;
+    while (twist > Math.PI) twist -= Math.PI * 2;
+    while (twist < -Math.PI) twist += Math.PI * 2;
+    const maxTwistRad = THREE.MathUtils.degToRad(MAX_SPINE_TWIST_DEG);
+    spineTwist = THREE.MathUtils.clamp(twist, -maxTwistRad, maxTwistRad);
+
     applyRootTransform();
+  }
+
+  /**
+   * Continuously blend the walk/trot tables by measured speed instead of a
+   * hard table swap — legs quicken/slow smoothly as the controller's real
+   * (accel-clamped) speed ramps through the crossover. Callers that never
+   * feed a live speed (autopilot/studio) fall back to the discrete table for
+   * whichever behavior is active, unchanged from before.
+   * @param {number|null} speedMps
+   * @param {'walk'|'trot'} behaviorName
+   */
+  function blendedGait(speedMps, behaviorName) {
+    const base = behaviorName === 'trot' ? GAIT.trot : GAIT.walk;
+    if (!Number.isFinite(speedMps)) return base;
+    const walkSpeed = GAIT.walk.speed * (motion.speed ?? 1);
+    const trotSpeed = GAIT.trot.speed * (motion.speed ?? 1);
+    const t = THREE.MathUtils.smoothstep(speedMps, walkSpeed * 0.55, trotSpeed * 1.05);
+    return {
+      frequency: THREE.MathUtils.lerp(GAIT.walk.frequency, GAIT.trot.frequency, t),
+      strideAmp: THREE.MathUtils.lerp(GAIT.walk.strideAmp, GAIT.trot.strideAmp, t),
+      liftAmp: THREE.MathUtils.lerp(GAIT.walk.liftAmp, GAIT.trot.liftAmp, t),
+      speed: THREE.MathUtils.lerp(GAIT.walk.speed, GAIT.trot.speed, t),
+      phases: {
+        frontL: 0,
+        frontR: 0.5,
+        hindL: THREE.MathUtils.lerp(GAIT.walk.phases.hindL, GAIT.trot.phases.hindL, t),
+        hindR: THREE.MathUtils.lerp(GAIT.walk.phases.hindR, GAIT.trot.phases.hindR, t),
+      },
+    };
+  }
+
+  /**
+   * Whole-body pitch/roll so the dog visibly conforms to slopes/ramps even
+   * standing still. Samples ground height under each paw's rest-stance XZ
+   * (not the live gait swing position — that would couple tilt to stride
+   * phase and jitter every step) and derives pitch from the front-vs-hind
+   * height difference, roll from left-vs-right, each clamped so one bad
+   * sample (a cliff edge, a terrain seam) can't flip the dog over.
+   * @param {number} dt
+   * @param {((x: number, z: number) => number) | undefined} getGroundHeight
+   */
+  function updateGroundConformance(dt, getGroundHeight) {
+    if (typeof getGroundHeight !== 'function') {
+      bodyPitch = THREE.MathUtils.damp(bodyPitch, 0, 6, dt);
+      bodyRoll = THREE.MathUtils.damp(bodyRoll, 0, 6, dt);
+      return;
+    }
+    const frontL = bones.get(DOG_LEG_CHAINS.frontL.paw);
+    const frontR = bones.get(DOG_LEG_CHAINS.frontR.paw);
+    const hindL = bones.get(DOG_LEG_CHAINS.hindL.paw);
+    const hindR = bones.get(DOG_LEG_CHAINS.hindR.paw);
+    if (!frontL || !frontR || !hindL || !hindR) return;
+    frontL.getWorldPosition(_confFL);
+    frontR.getWorldPosition(_confFR);
+    hindL.getWorldPosition(_confHL);
+    hindR.getWorldPosition(_confHR);
+
+    const groundFL = getGroundHeight(_confFL.x, _confFL.z);
+    const groundFR = getGroundHeight(_confFR.x, _confFR.z);
+    const groundHL = getGroundHeight(_confHL.x, _confHL.z);
+    const groundHR = getGroundHeight(_confHR.x, _confHR.z);
+    if (!Number.isFinite(groundFL) || !Number.isFinite(groundFR)
+      || !Number.isFinite(groundHL) || !Number.isFinite(groundHR)) {
+      bodyPitch = THREE.MathUtils.damp(bodyPitch, 0, 6, dt);
+      bodyRoll = THREE.MathUtils.damp(bodyRoll, 0, 6, dt);
+      return;
+    }
+
+    const frontGround = (groundFL + groundFR) * 0.5;
+    const hindGround = (groundHL + groundHR) * 0.5;
+    const leftGround = (groundFL + groundHL) * 0.5;
+    const rightGround = (groundFR + groundHR) * 0.5;
+
+    _confMidFront.addVectors(_confFL, _confFR).multiplyScalar(0.5);
+    _confMidHind.addVectors(_confHL, _confHR).multiplyScalar(0.5);
+    _confMidLeft.addVectors(_confFL, _confHL).multiplyScalar(0.5);
+    _confMidRight.addVectors(_confFR, _confHR).multiplyScalar(0.5);
+
+    const bodyLen = Math.max(0.05, Math.hypot(
+      _confMidFront.x - _confMidHind.x,
+      _confMidFront.z - _confMidHind.z,
+    ));
+    const stanceX = Math.max(0.03, Math.hypot(
+      _confMidLeft.x - _confMidRight.x,
+      _confMidLeft.z - _confMidRight.z,
+    ));
+
+    const maxTilt = THREE.MathUtils.degToRad(MAX_BODY_TILT_DEG);
+    // Positive X-axis rotation pushes a +Z (forward/chest) point DOWN, not up
+    // (confirmed: THREE.Quaternion.setFromAxisAngle(X,+θ) applied to (0,0,1)
+    // yields negative Y) — so the nose-up case (front higher than hind, e.g.
+    // walking uphill) needs a NEGATIVE pitch, hence hind-minus-front here.
+    const targetPitch = THREE.MathUtils.clamp(
+      Math.atan2(hindGround - frontGround, bodyLen), -maxTilt, maxTilt,
+    );
+    const targetRoll = THREE.MathUtils.clamp(
+      Math.atan2(leftGround - rightGround, stanceX), -maxTilt, maxTilt,
+    );
+    bodyPitch = THREE.MathUtils.damp(bodyPitch, targetPitch, 6, dt);
+    bodyRoll = THREE.MathUtils.damp(bodyRoll, targetRoll, 6, dt);
   }
 
   /**
@@ -193,8 +463,11 @@ export function createDogAnimation(rig, opts = {}) {
    * Stance keeps feet near rest height — no tip-bone warping (that made tippy toes).
    * @param {number} dt
    * @param {typeof GAIT.walk} gait
+   * @param {((x: number, z: number) => number) | undefined} [getGroundHeight]
    */
-  function updateGait(dt, gait) {
+  function updateGait(dt, gait, getGroundHeight) {
+    const breedScale = phenotype?.skeleton?.scale ?? 1;
+    const supportOffset = Math.max(0, (DOG_PAW_MESH_PAD - DOG_GROUND_CONTACT_COMPRESSION) * breedScale);
     const frequency = gait.frequency * Math.sqrt(motion.speed ?? 1);
     const strideAmp = gait.strideAmp * (motion.stride ?? 1);
     const moveSpeed = gait.speed * (motion.speed ?? 1);
@@ -211,8 +484,14 @@ export function createDogAnimation(rig, opts = {}) {
 
     // Soft spine wave (small).
     const bob = Math.sin(gaitPhase * Math.PI * 2);
-    addLocalEuler('Spine', bob * 1.5, 0, 0);
-    addLocalEuler('Chest', Math.sin(gaitPhase * Math.PI * 2 + 0.4) * 1.2, 0, 0);
+    // Leading-pivot twist: cumulative local-Y rotations compound down the
+    // chain (Spine -> Spine1 -> Chest -> Neck), so weights are the *deltas*
+    // between target world-twist fractions, not independent shares.
+    const twistDeg = THREE.MathUtils.radToDeg(spineTwist);
+    addLocalEuler('Spine', bob * 1.5, twistDeg * 0.33, 0);
+    addLocalEuler('Spine1', 0, twistDeg * 0.33, 0);
+    addLocalEuler('Chest', Math.sin(gaitPhase * Math.PI * 2 + 0.4) * 1.2, twistDeg * 0.34, 0);
+    addLocalEuler('Neck', 0, twistDeg * 0.25, 0);
     addLocalEuler('Pelvis', -bob * 1.0, 0, 0);
 
     for (const key of legKeys) {
@@ -234,12 +513,35 @@ export function createDogAnimation(rig, opts = {}) {
         addLocalEuler(chain.pastern, -lift * 12 - swing * 6, 0, 0);
         addLocalEuler(chain.paw, lift * 4, 0, 0);
       }
+
+      // Re-ground the FK swing against real terrain: sample height at the
+      // paw's current (post-swing) XZ and IK-correct Y only, including the
+      // same lift the FK just authored so ground clearance is measured
+      // against the *local* terrain under the foot's own arc, not a flat
+      // plane — this is what makes the swing read correctly on a slope.
+      if (getGroundHeight && dogDebugState.proceduralLegIkEnabled) {
+        const pawBone = bones.get(chain.paw);
+        if (pawBone) {
+          rig.root.updateMatrixWorld(true);
+          pawBone.getWorldPosition(_ikPawPos);
+          const groundY = getGroundHeight(_ikPawPos.x, _ikPawPos.z);
+          if (Number.isFinite(groundY)) {
+            const liftHeight = lift * gait.liftAmp * 0.05 * legLength * breedScale;
+            _ikTarget.x = _ikPawPos.x;
+            _ikTarget.y = groundY + supportOffset + liftHeight;
+            _ikTarget.z = _ikPawPos.z;
+            solveDogLegIk(rig, chain, _ikTarget);
+          }
+        }
+      }
     }
   }
 
   function updateIdle(dt) {
     moveVel.set(0, 0, 0);
     yawRate = THREE.MathUtils.lerp(yawRate, 0, 1 - Math.exp(-6 * dt));
+    frontYaw = THREE.MathUtils.damp(frontYaw, rootYaw.value, 8, dt);
+    spineTwist = THREE.MathUtils.damp(spineTwist, 0, 8, dt);
     rootPos.y = THREE.MathUtils.damp(rootPos.y, 0, 8, dt);
     applyRootTransform();
 
@@ -262,6 +564,8 @@ export function createDogAnimation(rig, opts = {}) {
     sitBlend = THREE.MathUtils.damp(sitBlend, 1, 2.2, dt);
     moveVel.set(0, 0, 0);
     yawRate = THREE.MathUtils.lerp(yawRate, 0, 1 - Math.exp(-6 * dt));
+    frontYaw = THREE.MathUtils.damp(frontYaw, rootYaw.value, 8, dt);
+    spineTwist = THREE.MathUtils.damp(spineTwist, 0, 8, dt);
 
     // Drop whole body so folded rump sits near ground. Milder than pre-S rest
     // because the camped hind chain already reaches lower when folded.
@@ -468,6 +772,45 @@ export function createDogAnimation(rig, opts = {}) {
     }
     applyEarBones();
 
+    // Leading-pivot spine twist, additive on top of the clip's sampled pose
+    // (same pelvis->chest->neck distribution as updateGait) — this is what
+    // gives the equid/horse clip pack the same front-leads-the-turn feel.
+    if (Math.abs(spineTwist) > 1e-4) {
+      const twistDeg = THREE.MathUtils.radToDeg(spineTwist);
+      addLocalEuler('Spine', 0, twistDeg * 0.33, 0);
+      addLocalEuler('Spine1', 0, twistDeg * 0.33, 0);
+      addLocalEuler('Chest', 0, twistDeg * 0.34, 0);
+      addLocalEuler('Neck', 0, twistDeg * 0.25, 0);
+    }
+
+    // Re-ground the clip's sampled leg poses against real terrain, same
+    // analytic solver as the procedural gait's per-leg correction — but
+    // walk/trot only (a jump/bark/sit clip's legs are legitimately off the
+    // ground) and its own debug flag, since a baked clip's authored leg
+    // silhouette is more at risk of visibly fighting the solver than a raw
+    // FK swing is.
+    if (
+      (behavior === 'walk' || behavior === 'trot')
+      && lastGetGroundHeight
+      && dogDebugState.clipLegIkEnabled
+    ) {
+      const breedScale = phenotype?.skeleton?.scale ?? 1;
+      const supportOffset = Math.max(0, (DOG_PAW_MESH_PAD - DOG_GROUND_CONTACT_COMPRESSION) * breedScale);
+      for (const key of legKeys) {
+        const chain = DOG_LEG_CHAINS[key];
+        const pawBone = bones.get(chain.paw);
+        if (!pawBone) continue;
+        rig.root.updateMatrixWorld(true);
+        pawBone.getWorldPosition(_ikPawPos);
+        const groundY = lastGetGroundHeight(_ikPawPos.x, _ikPawPos.z);
+        if (!Number.isFinite(groundY)) continue;
+        _ikTarget.x = _ikPawPos.x;
+        _ikTarget.y = groundY + supportOffset;
+        _ikTarget.z = _ikPawPos.z;
+        solveDogLegIk(rig, chain, _ikTarget);
+      }
+    }
+
     rig.root.updateMatrixWorld(true);
     rig.skeleton.update();
   }
@@ -479,14 +822,21 @@ export function createDogAnimation(rig, opts = {}) {
   function update(dt, opts = {}) {
     const steps = opts.fixed ? Math.max(1, Math.round(dt / FIXED_DT)) : 1;
     const stepDt = opts.fixed ? FIXED_DT : Math.min(dt, 0.05);
+    const getGroundHeight = typeof opts.getGroundHeight === 'function' ? opts.getGroundHeight : undefined;
+    lastGetGroundHeight = getGroundHeight;
 
     for (let s = 0; s < steps; s += 1) {
       time += stepDt;
 
-      // Clip library owns body TRS via AnimationMixer. Skip gait/sit pose.
+      // Clip library owns body TRS via AnimationMixer. Skip gait/sit pose and
+      // per-leg IK (that fights the clip's authored leg poses — same reason
+      // footIkEnabled defaults off for clip mode). Whole-body pitch/roll is
+      // independent of which system animates the legs, so it still runs here
+      // — a slope should tilt the dog regardless of clip vs procedural gait.
       // Root yaw steering still runs — left/right aim is controller-owned.
       // Mouth mesh + state advance here; Jaw/ears reapply after mixer.
       if (clipDriven) {
+        updateGroundConformance(stepDt, getGroundHeight);
         if (behavior === 'walk') updateRootSteer(stepDt, GAIT.walk);
         else if (behavior === 'trot') updateRootSteer(stepDt, GAIT.trot);
         else updateRootSteer(stepDt, null);
@@ -501,24 +851,33 @@ export function createDogAnimation(rig, opts = {}) {
 
       updateAutopilot(stepDt);
 
-      if (behavior === 'sit' || behavior === 'lie') {
-        updateSit(stepDt);
-      } else if (behavior === 'walk') {
-        sitBlend = THREE.MathUtils.damp(sitBlend, 0, 4, stepDt);
-        updateGait(stepDt, GAIT.walk);
-      } else if (behavior === 'trot') {
-        sitBlend = THREE.MathUtils.damp(sitBlend, 0, 4, stepDt);
-        updateGait(stepDt, GAIT.trot);
+      if (behavior === 'flop' || flopActive) {
+        // A flopped dog isn't standing on the slope the same way — ease the
+        // conform tilt back to level instead of fighting the flop's own pose.
+        bodyPitch = THREE.MathUtils.damp(bodyPitch, 0, 6, stepDt);
+        bodyRoll = THREE.MathUtils.damp(bodyRoll, 0, 6, stepDt);
+        updateFlopPose(stepDt);
       } else {
-        sitBlend = THREE.MathUtils.damp(sitBlend, 0, 4, stepDt);
-        updateIdle(stepDt);
+        // Runs every non-flop behavior (idle/sit included) so a standing dog
+        // tilts on a hill too, not just while walking/trotting.
+        updateGroundConformance(stepDt, getGroundHeight);
+        if (behavior === 'sit' || behavior === 'lie') {
+          updateSit(stepDt);
+        } else if (behavior === 'walk' || behavior === 'trot') {
+          sitBlend = THREE.MathUtils.damp(sitBlend, 0, 4, stepDt);
+          updateGait(stepDt, blendedGait(targetSpeedMps, behavior), getGroundHeight);
+        } else {
+          sitBlend = THREE.MathUtils.damp(sitBlend, 0, 4, stepDt);
+          updateIdle(stepDt);
+        }
       }
 
-      const wag = behavior === 'sit' ? 0.6
-        : behavior === 'idle' || behavior === 'look' ? 0.38
-          : behavior === 'walk' ? 0.2
-            : 0.1;
-      updateTail(stepDt, wag);
+      const wag = behavior === 'flop' ? 0.15
+        : behavior === 'sit' ? 0.6
+          : behavior === 'idle' || behavior === 'look' ? 0.38
+            : behavior === 'walk' ? 0.2
+              : 0.1;
+      if (behavior !== 'flop') updateTail(stepDt, wag);
       updateEars(stepDt);
       updateFace(stepDt);
 
@@ -534,6 +893,11 @@ export function createDogAnimation(rig, opts = {}) {
     setDesiredDirection,
     getDesiredDirection: () => desiredDir.clone(),
     setMoveIntent,
+    startFlop,
+    advanceFlop,
+    clearFlop,
+    getFlopProgress,
+    isFlopping,
     setExternalRootMotion: (value) => { externalRootMotion = Boolean(value); },
     getExternalRootMotion: () => externalRootMotion,
     setClipDriven: (value) => { clipDriven = Boolean(value); },
@@ -557,6 +921,8 @@ export function createDogAnimation(rig, opts = {}) {
     getRootYaw: () => rootYaw.value,
     setRootYaw: (y) => {
       rootYaw.value = y;
+      frontYaw = y;
+      spineTwist = 0;
       applyRootTransform();
     },
     getYawRate: () => yawRate,
@@ -564,7 +930,7 @@ export function createDogAnimation(rig, opts = {}) {
       if (behavior !== 'walk' && behavior !== 'trot') {
         return { frontL: 1, frontR: 1, hindL: 1, hindR: 1 };
       }
-      const gait = behavior === 'trot' ? GAIT.trot : GAIT.walk;
+      const gait = blendedGait(targetSpeedMps, behavior);
       const out = {};
       for (const key of legKeys) {
         const phase = (gaitPhase + gait.phases[key]) % 1;

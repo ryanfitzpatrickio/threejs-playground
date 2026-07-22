@@ -4,9 +4,9 @@
  * Hierarchy (UI + data):
  *   Order → Species (taxonomic family) → Family (silhouette bucket) → Breed → Variant → Seed
  *
- * `ANIMAL_SPECIES` is the master list of terrestrial quadruped taxonomic
- * families we intend to support. Many have zero silhouette families / breeds
- * yet — they stay visible so authoring can fill the catalog over time.
+ * `ANIMAL_SPECIES` is the master list of taxonomic families we intend to
+ * support (terrestrial quadrupeds + Aves MVP + Insecta catalog). Many entries
+ * stay visible so authoring can fill the catalog over time.
  *
  * `generatorLineage` values are normalized gameplay-generation weights. They
  * select useful procedural shape priors; they are not genetic ancestry, DNA,
@@ -58,7 +58,7 @@ function lineage(partial) {
 // Super-category: taxonomic orders + species (biological families)
 // ---------------------------------------------------------------------------
 
-/** Orders that host classic dog-like / horse-like terrestrial quadrupeds. */
+/** Orders that host classic dog-like / horse-like terrestrial quadrupeds + Aves + Insecta. */
 export const ANIMAL_ORDERS = deepFreeze([
   {
     id: 'carnivora',
@@ -79,6 +79,16 @@ export const ANIMAL_ORDERS = deepFreeze([
     id: 'artiodactyla',
     label: 'Artiodactyla',
     description: 'Terrestrial even-toed ungulates — antelope-like, pig-like, camel-like forms.',
+  },
+  {
+    id: 'aves',
+    label: 'Aves',
+    description: 'Birds — shared bird-rigged.glb mesh + embedded Flap/Glide/Idle/Walk clips (MVP).',
+  },
+  {
+    id: 'insecta',
+    label: 'Insecta',
+    description: 'Insects — catalog by body plan (beetle, hymenopteran, fly, orthopteran, …). Mesh/rig TBD; breeds are authored catalog entries only.',
   },
 ]);
 
@@ -398,6 +408,291 @@ export const ANIMAL_SPECIES = deepFreeze([
     description: 'Pronghorn.',
     examples: 'pronghorn',
   },
+
+  // Order Aves — top bird families by species richness (AviList / IOC-aligned, ~2025–2026)
+  {
+    id: 'tyrannidae',
+    label: 'Tyrannidae',
+    orderId: 'aves',
+    description: 'Tyrant flycatchers — largest bird family (~400–450 spp.).',
+    examples: 'eastern phoebe, great kiskadee, scissor-tailed flycatcher',
+    bodyPlan: 'passerine',
+  },
+  {
+    id: 'thraupidae',
+    label: 'Thraupidae',
+    orderId: 'aves',
+    description: 'Tanagers — colorful Neotropical songbirds (~370–385 spp.).',
+    examples: 'blue-gray tanager, paradise tanager, bananaquit',
+    bodyPlan: 'passerine',
+  },
+  {
+    id: 'trochilidae',
+    label: 'Trochilidae',
+    orderId: 'aves',
+    description: 'Hummingbirds — hovering nectarivores (~360 spp.).',
+    examples: 'ruby-throated hummingbird, anna\'s hummingbird, sword-billed hummingbird',
+    bodyPlan: 'hummingbird',
+  },
+  {
+    id: 'columbidae',
+    label: 'Columbidae',
+    orderId: 'aves',
+    description: 'Pigeons and doves (~350 spp.).',
+    examples: 'rock pigeon, mourning dove, Victoria crowned pigeon',
+    bodyPlan: 'pigeon',
+  },
+  {
+    id: 'muscicapidae',
+    label: 'Muscicapidae',
+    orderId: 'aves',
+    description: 'Old World flycatchers and chats (~340 spp.).',
+    examples: 'European robin, nightingale, pied flycatcher',
+    bodyPlan: 'passerine',
+  },
+  {
+    id: 'furnariidae',
+    label: 'Furnariidae',
+    orderId: 'aves',
+    description: 'Ovenbirds and woodcreepers (~300+ spp.).',
+    examples: 'rufous hornero, plain-brown woodcreeper',
+    bodyPlan: 'passerine',
+  },
+  {
+    id: 'accipitridae',
+    label: 'Accipitridae',
+    orderId: 'aves',
+    description: 'Hawks, eagles, and kites (~250 spp.).',
+    examples: 'red-tailed hawk, bald eagle, red kite',
+    bodyPlan: 'raptor',
+  },
+  {
+    id: 'fringillidae',
+    label: 'Fringillidae',
+    orderId: 'aves',
+    description: 'Finches and euphonias (~230 spp.).',
+    examples: 'house finch, American goldfinch, Eurasian bullfinch',
+    bodyPlan: 'passerine',
+  },
+  {
+    id: 'anatidae',
+    label: 'Anatidae',
+    orderId: 'aves',
+    description: 'Ducks, geese, and swans (~170 spp.).',
+    examples: 'mallard, Canada goose, mute swan',
+    bodyPlan: 'waterfowl',
+  },
+  {
+    id: 'psittacidae',
+    label: 'Psittacidae',
+    orderId: 'aves',
+    description: 'New World and African parrots (~170 spp.).',
+    examples: 'scarlet macaw, African grey, budgerigar',
+    bodyPlan: 'parrot',
+  },
+
+  // Order Insecta — iconic families by body-plan group (catalog MVP; no insect mesh yet)
+  // 1–4 Oval / armored / dome-shaped (beetles)
+  {
+    id: 'coccinellidae',
+    label: 'Coccinellidae',
+    orderId: 'insecta',
+    description: 'Lady beetles — domed oval elytra, often spotted.',
+    examples: 'seven-spotted ladybug, Asian lady beetle',
+    bodyPlan: 'beetle',
+  },
+  {
+    id: 'scarabaeidae',
+    label: 'Scarabaeidae',
+    orderId: 'insecta',
+    description: 'Scarabs and June beetles — stout oval bodies, clubbed antennae.',
+    examples: 'Japanese beetle, June beetle, dung beetle',
+    bodyPlan: 'beetle',
+  },
+  {
+    id: 'curculionidae',
+    label: 'Curculionidae',
+    orderId: 'insecta',
+    description: 'Weevils — elongated snout (rostrum), hard elytra.',
+    examples: 'acorn weevil, boll weevil',
+    bodyPlan: 'beetle',
+  },
+  {
+    id: 'carabidae',
+    label: 'Carabidae',
+    orderId: 'insecta',
+    description: 'Ground beetles — flattened cursorial predators with long legs.',
+    examples: 'ground beetle, bombardier beetle',
+    bodyPlan: 'beetle',
+  },
+  // 5–8 Narrow-waisted / segmented (bees, wasps, ants)
+  {
+    id: 'apidae',
+    label: 'Apidae',
+    orderId: 'insecta',
+    description: 'Bees — hairy pollen-carrying hymenopterans with a petiole waist.',
+    examples: 'honey bee, bumblebee, carpenter bee',
+    bodyPlan: 'hymenopteran',
+  },
+  {
+    id: 'vespidae',
+    label: 'Vespidae',
+    orderId: 'insecta',
+    description: 'Social and solitary wasps — yellowjackets, hornets, paper wasps.',
+    examples: 'yellowjacket, European hornet, paper wasp',
+    bodyPlan: 'hymenopteran',
+  },
+  {
+    id: 'formicidae',
+    label: 'Formicidae',
+    orderId: 'insecta',
+    description: 'Ants — eusocial hymenopterans with elbowed antennae and a petiole.',
+    examples: 'pavement ant, carpenter ant, fire ant',
+    bodyPlan: 'hymenopteran',
+  },
+  {
+    id: 'ichneumonidae',
+    label: 'Ichneumonidae',
+    orderId: 'insecta',
+    description: 'Ichneumon wasps — slender parasitoids, often with a long ovipositor.',
+    examples: 'ichneumon wasp, giant ichneumon',
+    bodyPlan: 'hymenopteran',
+  },
+  // 9–11 Streamlined / two-winged (flies & mosquitoes)
+  {
+    id: 'muscidae',
+    label: 'Muscidae',
+    orderId: 'insecta',
+    description: 'House flies and allies — compact two-winged scavengers.',
+    examples: 'house fly, stable fly',
+    bodyPlan: 'fly',
+  },
+  {
+    id: 'culicidae',
+    label: 'Culicidae',
+    orderId: 'insecta',
+    description: 'Mosquitoes — slender piercing-sucking dipterans with long legs.',
+    examples: 'Anopheles, Aedes, Culex',
+    bodyPlan: 'fly',
+  },
+  {
+    id: 'syrphidae',
+    label: 'Syrphidae',
+    orderId: 'insecta',
+    description: 'Hoverflies — bee/wasp mimics that hover and feed on nectar.',
+    examples: 'drone fly, marmalade hoverfly',
+    bodyPlan: 'fly',
+  },
+  // 12–14 Jumping / elongated hind legs (grasshoppers & crickets)
+  {
+    id: 'acrididae',
+    label: 'Acrididae',
+    orderId: 'insecta',
+    description: 'Short-horned grasshoppers and locusts — powerful saltatory hind legs.',
+    examples: 'differential grasshopper, migratory locust',
+    bodyPlan: 'orthopteran',
+  },
+  {
+    id: 'gryllidae',
+    label: 'Gryllidae',
+    orderId: 'insecta',
+    description: 'True crickets — long antennae, chirping stridulation.',
+    examples: 'field cricket, house cricket',
+    bodyPlan: 'orthopteran',
+  },
+  {
+    id: 'tettigoniidae',
+    label: 'Tettigoniidae',
+    orderId: 'insecta',
+    description: 'Katydids / bush crickets — leaf-like wings, very long antennae.',
+    examples: 'common true katydid, fork-tailed bush katydid',
+    bodyPlan: 'orthopteran',
+  },
+  // 15–16 Flat / scuttling
+  {
+    id: 'blattidae',
+    label: 'Blattidae',
+    orderId: 'insecta',
+    description: 'Large cockroaches — flattened oval runners.',
+    examples: 'American cockroach, Oriental cockroach',
+    bodyPlan: 'roach',
+  },
+  {
+    id: 'rhinotermitidae',
+    label: 'Rhinotermitidae',
+    orderId: 'insecta',
+    description: 'Subterranean termites — soft-bodied eusocial wood feeders.',
+    examples: 'eastern subterranean termite',
+    bodyPlan: 'termite',
+  },
+  // 17–19 Large-winged / delicate (butterflies & moths)
+  {
+    id: 'nymphalidae',
+    label: 'Nymphalidae',
+    orderId: 'insecta',
+    description: 'Brush-footed butterflies — large colorful wings, reduced forelegs.',
+    examples: 'monarch, painted lady, fritillary',
+    bodyPlan: 'lepidopteran',
+  },
+  {
+    id: 'saturniidae',
+    label: 'Saturniidae',
+    orderId: 'insecta',
+    description: 'Giant silk moths — broad delicate wings, often tailed hindwings.',
+    examples: 'luna moth, polyphemus moth, atlas moth',
+    bodyPlan: 'lepidopteran',
+  },
+  {
+    id: 'sphingidae',
+    label: 'Sphingidae',
+    orderId: 'insecta',
+    description: 'Sphinx / hawk moths — heavy-bodied, powerful rapid fliers.',
+    examples: 'tobacco hornworm moth, white-lined sphinx',
+    bodyPlan: 'lepidopteran',
+  },
+  // 20–21 Long-bodied aerial (dragonflies)
+  {
+    id: 'libellulidae',
+    label: 'Libellulidae',
+    orderId: 'insecta',
+    description: 'Skimmer dragonflies — long abdomen, two pairs of outstretched wings.',
+    examples: 'common whitetail, twelve-spotted skimmer',
+    bodyPlan: 'odonate',
+  },
+  {
+    id: 'coenagrionidae',
+    label: 'Coenagrionidae',
+    orderId: 'insecta',
+    description: 'Narrow-winged damselflies — slender body, wings folded at rest.',
+    examples: 'familiar bluet, eastern forktail',
+    bodyPlan: 'odonate',
+  },
+  // 22–23 Raptorial / ambush
+  {
+    id: 'mantidae',
+    label: 'Mantidae',
+    orderId: 'insecta',
+    description: 'Praying mantises — raptorial forelegs, elongated prothorax.',
+    examples: 'Chinese mantis, Carolina mantis',
+    bodyPlan: 'mantis',
+  },
+  // 24–25 Specialized camouflage & others
+  {
+    id: 'phasmatidae',
+    label: 'Phasmatidae',
+    orderId: 'insecta',
+    description: 'Stick insects — elongated twig-mimic body.',
+    examples: 'northern walkingstick, Indian stick insect',
+    bodyPlan: 'phasmid',
+  },
+  {
+    id: 'cicadidae',
+    label: 'Cicadidae',
+    orderId: 'insecta',
+    description: 'Cicadas — stout-bodied hemipterans with clear wings and loud song.',
+    examples: 'periodical cicada, dog-day cicada',
+    bodyPlan: 'cicada',
+  },
 ]);
 
 const speciesIds = new Set(ANIMAL_SPECIES.map((species) => species.id));
@@ -496,6 +791,51 @@ export const DOG_FAMILIES = deepFreeze([
   { id: 'moschid', speciesId: 'moschidae', label: 'Musk deer', description: 'Small hornless deer — cloven hooves, elongated canines, compact alpine build.' },
   { id: 'tragulid', speciesId: 'tragulidae', label: 'Mouse-deer', description: 'Tiny chevrotain — delicate legs, cloven hooves, arched back, short tail.' },
   { id: 'antilocaprid', speciesId: 'antilocapridae', label: 'Pronghorn', description: 'Cursorial plains ungulate — cloven hooves, pronged horns, long legs.' },
+  // Aves — one silhouette family per taxonomic bird family (shared bird-rigged.glb)
+  { id: 'tyrant-flycatcher', speciesId: 'tyrannidae', label: 'Tyrant flycatcher', description: 'Upright passerine perch-and-sally silhouette — short bill, long tail.' },
+  { id: 'tanager', speciesId: 'thraupidae', label: 'Tanager', description: 'Stocky colorful songbird — short conical bill, medium tail.' },
+  { id: 'hummingbird', speciesId: 'trochilidae', label: 'Hummingbird', description: 'Tiny hovering nectarivore — needle bill, blurred wing beat scale.' },
+  { id: 'pigeon-dove', speciesId: 'columbidae', label: 'Pigeon / dove', description: 'Compact plump body, small head, short bill, strong wing.' },
+  { id: 'old-world-flycatcher', speciesId: 'muscicapidae', label: 'Old World flycatcher', description: 'Small chat/flycatcher — upright perch, fine bill, expressive tail.' },
+  { id: 'ovenbird-woodcreeper', speciesId: 'furnariidae', label: 'Ovenbird / woodcreeper', description: 'Neotropical furnariid — strong bill, often longer tail for trunk climbing.' },
+  { id: 'hawk-eagle', speciesId: 'accipitridae', label: 'Hawk / eagle', description: 'Raptor silhouette — hooked bill, broad wings, powerful talons.' },
+  { id: 'finch', speciesId: 'fringillidae', label: 'Finch', description: 'Seed-eating passerine — stout conical bill, compact body.' },
+  { id: 'duck-goose-swan', speciesId: 'anatidae', label: 'Duck / goose / swan', description: 'Waterfowl — flattened bill, webbed feet read, buoyant body.' },
+  { id: 'parrot', speciesId: 'psittacidae', label: 'Parrot', description: 'Hooked bill, zygodactyl feet, often vivid plumage and long tail.' },
+  // Insecta — one silhouette family per taxonomic family (body-plan groups in species.bodyPlan)
+  // Oval / armored / dome (beetles)
+  { id: 'ladybug', speciesId: 'coccinellidae', label: 'Ladybug', description: 'Domed oval elytra — spotted lady beetle silhouette.' },
+  { id: 'scarab-beetle', speciesId: 'scarabaeidae', label: 'Scarab beetle', description: 'Stout oval scarab — metallic or patterned elytra, clubbed antennae.' },
+  { id: 'weevil', speciesId: 'curculionidae', label: 'Weevil', description: 'Hard-bodied beetle with an elongated snout (rostrum).' },
+  { id: 'ground-beetle', speciesId: 'carabidae', label: 'Ground beetle', description: 'Flattened cursorial predator — long legs, dark armored body.' },
+  // Narrow-waisted (bees, wasps, ants)
+  { id: 'honey-bee', speciesId: 'apidae', label: 'Honey bee', description: 'Hairy pollen-carrying bee — striped abdomen, petiole waist.' },
+  { id: 'yellowjacket', speciesId: 'vespidae', label: 'Yellowjacket', description: 'Compact social wasp — bold yellow/black bands, short legs.' },
+  { id: 'pavement-ant', speciesId: 'formicidae', label: 'Pavement ant', description: 'Small eusocial ant — elbowed antennae, petiole, caste morphs.' },
+  { id: 'ichneumon', speciesId: 'ichneumonidae', label: 'Ichneumon', description: 'Slender parasitoid wasp — long body, threadlike antennae, long ovipositor.' },
+  // Two-winged (flies)
+  { id: 'house-fly', speciesId: 'muscidae', label: 'House fly', description: 'Compact two-winged scavenger — large compound eyes, short antennae.' },
+  { id: 'mosquito', speciesId: 'culicidae', label: 'Mosquito', description: 'Slender piercing dipteran — long legs, needle proboscis, scaled wings.' },
+  { id: 'hoverfly', speciesId: 'syrphidae', label: 'Hoverfly', description: 'Bee-mimic hoverer — large eyes, hovering wing beat, short antennae.' },
+  // Jumping orthopterans
+  { id: 'grasshopper', speciesId: 'acrididae', label: 'Grasshopper', description: 'Saltatory hind legs, short antennae, often camouflaged tegmina.' },
+  { id: 'field-cricket', speciesId: 'gryllidae', label: 'Field cricket', description: 'Robust cricket — long antennae, chirping wings, jumping hind legs.' },
+  { id: 'katydid', speciesId: 'tettigoniidae', label: 'Katydid', description: 'Leaf-winged bush cricket — very long antennae, green camouflage.' },
+  // Flat / scuttling
+  { id: 'cockroach', speciesId: 'blattidae', label: 'Cockroach', description: 'Flattened oval runner — long antennae, spiny legs, leathery tegmina.' },
+  { id: 'termite', speciesId: 'rhinotermitidae', label: 'Termite', description: 'Soft pale eusocial wood-feeder — caste morphs (worker / soldier / alate).' },
+  // Butterflies & moths
+  { id: 'brushfoot-butterfly', speciesId: 'nymphalidae', label: 'Brush-footed butterfly', description: 'Large colorful wings, slender body, reduced forelegs.' },
+  { id: 'silk-moth', speciesId: 'saturniidae', label: 'Giant silk moth', description: 'Broad delicate wings — often pale green with tails (luna).' },
+  { id: 'sphinx-moth', speciesId: 'sphingidae', label: 'Sphinx moth', description: 'Heavy-bodied hawk moth — swept-back wings, rapid flight.' },
+  // Odonates
+  { id: 'dragonfly', speciesId: 'libellulidae', label: 'Dragonfly', description: 'Long abdomen, two pairs of wings held open at rest, large eyes.' },
+  { id: 'damselfly', speciesId: 'coenagrionidae', label: 'Damselfly', description: 'Slender odonate — wings usually folded along the body at rest.' },
+  // Raptorial
+  { id: 'praying-mantis', speciesId: 'mantidae', label: 'Praying mantis', description: 'Elongated prothorax and raptorial forelegs held in a prayer pose.' },
+  // Camouflage & others
+  { id: 'stick-insect', speciesId: 'phasmatidae', label: 'Stick insect', description: 'Twig-mimic — extremely elongated body and legs.' },
+  { id: 'cicada', speciesId: 'cicadidae', label: 'Cicada', description: 'Stout clear-winged hemipteran — broad head, loud tymbals.' },
 ]);
 
 const familyIds = new Set(DOG_FAMILIES.map((family) => family.id));
@@ -674,6 +1014,27 @@ export const DOG_BREEDS = deepFreeze([
       { id: 'blue', label: 'Blue eyes', kind: 'eyes' },
       { id: 'regular', label: 'Regular (gold)', kind: 'eyes' },
     ],
+  }),
+  // 3rd feline option: the bespoke fully-procedural cat — own ~50-bone rig,
+  // ring-loft body, and shell tortie coat via createProceduralCat, NOT the
+  // shared dog rig. The `cat-rig` flag routes builds (mirrors the birds'
+  // `bird-rig`). Catalog-only (authored: false): it carries no dog-skeleton
+  // phenotype profile; reference stills are borrowed from the tortoiseshell
+  // board (see CAT_REF_BREED_ALIASES in DogSimScene).
+  breed({
+    id: 'tortoiseshell-procedural',
+    label: 'Tortoiseshell (Procedural)',
+    rank: null,
+    familyId: 'feline',
+    akcGroup: null,
+    authored: false,
+    size: 'Small',
+    build: 'Compact',
+    coat: 'Short mottled',
+    energy: 3,
+    trainability: 3,
+    weights: { terrier: 0.42, toySpaniel: 0.28, spitz: 0.18, bulldog: 0.12 },
+    flags: ['non-canine-extension', 'feline', 'tortie-pattern', 'cat-rig'],
   }),
   // Felidae breed column (P1): every cat-ref board has a first-pass authored
   // profile (dogPhenotypes.js felineProfile). Shape priors only — not
@@ -1344,6 +1705,29 @@ export const DOG_BREEDS = deepFreeze([
     weights: { pointer: 0.34, shepherd: 0.28, retriever: 0.22, mastiff: 0.16 },
     flags: ['non-canine-extension', 'ungulate', 'equidae', 'solid-hoof', 'giant-scale', 'horse-clips'],
   }),
+  // Horse v2: the bespoke fully-procedural horse — own ~120-bone rig,
+  // ring-loft body, bay shell coat, and procedural gait/IK animation via
+  // createProceduralHorse, NOT the shared dog rig. The `horse-rig` flag
+  // routes builds (mirrors the cat's `cat-rig`). Catalog-only
+  // (authored: false): it carries no dog-skeleton phenotype profile;
+  // reference stills are borrowed from the domestic-horse equid-ref board
+  // (see EQUID_REF_BREED_ALIASES in DogSimScene). v1 `domestic-horse`
+  // (dog skeleton + equid clip pack) stays untouched.
+  breed({
+    id: 'domestic-horse-procedural',
+    label: 'Domestic Horse v2 (Procedural)',
+    rank: null,
+    familyId: 'equid',
+    akcGroup: null,
+    authored: false,
+    size: 'Giant',
+    build: 'Long-legged ungulate',
+    coat: 'Short sleek bay',
+    energy: 4,
+    trainability: 4,
+    weights: { pointer: 0.34, shepherd: 0.28, retriever: 0.22, mastiff: 0.16 },
+    flags: ['non-canine-extension', 'ungulate', 'equidae', 'solid-hoof', 'giant-scale', 'horse-rig'],
+  }),
   breed({
     id: 'white-rhinoceros',
     label: 'White Rhinoceros',
@@ -1465,10 +1849,684 @@ export const DOG_BREEDS = deepFreeze([
     weights: { pointer: 0.38, shepherd: 0.26, scentHound: 0.2, retriever: 0.16 },
     flags: ['non-canine-extension', 'ungulate', 'antilocapridae', 'cloven-hoof', 'horned'],
   }),
+  // Aves MVP — top-10 families by species count; one iconic species each.
+  // Shared bird-rigged.glb (not the procedural quadruped mesh). Flags: bird-rig.
+  breed({
+    id: 'eastern-phoebe',
+    label: 'Eastern Phoebe',
+    rank: null,
+    familyId: 'tyrant-flycatcher',
+    akcGroup: null,
+    authored: true,
+    size: 'Small',
+    build: 'Upright passerine',
+    coat: 'Gray-brown',
+    energy: 4,
+    trainability: 1,
+    weights: { pointer: 0.4, terrier: 0.3, toySpaniel: 0.18, spitz: 0.12 },
+    flags: ['non-canine-extension', 'avian', 'bird-rig', 'passerine'],
+  }),
+  breed({
+    id: 'blue-gray-tanager',
+    label: 'Blue-gray Tanager',
+    rank: null,
+    familyId: 'tanager',
+    akcGroup: null,
+    authored: true,
+    size: 'Small',
+    build: 'Stocky songbird',
+    coat: 'Blue-gray',
+    energy: 3,
+    trainability: 1,
+    weights: { toySpaniel: 0.36, terrier: 0.28, spitz: 0.2, pointer: 0.16 },
+    flags: ['non-canine-extension', 'avian', 'bird-rig', 'passerine'],
+  }),
+  breed({
+    id: 'ruby-throated-hummingbird',
+    label: 'Ruby-throated Hummingbird',
+    rank: null,
+    familyId: 'hummingbird',
+    akcGroup: null,
+    authored: true,
+    size: 'Toy',
+    build: 'Tiny hoverer',
+    coat: 'Iridescent green',
+    energy: 5,
+    trainability: 1,
+    weights: { toySpaniel: 0.44, pointer: 0.28, terrier: 0.18, spitz: 0.1 },
+    flags: ['non-canine-extension', 'avian', 'bird-rig', 'hummingbird', 'toy-scale'],
+  }),
+  breed({
+    id: 'rock-pigeon',
+    label: 'Rock Pigeon',
+    rank: null,
+    familyId: 'pigeon-dove',
+    akcGroup: null,
+    authored: true,
+    size: 'Small',
+    build: 'Plump strong-winged',
+    coat: 'Blue-bar / iridescent',
+    energy: 3,
+    trainability: 2,
+    weights: { bulldog: 0.32, retriever: 0.28, terrier: 0.22, spitz: 0.18 },
+    flags: ['non-canine-extension', 'avian', 'bird-rig', 'pigeon'],
+  }),
+  breed({
+    id: 'european-robin',
+    label: 'European Robin',
+    rank: null,
+    familyId: 'old-world-flycatcher',
+    akcGroup: null,
+    authored: true,
+    size: 'Small',
+    build: 'Round chat',
+    coat: 'Orange-breasted',
+    energy: 4,
+    trainability: 1,
+    weights: { toySpaniel: 0.38, terrier: 0.3, spitz: 0.18, pointer: 0.14 },
+    flags: ['non-canine-extension', 'avian', 'bird-rig', 'passerine'],
+  }),
+  breed({
+    id: 'rufous-hornero',
+    label: 'Rufous Hornero',
+    rank: null,
+    familyId: 'ovenbird-woodcreeper',
+    akcGroup: null,
+    authored: true,
+    size: 'Small',
+    build: 'Stocky furnariid',
+    coat: 'Rufous brown',
+    energy: 3,
+    trainability: 1,
+    weights: { terrier: 0.36, scentHound: 0.28, spitz: 0.2, pointer: 0.16 },
+    flags: ['non-canine-extension', 'avian', 'bird-rig', 'passerine'],
+  }),
+  breed({
+    id: 'red-tailed-hawk',
+    label: 'Red-tailed Hawk',
+    rank: null,
+    familyId: 'hawk-eagle',
+    akcGroup: null,
+    authored: true,
+    size: 'Large',
+    build: 'Broad-winged raptor',
+    coat: 'Brown / red tail',
+    energy: 3,
+    trainability: 2,
+    weights: { pointer: 0.4, shepherd: 0.28, mastiff: 0.18, retriever: 0.14 },
+    flags: ['non-canine-extension', 'avian', 'bird-rig', 'raptor'],
+  }),
+  breed({
+    id: 'house-finch',
+    label: 'House Finch',
+    rank: null,
+    familyId: 'finch',
+    akcGroup: null,
+    authored: true,
+    size: 'Small',
+    build: 'Conical-billed seed eater',
+    coat: 'Streaked / red-headed ♂',
+    energy: 4,
+    trainability: 1,
+    weights: { terrier: 0.36, toySpaniel: 0.3, spitz: 0.2, pointer: 0.14 },
+    flags: ['non-canine-extension', 'avian', 'bird-rig', 'passerine'],
+  }),
+  breed({
+    id: 'mallard',
+    label: 'Mallard',
+    rank: null,
+    familyId: 'duck-goose-swan',
+    akcGroup: null,
+    authored: true,
+    size: 'Medium',
+    build: 'Classic dabbling duck',
+    coat: 'Green head ♂ / mottled ♀',
+    energy: 3,
+    trainability: 1,
+    weights: { retriever: 0.36, bulldog: 0.28, scentHound: 0.2, spitz: 0.16 },
+    flags: ['non-canine-extension', 'avian', 'bird-rig', 'waterfowl'],
+  }),
+  breed({
+    id: 'scarlet-macaw',
+    label: 'Scarlet Macaw',
+    rank: null,
+    familyId: 'parrot',
+    akcGroup: null,
+    authored: true,
+    size: 'Large',
+    build: 'Long-tailed macaw',
+    coat: 'Scarlet / blue / yellow',
+    energy: 4,
+    trainability: 4,
+    weights: { pointer: 0.34, toySpaniel: 0.28, shepherd: 0.22, spitz: 0.16 },
+    flags: ['non-canine-extension', 'avian', 'bird-rig', 'parrot'],
+  }),
+  breed({
+    id: 'canada-goose',
+    label: 'Canada Goose',
+    rank: null,
+    familyId: 'duck-goose-swan',
+    akcGroup: null,
+    authored: true,
+    size: 'Large',
+    build: 'Large long-necked waterfowl',
+    coat: 'Black head/neck, brown body, white chin strap',
+    energy: 3,
+    trainability: 1,
+    weights: { retriever: 0.34, bulldog: 0.26, scentHound: 0.24, spitz: 0.16 },
+    flags: ['non-canine-extension', 'avian', 'bird-rig', 'waterfowl'],
+  }),
+  // ---------------------------------------------------------------------------
+  // Insecta catalog MVP — body-plan groups 1–25. Authored for UI/population;
+  // no insect mesh yet (flag: insect). Excluded from AUTHORED_DOG_BREED_IDS.
+  // Lineage weights are unused shape priors only (required by breed()).
+  // ---------------------------------------------------------------------------
+  // 1–4 Oval / armored / dome-shaped (beetles)
+  breed({
+    id: 'seven-spotted-ladybug',
+    label: 'Seven-spotted Ladybug',
+    rank: null,
+    familyId: 'ladybug',
+    akcGroup: null,
+    authored: true,
+    size: 'Toy',
+    build: 'Domed oval',
+    coat: 'Red elytra, seven black spots',
+    energy: 2,
+    trainability: 1,
+    weights: { bulldog: 0.4, toySpaniel: 0.3, terrier: 0.2, spitz: 0.1 },
+    flags: ['non-canine-extension', 'insect', 'beetle', 'toy-scale', 'ladybug-rig'],
+    defaultVariantId: 'seven-spot',
+    variants: [
+      { id: 'seven-spot', label: 'Seven-spot (classic)', kind: 'pattern' },
+      { id: 'two-spot', label: 'Two-spot', kind: 'pattern' },
+      { id: 'immaculate', label: 'Spotless', kind: 'pattern' },
+    ],
+  }),
+  breed({
+    id: 'japanese-beetle',
+    label: 'Japanese Beetle',
+    rank: null,
+    familyId: 'scarab-beetle',
+    akcGroup: null,
+    authored: true,
+    size: 'Toy',
+    build: 'Stout oval scarab',
+    coat: 'Metallic green thorax, copper elytra',
+    energy: 3,
+    trainability: 1,
+    weights: { bulldog: 0.36, terrier: 0.28, mastiff: 0.2, spitz: 0.16 },
+    flags: ['non-canine-extension', 'insect', 'beetle', 'toy-scale'],
+    defaultVariantId: 'adult',
+    variants: [
+      { id: 'adult', label: 'Adult', kind: 'stage' },
+      { id: 'grub', label: 'Grub (larva)', kind: 'stage' },
+    ],
+  }),
+  breed({
+    id: 'acorn-weevil',
+    label: 'Acorn Weevil',
+    rank: null,
+    familyId: 'weevil',
+    akcGroup: null,
+    authored: true,
+    size: 'Toy',
+    build: 'Snouted hard-bodied',
+    coat: 'Brown mottled',
+    energy: 2,
+    trainability: 1,
+    weights: { scentHound: 0.4, terrier: 0.3, pointer: 0.18, toySpaniel: 0.12 },
+    flags: ['non-canine-extension', 'insect', 'beetle', 'toy-scale', 'rostrum'],
+  }),
+  breed({
+    id: 'ground-beetle',
+    label: 'Ground Beetle',
+    rank: null,
+    familyId: 'ground-beetle',
+    akcGroup: null,
+    authored: true,
+    size: 'Toy',
+    build: 'Flattened cursorial',
+    coat: 'Dark iridescent',
+    energy: 4,
+    trainability: 1,
+    weights: { pointer: 0.4, terrier: 0.3, scentHound: 0.18, shepherd: 0.12 },
+    flags: ['non-canine-extension', 'insect', 'beetle', 'toy-scale'],
+  }),
+  // 5–8 Narrow-waisted / segmented (bees, wasps, ants)
+  breed({
+    id: 'honey-bee',
+    label: 'Honey Bee',
+    rank: null,
+    familyId: 'honey-bee',
+    akcGroup: null,
+    authored: true,
+    size: 'Toy',
+    build: 'Hairy petiolate',
+    coat: 'Amber / black bands',
+    energy: 5,
+    trainability: 2,
+    weights: { terrier: 0.34, spitz: 0.28, pointer: 0.22, toySpaniel: 0.16 },
+    flags: ['non-canine-extension', 'insect', 'hymenopteran', 'toy-scale', 'eusocial'],
+    defaultVariantId: 'worker',
+    variants: [
+      { id: 'worker', label: 'Worker', kind: 'caste' },
+      { id: 'drone', label: 'Drone', kind: 'caste' },
+      { id: 'queen', label: 'Queen', kind: 'caste' },
+    ],
+  }),
+  breed({
+    id: 'yellowjacket',
+    label: 'Yellowjacket Wasp',
+    rank: null,
+    familyId: 'yellowjacket',
+    akcGroup: null,
+    authored: true,
+    size: 'Toy',
+    build: 'Compact social wasp',
+    coat: 'Yellow / black bands',
+    energy: 5,
+    trainability: 1,
+    weights: { terrier: 0.36, pointer: 0.3, shepherd: 0.2, spitz: 0.14 },
+    flags: ['non-canine-extension', 'insect', 'hymenopteran', 'toy-scale', 'eusocial'],
+    defaultVariantId: 'worker',
+    variants: [
+      { id: 'worker', label: 'Worker', kind: 'caste' },
+      { id: 'queen', label: 'Queen', kind: 'caste' },
+    ],
+  }),
+  breed({
+    id: 'pavement-ant',
+    label: 'Common Pavement Ant',
+    rank: null,
+    familyId: 'pavement-ant',
+    akcGroup: null,
+    authored: true,
+    size: 'Toy',
+    build: 'Small eusocial ant',
+    coat: 'Dark brown / black',
+    energy: 4,
+    trainability: 2,
+    weights: { terrier: 0.4, toySpaniel: 0.28, pointer: 0.2, spitz: 0.12 },
+    flags: ['non-canine-extension', 'insect', 'hymenopteran', 'toy-scale', 'eusocial'],
+    defaultVariantId: 'worker',
+    variants: [
+      { id: 'worker', label: 'Worker', kind: 'caste' },
+      { id: 'queen', label: 'Queen', kind: 'caste' },
+      { id: 'male', label: 'Male (alate)', kind: 'caste' },
+    ],
+  }),
+  breed({
+    id: 'ichneumon-wasp',
+    label: 'Ichneumon Wasp',
+    rank: null,
+    familyId: 'ichneumon',
+    akcGroup: null,
+    authored: true,
+    size: 'Small',
+    build: 'Slender parasitoid',
+    coat: 'Orange / black / yellow',
+    energy: 3,
+    trainability: 1,
+    weights: { pointer: 0.4, scentHound: 0.28, terrier: 0.2, toySpaniel: 0.12 },
+    flags: ['non-canine-extension', 'insect', 'hymenopteran', 'toy-scale', 'parasitoid'],
+    defaultVariantId: 'female',
+    variants: [
+      { id: 'female', label: 'Female (ovipositor)', kind: 'sex' },
+      { id: 'male', label: 'Male', kind: 'sex' },
+    ],
+  }),
+  // 9–11 Streamlined / two-winged (flies & mosquitoes)
+  breed({
+    id: 'house-fly',
+    label: 'House Fly',
+    rank: null,
+    familyId: 'house-fly',
+    akcGroup: null,
+    authored: true,
+    size: 'Toy',
+    build: 'Compact dipteran',
+    coat: 'Gray thorax, dark abdomen',
+    energy: 4,
+    trainability: 1,
+    weights: { terrier: 0.36, toySpaniel: 0.3, pointer: 0.2, spitz: 0.14 },
+    flags: ['non-canine-extension', 'insect', 'fly', 'toy-scale'],
+  }),
+  breed({
+    id: 'anopheles-mosquito',
+    label: 'Anopheles Mosquito',
+    rank: null,
+    familyId: 'mosquito',
+    akcGroup: null,
+    authored: true,
+    size: 'Toy',
+    build: 'Slender piercing',
+    coat: 'Brown scaled',
+    energy: 3,
+    trainability: 1,
+    weights: { pointer: 0.38, toySpaniel: 0.3, scentHound: 0.2, terrier: 0.12 },
+    flags: ['non-canine-extension', 'insect', 'fly', 'toy-scale'],
+    defaultVariantId: 'female',
+    variants: [
+      { id: 'female', label: 'Female (blood-feeder)', kind: 'sex' },
+      { id: 'male', label: 'Male', kind: 'sex' },
+    ],
+  }),
+  breed({
+    id: 'hoverfly',
+    label: 'Hoverfly',
+    rank: null,
+    familyId: 'hoverfly',
+    akcGroup: null,
+    authored: true,
+    size: 'Toy',
+    build: 'Bee-mimic hoverer',
+    coat: 'Yellow / black bands',
+    energy: 4,
+    trainability: 1,
+    weights: { terrier: 0.34, pointer: 0.28, spitz: 0.22, toySpaniel: 0.16 },
+    flags: ['non-canine-extension', 'insect', 'fly', 'toy-scale', 'mimic'],
+  }),
+  // 12–14 Jumping / elongated hind legs
+  breed({
+    id: 'grasshopper',
+    label: 'Grasshopper',
+    rank: null,
+    familyId: 'grasshopper',
+    akcGroup: null,
+    authored: true,
+    size: 'Small',
+    build: 'Saltatory orthopteran',
+    coat: 'Green / brown camouflage',
+    energy: 4,
+    trainability: 1,
+    weights: { pointer: 0.4, shepherd: 0.26, terrier: 0.2, scentHound: 0.14 },
+    flags: ['non-canine-extension', 'insect', 'orthopteran'],
+    defaultVariantId: 'adult',
+    variants: [
+      { id: 'adult', label: 'Adult', kind: 'stage' },
+      { id: 'nymph', label: 'Nymph', kind: 'stage' },
+    ],
+  }),
+  breed({
+    id: 'field-cricket',
+    label: 'Field Cricket',
+    rank: null,
+    familyId: 'field-cricket',
+    akcGroup: null,
+    authored: true,
+    size: 'Small',
+    build: 'Robust cricket',
+    coat: 'Black / dark brown',
+    energy: 3,
+    trainability: 1,
+    weights: { terrier: 0.36, bulldog: 0.28, scentHound: 0.2, spitz: 0.16 },
+    flags: ['non-canine-extension', 'insect', 'orthopteran'],
+    defaultVariantId: 'male',
+    variants: [
+      { id: 'male', label: 'Male (chirper)', kind: 'sex' },
+      { id: 'female', label: 'Female', kind: 'sex' },
+    ],
+  }),
+  breed({
+    id: 'katydid',
+    label: 'Katydid',
+    rank: null,
+    familyId: 'katydid',
+    akcGroup: null,
+    authored: true,
+    size: 'Small',
+    build: 'Leaf-winged',
+    coat: 'Leaf green',
+    energy: 2,
+    trainability: 1,
+    weights: { toySpaniel: 0.34, pointer: 0.3, terrier: 0.22, spitz: 0.14 },
+    flags: ['non-canine-extension', 'insect', 'orthopteran', 'camouflage'],
+  }),
+  // 15–16 Flat / scuttling
+  breed({
+    id: 'american-cockroach',
+    label: 'American Cockroach',
+    rank: null,
+    familyId: 'cockroach',
+    akcGroup: null,
+    authored: true,
+    size: 'Small',
+    build: 'Flattened runner',
+    coat: 'Reddish brown',
+    energy: 4,
+    trainability: 1,
+    weights: { terrier: 0.36, scentHound: 0.28, bulldog: 0.2, pointer: 0.16 },
+    flags: ['non-canine-extension', 'insect', 'roach'],
+    defaultVariantId: 'adult',
+    variants: [
+      { id: 'adult', label: 'Adult', kind: 'stage' },
+      { id: 'nymph', label: 'Nymph', kind: 'stage' },
+    ],
+  }),
+  breed({
+    id: 'subterranean-termite',
+    label: 'Subterranean Termite',
+    rank: null,
+    familyId: 'termite',
+    akcGroup: null,
+    authored: true,
+    size: 'Toy',
+    build: 'Soft eusocial',
+    coat: 'Cream / pale',
+    energy: 3,
+    trainability: 2,
+    weights: { toySpaniel: 0.4, bulldog: 0.28, terrier: 0.2, spitz: 0.12 },
+    flags: ['non-canine-extension', 'insect', 'termite', 'toy-scale', 'eusocial'],
+    defaultVariantId: 'worker',
+    variants: [
+      { id: 'worker', label: 'Worker', kind: 'caste' },
+      { id: 'soldier', label: 'Soldier', kind: 'caste' },
+      { id: 'alate', label: 'Alate (swarmer)', kind: 'caste' },
+    ],
+  }),
+  // 17–19 Large-winged / delicate (butterflies & moths)
+  breed({
+    id: 'monarch-butterfly',
+    label: 'Monarch Butterfly',
+    rank: null,
+    familyId: 'brushfoot-butterfly',
+    akcGroup: null,
+    authored: true,
+    size: 'Small',
+    build: 'Large-winged brushfoot',
+    coat: 'Orange / black / white',
+    energy: 3,
+    trainability: 1,
+    weights: { toySpaniel: 0.34, pointer: 0.3, spitz: 0.2, retriever: 0.16 },
+    flags: ['non-canine-extension', 'insect', 'lepidopteran'],
+    defaultVariantId: 'adult',
+    variants: [
+      { id: 'adult', label: 'Adult', kind: 'stage' },
+      { id: 'male', label: 'Male adult', kind: 'sex' },
+      { id: 'female', label: 'Female adult', kind: 'sex' },
+      { id: 'chrysalis', label: 'Chrysalis', kind: 'stage' },
+      { id: 'caterpillar', label: 'Caterpillar', kind: 'stage' },
+    ],
+  }),
+  breed({
+    id: 'luna-moth',
+    label: 'Luna Moth',
+    rank: null,
+    familyId: 'silk-moth',
+    akcGroup: null,
+    authored: true,
+    size: 'Medium',
+    build: 'Broad-winged silk moth',
+    coat: 'Pale green, long tails',
+    energy: 2,
+    trainability: 1,
+    weights: { toySpaniel: 0.36, poodle: 0.28, spitz: 0.2, pointer: 0.16 },
+    flags: ['non-canine-extension', 'insect', 'lepidopteran'],
+    defaultVariantId: 'adult',
+    variants: [
+      { id: 'adult', label: 'Adult', kind: 'stage' },
+      { id: 'caterpillar', label: 'Caterpillar', kind: 'stage' },
+    ],
+  }),
+  breed({
+    id: 'sphinx-moth',
+    label: 'Sphinx Moth',
+    rank: null,
+    familyId: 'sphinx-moth',
+    akcGroup: null,
+    authored: true,
+    size: 'Small',
+    build: 'Heavy-bodied hawk moth',
+    coat: 'Brown / gray streaked',
+    energy: 4,
+    trainability: 1,
+    weights: { pointer: 0.4, mastiff: 0.24, shepherd: 0.2, retriever: 0.16 },
+    flags: ['non-canine-extension', 'insect', 'lepidopteran'],
+    defaultVariantId: 'adult',
+    variants: [
+      { id: 'adult', label: 'Adult', kind: 'stage' },
+      { id: 'hornworm', label: 'Hornworm (larva)', kind: 'stage' },
+    ],
+  }),
+  // 20–21 Long-bodied aerial (dragonflies)
+  breed({
+    id: 'dragonfly',
+    label: 'Dragonfly',
+    rank: null,
+    familyId: 'dragonfly',
+    akcGroup: null,
+    authored: true,
+    size: 'Small',
+    build: 'Long-bodied aerial predator',
+    coat: 'Iridescent / patterned',
+    energy: 5,
+    trainability: 1,
+    weights: { pointer: 0.42, shepherd: 0.26, terrier: 0.18, scentHound: 0.14 },
+    flags: ['non-canine-extension', 'insect', 'odonate'],
+    defaultVariantId: 'adult',
+    variants: [
+      { id: 'adult', label: 'Adult', kind: 'stage' },
+      { id: 'nymph', label: 'Aquatic nymph', kind: 'stage' },
+    ],
+  }),
+  breed({
+    id: 'damselfly',
+    label: 'Damselfly',
+    rank: null,
+    familyId: 'damselfly',
+    akcGroup: null,
+    authored: true,
+    size: 'Toy',
+    build: 'Slender odonate',
+    coat: 'Blue / green metallic',
+    energy: 4,
+    trainability: 1,
+    weights: { toySpaniel: 0.36, pointer: 0.3, terrier: 0.2, spitz: 0.14 },
+    flags: ['non-canine-extension', 'insect', 'odonate', 'toy-scale'],
+    defaultVariantId: 'adult',
+    variants: [
+      { id: 'adult', label: 'Adult', kind: 'stage' },
+      { id: 'nymph', label: 'Aquatic nymph', kind: 'stage' },
+    ],
+  }),
+  // 22–23 Raptorial / ambush
+  breed({
+    id: 'praying-mantis',
+    label: 'Praying Mantis',
+    rank: null,
+    familyId: 'praying-mantis',
+    akcGroup: null,
+    authored: true,
+    size: 'Small',
+    build: 'Raptorial ambush',
+    coat: 'Green / brown',
+    energy: 3,
+    trainability: 2,
+    weights: { pointer: 0.38, shepherd: 0.28, scentHound: 0.2, terrier: 0.14 },
+    flags: ['non-canine-extension', 'insect', 'mantis', 'raptorial'],
+    defaultVariantId: 'adult',
+    variants: [
+      { id: 'adult', label: 'Adult', kind: 'stage' },
+      { id: 'nymph', label: 'Nymph', kind: 'stage' },
+      { id: 'green', label: 'Green morph', kind: 'color' },
+      { id: 'brown', label: 'Brown morph', kind: 'color' },
+    ],
+  }),
+  // 24–25 Specialized camouflage & others
+  breed({
+    id: 'stick-insect',
+    label: 'Stick Insect',
+    rank: null,
+    familyId: 'stick-insect',
+    akcGroup: null,
+    authored: true,
+    size: 'Medium',
+    build: 'Twig-mimic elongate',
+    coat: 'Bark brown / green',
+    energy: 1,
+    trainability: 1,
+    weights: { scentHound: 0.4, pointer: 0.28, toySpaniel: 0.18, terrier: 0.14 },
+    flags: ['non-canine-extension', 'insect', 'phasmid', 'camouflage'],
+    defaultVariantId: 'adult',
+    variants: [
+      { id: 'adult', label: 'Adult', kind: 'stage' },
+      { id: 'nymph', label: 'Nymph', kind: 'stage' },
+    ],
+  }),
+  breed({
+    id: 'periodical-cicada',
+    label: 'Periodical Cicada',
+    rank: null,
+    familyId: 'cicada',
+    akcGroup: null,
+    authored: true,
+    size: 'Small',
+    build: 'Stout clear-winged',
+    coat: 'Black body, red eyes, clear wings',
+    energy: 3,
+    trainability: 1,
+    weights: { bulldog: 0.34, terrier: 0.28, mastiff: 0.22, spitz: 0.16 },
+    flags: ['non-canine-extension', 'insect', 'cicada'],
+    defaultVariantId: 'adult',
+    variants: [
+      { id: 'adult', label: 'Adult', kind: 'stage' },
+      { id: 'nymph', label: 'Underground nymph', kind: 'stage' },
+      { id: 'brood-x', label: 'Brood X (17-year)', kind: 'type' },
+      { id: 'brood-xix', label: 'Brood XIX (13-year)', kind: 'type' },
+    ],
+  }),
 ]);
 
+/**
+ * Authored quadruped breeds with procedural dog-skeleton phenotypes.
+ * Excludes bird-rig entries and insect catalog entries (no dog mesh).
+ */
 export const AUTHORED_DOG_BREED_IDS = Object.freeze(
-  DOG_BREEDS.filter((breedInfo) => breedInfo.authored).map((breedInfo) => breedInfo.id),
+  DOG_BREEDS
+    .filter((breedInfo) => (
+      breedInfo.authored
+      && !breedInfo.conformationFlags?.includes('bird-rig')
+      && !breedInfo.conformationFlags?.includes('insect')
+    ))
+    .map((breedInfo) => breedInfo.id),
+);
+
+/** Authored bird breeds that use the shared bird GLB rig. */
+export const AUTHORED_BIRD_BREED_IDS = Object.freeze(
+  DOG_BREEDS
+    .filter((breedInfo) => breedInfo.authored && breedInfo.conformationFlags?.includes('bird-rig'))
+    .map((breedInfo) => breedInfo.id),
+);
+
+/**
+ * Authored insect catalog breeds (body-plan MVP). No insect mesh/rig yet —
+ * studio selection updates catalog identity only until a procedural path ships.
+ */
+export const AUTHORED_INSECT_BREED_IDS = Object.freeze(
+  DOG_BREEDS
+    .filter((breedInfo) => breedInfo.authored && breedInfo.conformationFlags?.includes('insect'))
+    .map((breedInfo) => breedInfo.id),
 );
 
 const breedById = new Map(DOG_BREEDS.map((breedInfo) => [breedInfo.id, breedInfo]));
@@ -1526,20 +2584,59 @@ export function isSpeciesPopulated(speciesId) {
   return getPopulatedFamiliesForSpecies(speciesId).length > 0;
 }
 
+/** True when the breed uses the authored bird GLB rig (not procedural quadruped). */
+export function isBirdBreed(breedId) {
+  return Boolean(getDogBreed(breedId)?.conformationFlags?.includes('bird-rig'));
+}
+
+/** True when the breed is an Insecta catalog entry. */
+export function isInsectBreed(breedId) {
+  return Boolean(getDogBreed(breedId)?.conformationFlags?.includes('insect'));
+}
+
+/** True when the breed uses the procedural ladybug mesh (createProceduralLadybug). */
+export function isLadybugBreed(breedId) {
+  return Boolean(getDogBreed(breedId)?.conformationFlags?.includes('ladybug-rig'));
+}
+
+/** True when the breed uses the bespoke procedural cat rig (createProceduralCat). */
+export function isCatRigBreed(breedId) {
+  return Boolean(getDogBreed(breedId)?.conformationFlags?.includes('cat-rig'));
+}
+
+/** True when the breed uses the bespoke procedural horse rig (createProceduralHorse). */
+export function isHorseRigBreed(breedId) {
+  return Boolean(getDogBreed(breedId)?.conformationFlags?.includes('horse-rig'));
+}
+
+/** True when the taxonomic species is under order Aves. */
+export function isAvianSpecies(speciesId) {
+  return getAnimalSpecies(speciesId)?.orderId === 'aves';
+}
+
+/** True when the taxonomic species is under order Insecta. */
+export function isInsectSpecies(speciesId) {
+  return getAnimalSpecies(speciesId)?.orderId === 'insecta';
+}
+
 export function normalizeDogBreedId(id, fallback = 'golden-retriever') {
   return getDogBreed(id)?.id ?? getDogBreed(fallback)?.id ?? 'golden-retriever';
 }
 
 /**
- * Rendering boundary: authored breeds keep their id. Catalog-only stubs fall
- * back to the first authored breed in the same silhouette family (e.g. feline
- * stubs → tortoiseshell). Unknown ids fall back to Golden.
+ * Rendering boundary: authored quadruped/bird breeds keep their id. Insect
+ * catalog entries have no mesh yet and fall back to Golden. Catalog-only stubs
+ * fall back to the first authored breed in the same silhouette family (e.g.
+ * feline stubs → tortoiseshell). Unknown ids fall back to Golden.
  */
 export function normalizeRenderableDogBreedId(id) {
   const candidate = getDogBreed(id);
   if (!candidate) return 'golden-retriever';
+  // Insects are catalog identity only — never resolve a dog phenotype for them.
+  if (candidate.conformationFlags?.includes('insect')) return 'golden-retriever';
   if (candidate.authored) return candidate.id;
-  const familyAuthored = getAuthoredDogBreeds(candidate.familyId);
+  const familyAuthored = getAuthoredDogBreeds(candidate.familyId)
+    .filter((breedInfo) => !breedInfo.conformationFlags?.includes('insect'));
   if (familyAuthored.length) return familyAuthored[0].id;
   return 'golden-retriever';
 }

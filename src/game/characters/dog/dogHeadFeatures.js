@@ -100,7 +100,15 @@ export function createDogHeadFeatures(bonesByName, phenotype = null) {
   );
   const headShapeKind = geometryShape.headShape ?? 'canid';
   const isCaviidHead = headShapeKind === 'caviid';
+  const isEquidHead = headShapeKind === 'equid';
   const isSuidHead = headShapeKind === 'suid' || headShapeKind === 'hydrochoerine';
+  // 0 = dog-frontal eyes, 1 = full lateral (equid side-eye). Default follows
+  // the head shape so equid heads get side eyes without extra authoring.
+  const eyeLateral = THREE.MathUtils.clamp(
+    Number.isFinite(faceShape.eyeLateral) ? faceShape.eyeLateral : (isEquidHead ? 1 : 0),
+    0,
+    1,
+  );
   // Caviid solid is centered near Head origin with halfH≈0.05*hs — place eyes
   // on the upper side wall of that box (not above it).
   let eyeY;
@@ -108,7 +116,15 @@ export function createDogHeadFeatures(bonesByName, phenotype = null) {
   let eyeZ;
   let eyeR = 0.0135 * headScale * (faceShape.eyeScale ?? 1)
     * (eyeStyle === 'caprine' ? 1.08 : 1);
-  if (isCaviidHead) {
+  if (isEquidHead) {
+    // Side wall of the brow: wide spacing, high placement, z at the brow
+    // plane (well behind the muzzle), matching buildEquidPolyHead stations.
+    const halfW = 0.046 * headScale * (geometryShape.skullWidth ?? 1);
+    eyeX = halfW * 0.96 * (faceShape.eyeSpacing ?? 1);
+    eyeY = 0.016 * headScale * (faceShape.eyeHeight ?? 1) + 0.012 * headScale;
+    eyeZ = 0.01 * headScale * (geometryShape.skullLength ?? 1)
+      * (faceShape.eyeForward ?? 1);
+  } else if (isCaviidHead) {
     // Eyes high on the cheek transition (visible from front + 3/4, not buried
     // on the far side wall of the rectangular solid).
     const halfW = 0.052 * headScale * (geometryShape.skullWidth ?? 1);
@@ -144,9 +160,12 @@ export function createDogHeadFeatures(bonesByName, phenotype = null) {
     eyeRoot.name = side > 0 ? 'EyeL' : 'EyeR';
     eyeRoot.position.set(side * eyeX, eyeY, eyeZ);
     // Caprine eyes sit more laterally; canid keeps the soft inward slant.
-    eyeRoot.rotation.y = side * (eyeStyle === 'caprine' ? 0.32 : 0.2);
-    eyeRoot.rotation.x = eyeStyle === 'caprine' ? -0.02 : -0.06;
-    eyeRoot.rotation.z = side * (eyeStyle === 'caprine' ? 0.02 : 0.05);
+    // eyeLateral swings the whole socket outward toward a full side-eye
+    // (equid): iris plane faces sideways for the wide monocular field.
+    const baseYaw = eyeStyle === 'caprine' ? 0.32 : 0.2;
+    eyeRoot.rotation.y = side * THREE.MathUtils.lerp(baseYaw, 1.08, eyeLateral);
+    eyeRoot.rotation.x = (eyeStyle === 'caprine' ? -0.02 : -0.06) - eyeLateral * 0.02;
+    eyeRoot.rotation.z = side * ((eyeStyle === 'caprine' ? 0.02 : 0.05) + eyeLateral * 0.06);
     eyeRoot.renderOrder = 500;
 
     // Optional pale sclera disc behind the iris (goats show more "white").

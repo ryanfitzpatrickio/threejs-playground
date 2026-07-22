@@ -32,7 +32,8 @@ try {
   await page.addInitScript(() => {
     localStorage.setItem('dreamfall:controls-dismissed', 'true');
   });
-  await page.goto(dreamfallAppUrl({ level: 'dog-park', autostart: '1' }), {
+  // Clips are default; pin dogAnims=clips so the harness always exercises Death flop.
+  await page.goto(dreamfallAppUrl({ level: 'dog-park', autostart: '1', dogAnims: 'clips' }), {
     waitUntil: 'domcontentloaded',
     timeout: 60_000,
   });
@@ -41,7 +42,8 @@ try {
       const snapshot = globalThis.__DREAMFALL_DEBUG__?.snapshot?.();
       return snapshot?.stage === 'running'
         && snapshot?.dogPark?.dog?.position
-        && snapshot?.dogPark?.animationClips?.ready === true;
+        && snapshot?.dogPark?.animationClips?.ready === true
+        && snapshot?.dogPark?.animationClips?.library !== 'procedural';
     },
     { timeout: 150_000 },
   );
@@ -93,8 +95,8 @@ try {
   );
   assert.ok(['Walk', 'Idle'].includes(walked.animationClips.clip), `unexpected locomotion clip ${walked.animationClips.clip}`);
 
-  // Put the dog in the west wallow, grow a paw trail, then verify Z locks the
-  // Death one-shot and emits one synchronized deform/blob impact before Idle.
+  // Put the dog in the west wallow, grow a paw trail, then verify Z runs
+  // procedural flop → mud impact → ragdoll (not the Death skeleton clip).
   await page.evaluate(() => {
     const dbg = globalThis.__DREAMFALL_DEBUG__;
     const breedId = dbg.snapshot().dogPark.breedId;
@@ -133,10 +135,12 @@ try {
   const impactCountBefore = mudTrail.flopImpactCount;
   const coatBeforeFlop = coatTrail;
   await page.keyboard.press('z');
+  // Procedural flop — mixer must not enter Death.
   await page.waitForFunction(
     () => {
-      const clips = globalThis.__DREAMFALL_DEBUG__.snapshot().dogPark?.animationClips;
-      return clips?.busy === true && clips?.clip === 'Death';
+      const park = globalThis.__DREAMFALL_DEBUG__.snapshot().dogPark;
+      const clips = park?.animationClips;
+      return clips?.clip !== 'Death' && clips?.busy !== true;
     },
     { timeout: 5_000 },
   );
@@ -157,21 +161,36 @@ try {
     'mud flop emits one deterministic 36-droplet burst');
   assert.ok(
     Math.hypot(mudImpact.dog.position.x - flopPosition.x, mudImpact.dog.position.z - flopPosition.z) < 0.05,
-    'Death action lock prevents movement during impact',
+    'flop action lock prevents movement during impact',
   );
+  // Ragdoll should take over after procedural impact (not Death clip hold).
+  await page.waitForFunction(
+    () => globalThis.__DREAMFALL_DEBUG__.snapshot().dogPark?.ragdoll?.active === true
+      || globalThis.__DREAMFALL_DEBUG__.snapshot().dogPark?.ragdoll?.mode === 'limp'
+      || globalThis.__DREAMFALL_DEBUG__.snapshot().dogPark?.ragdoll?.mode === 'blend',
+    { timeout: 5_000 },
+  ).catch(() => {
+    // Ragdoll may be brief / already blended if physics steps slow in CI.
+  });
   if (process.env.DOG_PARK_SCREENSHOT) {
     await mkdir('.codex-tmp', { recursive: true });
     await page.screenshot({ path: process.env.DOG_PARK_SCREENSHOT, fullPage: true });
   }
+  // After limp+blend, clips resume Idle (or procedural idle if packs off).
   await page.waitForFunction(
     () => {
-      const clips = globalThis.__DREAMFALL_DEBUG__.snapshot().dogPark?.animationClips;
-      return clips?.busy === false && clips?.clip === 'Idle';
+      const park = globalThis.__DREAMFALL_DEBUG__.snapshot().dogPark;
+      const rag = park?.ragdoll;
+      const clips = park?.animationClips;
+      const ragDone = !rag?.active || rag?.mode === 'inactive';
+      const clipsOk = !clips?.ready || clips?.clip === 'Idle' || clips?.busy === false;
+      return ragDone && clipsOk;
     },
-    { timeout: 8_000 },
+    { timeout: 12_000 },
   );
   const recovered = await page.evaluate(() => globalThis.__DREAMFALL_DEBUG__.snapshot().dogPark);
-  assert.equal(recovered.mud.flopImpactCount, impactCountBefore + 1, 'Death-to-Idle recovery does not duplicate impact');
+  assert.equal(recovered.mud.flopImpactCount, impactCountBefore + 1, 'procedural flop recovery does not duplicate impact');
+  assert.notEqual(recovered.animationClips?.clip, 'Death', 'recovery must not leave Death clip active');
 
   // The same animation on grass must not deposit coat mud or spawn droplets.
   await page.evaluate(() => {

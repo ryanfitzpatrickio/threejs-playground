@@ -1,10 +1,12 @@
-import { onCleanup, onMount } from 'solid-js';
+import { createSignal, onCleanup, onMount } from 'solid-js';
 import { GameRuntime } from '../../game/core/GameRuntime.js';
 import { getQualityLevel, getQualityPreset } from '../../game/config/qualityPresets.js';
+import { VirtualTouchControls } from './VirtualTouchControls.jsx';
 
 export function GameCanvas(props) {
   let canvas;
   let runtime;
+  const [runtimeReady, setRuntimeReady] = createSignal(false);
 
   onMount(() => {
     const qualityLevel = getQualityLevel();
@@ -23,6 +25,7 @@ export function GameCanvas(props) {
     if (props.networkSystem) {
       runtime.setNetworkSystem?.(props.networkSystem);
     }
+    setRuntimeReady(true);
     props.onRuntime?.(runtime);
 
     runtime.start().catch((error) => {
@@ -33,6 +36,7 @@ export function GameCanvas(props) {
       import.meta.hot.dispose(() => {
         runtime?.dispose();
         runtime = null;
+        setRuntimeReady(false);
       });
     }
   });
@@ -40,7 +44,17 @@ export function GameCanvas(props) {
   onCleanup(() => {
     props.onRuntime?.(null);
     runtime?.dispose();
+    runtime = null;
+    setRuntimeReady(false);
   });
 
-  return <canvas ref={canvas} class="game-canvas" aria-label="Dreamfall prototype viewport" />;
+  return (
+    <div class="game-canvas-host">
+      <canvas ref={canvas} class="game-canvas" aria-label="Dreamfall prototype viewport" />
+      <VirtualTouchControls
+        enabled={runtimeReady()}
+        getInputSystem={() => runtime?.inputSystem ?? null}
+      />
+    </div>
+  );
 }

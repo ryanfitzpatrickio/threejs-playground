@@ -42,8 +42,14 @@ const EXPERIENCES = [
   },
   {
     id: 'dog',
-    label: 'Dog',
+    label: 'Dog Park',
     blurb: 'Run a procedural dog through a sunny lakeside park.',
+    accent: true,
+  },
+  {
+    id: 'dog-studio',
+    label: 'Dog Studio',
+    blurb: 'Breed gallery, clips, and photo-board compare for animals.',
     accent: true,
   },
   {
@@ -161,5 +167,6 @@ export function MainMenu(props) {
 
 function labelFor(id) {
   if (id === 'dog-park') return 'Dog Park';
+  if (id === 'dogSim' || id === 'dog-sim') return 'Dog Studio';
   return EXPERIENCES.find((x) => x.id === id)?.label ?? id;
 }

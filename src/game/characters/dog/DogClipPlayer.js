@@ -5,6 +5,26 @@ import { getAnimalSpecies, getDogBreed } from './dogCatalog.js';
 const clipLibraryPromises = new Map();
 
 /**
+ * Horse→dog Jump has long near-idle lead-in / settle tails (legs hold idle while
+ * the middle carries crouch→launch→land). Trim those pads so one-shots only play
+ * the athletic middle. Other packs that already start on motion are unchanged.
+ */
+const JUMP_TRIM = Object.freeze({
+  /**
+   * Expand from the peak motion sample while energy stays above this fraction
+   * of the peak. Higher = tighter “athletic middle” (drops idle lead/tail).
+   */
+  energyFrac: 0.20,
+  /** Keep a few frames before first active / after last. */
+  padSec: 0.06,
+  /** Only trim if we remove at least this much idle. */
+  minTrimSec: 0.18,
+  /** Active window must be at least this long. */
+  minActiveSec: 0.5,
+  probeSteps: 72,
+});
+
+/**
  * Horse-rigged.glb clips retargeted onto the shared dog skeleton
  * (`public/assets/dog-anims/`). Labels match the source GLB clip names.
  * `loop` = continuous studio playback; one-shots recover to Idle.
@@ -63,10 +83,24 @@ const FARM_LOOP_NAMES = new Set(
   FARM_CLIP_CATALOG.filter((entry) => entry.loop).map((entry) => entry.name),
 );
 
-/** `?dogAnims=procedural` opts out of the retargeted clip library entirely. */
+/**
+ * Retargeted skeleton clip packs are the default. Procedural gait is a
+ * fallback when packs fail to load, for birds/bespoke rigs, or when forced.
+ *
+ * Force clips: `?dogAnims=clips` | `retarget` | `library` | `1` | `on` (default)
+ * Force procedural: `?dogAnims=procedural` | `0` | `off` | `false`
+ */
 export function dogClipModeEnabled() {
-  const params = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
-  return params.get('dogAnims') !== 'procedural';
+  const params = new URLSearchParams(
+    typeof location !== 'undefined' ? location.search : '',
+  );
+  const raw = String(params.get('dogAnims') ?? '').trim().toLowerCase();
+  // Explicit procedural opt-out only.
+  if (raw === 'procedural' || raw === '0' || raw === 'off' || raw === 'false') {
+    return false;
+  }
+  // Empty, clips, retarget, library, 1, on, true, or unknown → clips priority.
+  return true;
 }
 
 /**
@@ -80,7 +114,7 @@ export function dogClipModeEnabled() {
  *                 Perissodactyla + giraffe/hippo + `horse-clips` / `equid-clips`.
  *  - `'bovid'`  — Quaternius Farm Cow retarget (`public/assets/bovid-anims/`).
  *                 Most artiodactyls (cattle, deer, camelids, pigs, …) + `cow-clips`.
- *  - `null`     — procedural gait only (`?dogAnims=procedural`).
+ *  - `null`     — no pack (bird/bespoke rig, or `?dogAnims=procedural`).
  *
  * Accepts `speciesId`, `breedId` (catalog lookup), `phenotype`, breed flags, or a
  * full createProceduralDog handle (`speciesId` + `breed.conformationFlags`).
@@ -116,6 +150,33 @@ export function animalClipLibraryKind(animal = null) {
     ?? catalogBreed?.conformationFlags;
   const flagList = Array.isArray(flags) ? flags : [];
 
+  // Birds use the procedural goose-body FSM (createProceduralGoose varieties),
+  // not dog-bone retarget packs. Bespoke procedural rigs (goose, cat) own their
+  // own animation facade and must never be driven by the shared dog-bone packs —
+  // their skeletons don't match the retarget bone map. Insects are catalog-only
+  // (no mesh/clips yet).
+  if (
+    orderId === 'aves'
+    || orderId === 'insecta'
+    || flagList.includes('bird-rig')
+    || flagList.includes('avian')
+    || flagList.includes('insect')
+    || animal?.isBird
+    || animal?.isInsect
+    || animal?.phenotype?.rigKind === 'bird'
+    || animal?.phenotype?.rigKind === 'insect'
+    || animal?.rigKind === 'insect'
+    || flagList.includes('ladybug-rig')
+    || animal?.isInsect
+    || animal?.rigKind === 'cat'
+    || animal?.phenotype?.rigKind === 'cat'
+    || flagList.includes('horse-rig')
+    || animal?.rigKind === 'horse'
+    || animal?.phenotype?.rigKind === 'horse'
+  ) {
+    return null;
+  }
+
   if (orderId === 'rodentia' || flagList.includes('rat-clips') || flagList.includes('rodent')) {
     return 'rodent';
   }
@@ -143,7 +204,7 @@ export function animalClipLibraryKind(animal = null) {
 
 /**
  * Whether this animal should use a retargeted dog-bone clip library.
- * Opt out with `?dogAnims=procedural`.
+ * Default yes (skeleton clips); opt out with `?dogAnims=procedural`.
  *
  * @param {{ familyId?: string, speciesId?: string, breedId?: string, phenotype?: object } | null | undefined} animal
  */
@@ -213,8 +274,13 @@ export class DogClipPlayer {
     try {
       const clips = await loadClipLibrary(this.libraryKind);
       if (this.disposed) return false;
-      for (const clip of clips) this.actions.set(clip.name, this.mixer.clipAction(clip));
-      this._bindMixerPoseProperties(clips);
+      const prepared = clips.map((clip) => (
+        clip.name === 'Jump' ? trimJumpIdlePads(clip) : clip
+      ));
+      for (const clip of prepared) {
+        this.actions.set(clip.name, this.mixer.clipAction(clip));
+      }
+      this._bindMixerPoseProperties(prepared);
       this.ready = this.actions.size > 0;
       if (this.ready) this.playLoop('Idle', 0);
     } catch (error) {
@@ -478,7 +544,9 @@ export class DogClipPlayer {
   }
 
   /**
-   * Playful "splash in a puddle": Death flop, hold final frame 3s, then Idle.
+   * Playful "splash in a puddle" via Death clip — studio/debug only.
+   * Park gameplay flop uses procedural flop + ragdoll instead (see
+   * DogParkRuntimeFeature); do not call this from park Z-input.
    */
   playPuddleSplash() {
     return this.playOneShot('Death', {
@@ -495,6 +563,41 @@ export class DogClipPlayer {
     const impact = this.puddleImpactThisFrame;
     this.puddleImpactThisFrame = false;
     return impact;
+  }
+
+  /**
+   * Release mixer ownership so procedural flop / ragdoll can drive bones.
+   * Stops loops and one-shots (including Death) without recovering through Idle.
+   */
+  suspendForProcedural() {
+    if (!this.enabled) return;
+    this._clearOneShot();
+    this.pinnedClip = null;
+    this.puddleImpactThisFrame = false;
+    for (const action of this.actions.values()) {
+      try {
+        action.stop();
+        action.setEffectiveWeight(0);
+        action.enabled = false;
+      } catch {
+        /* ignore */
+      }
+    }
+    this.currentName = null;
+    this.hasMixerPose = false;
+  }
+
+  /**
+   * Resume locomotion clips after procedural flop / ragdoll ends.
+   * @param {string} [name='Idle']
+   */
+  resumeFromProcedural(name = 'Idle') {
+    if (!this.enabled || !this.ready) return false;
+    for (const action of this.actions.values()) {
+      action.enabled = true;
+    }
+    this.playLoop(name, 0.22);
+    return true;
   }
 
   snapshot() {
@@ -553,4 +656,169 @@ async function loadClipLibrary(kind = 'dog') {
     clipLibraryPromises.set(base, promise);
   }
   return clipLibraryPromises.get(base);
+}
+
+/**
+ * Detect [start, end] of real motion from quaternion track deltas.
+ * @param {THREE.AnimationClip} clip
+ * @returns {{ start: number, end: number } | null}
+ */
+export function findClipActiveWindow(clip, {
+  energyFrac = JUMP_TRIM.energyFrac,
+  probeSteps = JUMP_TRIM.probeSteps,
+} = {}) {
+  if (!clip || !(clip.duration > 0)) return null;
+  const steps = Math.max(16, probeSteps | 0);
+  const energy = new Array(steps + 1).fill(0);
+  const qTracks = clip.tracks.filter((tr) => tr.name?.endsWith('.quaternion'));
+  if (!qTracks.length) return null;
+
+  for (const track of qTracks) {
+    const times = track.times;
+    const values = track.values;
+    if (!times?.length || values.length < 4) continue;
+    let prev = null;
+    for (let s = 0; s <= steps; s += 1) {
+      const t = (s / steps) * clip.duration;
+      const q = sampleQuatTrack(times, values, t);
+      if (prev) {
+        let d = Math.abs(prev[0] * q[0] + prev[1] * q[1] + prev[2] * q[2] + prev[3] * q[3]);
+        d = Math.min(1, d);
+        energy[s] += 2 * Math.acos(d);
+      }
+      prev = q;
+    }
+  }
+
+  const maxE = Math.max(...energy.slice(1), 0);
+  if (!(maxE > 1e-6)) return null;
+  const thr = maxE * energyFrac;
+
+  // Peak-centric window: avoid counting mild idle fidget as “active start”.
+  let peakI = 1;
+  for (let s = 1; s <= steps; s += 1) {
+    if (energy[s] > energy[peakI]) peakI = s;
+  }
+  let lo = peakI;
+  let hi = peakI;
+  while (lo > 1 && energy[lo - 1] >= thr) lo -= 1;
+  while (hi < steps && energy[hi + 1] >= thr) hi += 1;
+
+  // Also absorb a second landing peak if it sits just after a quiet gap.
+  for (let s = hi + 1; s <= steps; s += 1) {
+    if (energy[s] >= thr) hi = s;
+    else if (s - hi > Math.max(3, Math.floor(steps * 0.08))) break;
+  }
+
+  const first = ((lo - 1) / steps) * clip.duration;
+  const last = (hi / steps) * clip.duration;
+  if (!(last > first)) return null;
+  return { start: Math.max(0, first), end: Math.min(clip.duration, last) };
+}
+
+/**
+ * @param {THREE.AnimationClip} clip
+ * @returns {THREE.AnimationClip}
+ */
+export function trimJumpIdlePads(clip) {
+  if (!clip || clip.name !== 'Jump') return clip;
+  if (!(clip.duration > 0)) {
+    try { clip.resetDuration(); } catch { /* ignore */ }
+  }
+  const window = findClipActiveWindow(clip);
+  if (!window) return clip;
+
+  const pad = JUMP_TRIM.padSec;
+  const start = Math.max(0, window.start - pad);
+  const end = Math.min(clip.duration, window.end + pad);
+  const activeLen = end - start;
+  const trimmedLead = start;
+  const trimmedTail = clip.duration - end;
+  if (
+    activeLen < JUMP_TRIM.minActiveSec
+    || (trimmedLead + trimmedTail) < JUMP_TRIM.minTrimSec
+  ) {
+    return clip;
+  }
+
+  const trimmed = subclipByTime(clip, start, end, 'Jump');
+  if (typeof console !== 'undefined' && console.debug) {
+    console.debug(
+      `[dog-clips] Jump trim ${clip.duration.toFixed(2)}s → ${trimmed.duration.toFixed(2)}s `
+      + `(${start.toFixed(2)}–${end.toFixed(2)})`,
+    );
+  }
+  return trimmed;
+}
+
+/**
+ * Time-based subclip (AnimationUtils.subclip is frame-based).
+ * @param {THREE.AnimationClip} clip
+ * @param {number} startSec
+ * @param {number} endSec
+ * @param {string} [name]
+ */
+export function subclipByTime(clip, startSec, endSec, name = clip.name) {
+  const start = Math.max(0, startSec);
+  const end = Math.min(clip.duration, endSec);
+  if (!(end > start + 1e-3)) return clip;
+
+  // High fps keeps frame rounding tight to the time window.
+  const fps = 60;
+  const startFrame = Math.max(0, Math.floor(start * fps));
+  const endFrame = Math.max(startFrame + 1, Math.ceil(end * fps));
+  if (typeof THREE.AnimationUtils?.subclip === 'function') {
+    const cut = THREE.AnimationUtils.subclip(clip, name, startFrame, endFrame, fps);
+    cut.name = name;
+    return cut;
+  }
+
+  // Fallback: shift tracks manually.
+  const tracks = [];
+  for (const track of clip.tracks) {
+    const times = [];
+    const values = [];
+    const stride = track.getValueSize?.()
+      ?? (track.name.endsWith('.quaternion') ? 4
+        : track.name.endsWith('.position') || track.name.endsWith('.scale') ? 3
+          : 1);
+    for (let i = 0; i < track.times.length; i += 1) {
+      const t = track.times[i];
+      if (t < start - 1e-5 || t > end + 1e-5) continue;
+      times.push(t - start);
+      for (let k = 0; k < stride; k += 1) {
+        values.push(track.values[i * stride + k]);
+      }
+    }
+    if (times.length < 2) continue;
+    const TypedTrack = track.constructor;
+    tracks.push(new TypedTrack(track.name, times, values));
+  }
+  return new THREE.AnimationClip(name, end - start, tracks.length ? tracks : clip.tracks);
+}
+
+function sampleQuatTrack(times, values, t) {
+  if (t <= times[0]) return [values[0], values[1], values[2], values[3]];
+  const last = times.length - 1;
+  if (t >= times[last]) {
+    const i = last;
+    return [values[i * 4], values[i * 4 + 1], values[i * 4 + 2], values[i * 4 + 3]];
+  }
+  let i = 0;
+  while (i < last && times[i + 1] < t) i += 1;
+  const t0 = times[i];
+  const t1 = times[i + 1];
+  const u = (t - t0) / Math.max(1e-9, t1 - t0);
+  const a = [values[i * 4], values[i * 4 + 1], values[i * 4 + 2], values[i * 4 + 3]];
+  const b = [values[(i + 1) * 4], values[(i + 1) * 4 + 1], values[(i + 1) * 4 + 2], values[(i + 1) * 4 + 3]];
+  const dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+  const s = dot < 0 ? -1 : 1;
+  const o = [
+    a[0] * (1 - u) + b[0] * s * u,
+    a[1] * (1 - u) + b[1] * s * u,
+    a[2] * (1 - u) + b[2] * s * u,
+    a[3] * (1 - u) + b[3] * s * u,
+  ];
+  const len = Math.hypot(o[0], o[1], o[2], o[3]) || 1;
+  return [o[0] / len, o[1] / len, o[2] / len, o[3] / len];
 }

@@ -24,6 +24,7 @@ import { resolve, basename } from 'node:path';
 import * as THREE from 'three';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import { createDogSkeleton } from '../src/game/characters/dog/dogSkeleton.js';
+import { resolveDogPhenotype } from '../src/game/characters/dog/dogPhenotypes.js';
 import {
   QUATERNIUS_TO_DOG_BONE_MAP,
   normalizeQuaterniusClipName,
@@ -86,7 +87,19 @@ const packs = animalArg
   }]
   : DEFAULT_PACKS;
 
-const rig = createDogSkeleton();
+// Bake against the breed the pack actually plays on: the equid pack targets
+// the horse rig (cursorial hind, raised neck), which no longer matches the
+// default dog rest pose. Baking against the wrong rig leaves clips that
+// swing whole legs but lose the authored knee/hock bends at runtime.
+const packPhenotypeId = args.find((a) => a.startsWith('--phenotype='))?.slice('--phenotype='.length)
+  ?? (packs.every((p) => p.outDir === 'equid-anims') ? 'domestic-horse'
+    : packs.every((p) => p.outDir === 'bovid-anims') ? null
+      : null);
+const packPhenotype = packPhenotypeId
+  ? resolveDogPhenotype({ breedId: packPhenotypeId, seed: 1 })
+  : null;
+const rig = createDogSkeleton(packPhenotype ? { phenotype: packPhenotype } : {});
+if (packPhenotypeId) console.log(`baking against phenotype: ${packPhenotypeId}`);
 rig.root.updateMatrixWorld(true);
 const targetRestWorld = new Map();
 const targetRestLocal = new Map();

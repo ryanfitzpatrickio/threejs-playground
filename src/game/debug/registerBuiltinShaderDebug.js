@@ -29,6 +29,7 @@ import {
 } from './shaderDebugRegistry.js';
 import { formatShaderDebugExport } from './shaderDebugExport.js';
 import { registerRuntimeDebug } from './registerRuntimeDebug.js';
+import { registerAnimalBodyDebug } from './registerAnimalBodyDebug.js';
 import {
   uSunDirection,
   uSunIntensity,
@@ -139,6 +140,8 @@ export function registerBuiltinShaderDebug(runtime = null) {
   registerSessionFolder(runtime);
   // Discrete controls from the former Solid DebugPanel (lighting, weather, TOD…).
   registerRuntimeDebug(runtime);
+  // Dog Studio / park: shared body-type bases (dog lineage + bird plans).
+  registerAnimalBodyDebug();
   registerSkySun(runtime);
   registerAtmosphere();
   registerCloudsShape();

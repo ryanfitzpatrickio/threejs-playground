@@ -303,11 +303,14 @@ export function colorMaskAt(zone, p, headCenter, phenotype = null, opts = null) 
   }
   if (pattern === 'tortoiseshell') {
     // Ref board (public/assets/cat-ref/tortoiseshell): black-DOMINANT coat
-    // broken by brindled ginger patches — not a 50/50 orange/black wash. Key
-    // landmarks: large ginger saddle across the mid-back, small orange chest
-    // patch on an otherwise black chest, pale/tan lower legs and toes, split
-    // face with an orange nose-bridge blaze, near-black ears.
-    // Mask 0 → undercoat (ginger), 1 → guard (near-black).
+    // broken by brindled ginger AND chocolate patches. Key landmarks: large
+    // ginger saddle across the mid-back, small orange chest patch on an
+    // otherwise black chest, pale/tan lower legs and toes, split face with an
+    // orange nose-bridge blaze, near-black ears.
+    // TRI-COLOR mask (palette.midcoat): 0 → undercoat (ginger), 0.5 →
+    // midcoat (chocolate brown), 1 → guard (near-black). Black/ginger still
+    // binarize; a second independent blob field then pulls regions to 0.5 so
+    // brown reads as its own patches, not as a blend rim.
     // The old field's wavelength (~0.55m) exceeded the cat body, collapsing
     // into one blob — patch blobs here are ~0.15–0.25m with fine brindle
     // ticking dithering the edges so patches read mottled, not painted.
@@ -318,13 +321,18 @@ export function colorMaskAt(zone, p, headCenter, phenotype = null, opts = null) 
     const blob = Math.sin(p.x * 24 + p.z * 19 + Math.sin(p.y * 23) * 1.4)
       + Math.sin(p.y * 27 - p.z * 22 + Math.sin(p.x * 19) * 1.2);
     const brindle = Math.sin(p.x * 68 + p.y * 52 + p.z * 60) * 0.5 + 0.5;
-    // Two-stage smoothstep ≈ binarize: ref fur is either black or ginger —
-    // mid mask values render as a rusty brown wash that exists nowhere on the
-    // reference board (sim: ~70% black / 29% ginger / 1% mid).
+    // Brown-patch selector — decorrelated from `blob` (different phases/freqs)
+    // so chocolate lands independently of the black/ginger split.
+    const blob2 = Math.sin(p.x * 19 - p.z * 23 + Math.sin(p.y * 17) * 1.3)
+      + Math.sin(p.y * 21 + p.z * 15 - Math.sin(p.x * 14) * 1.1);
+    const brown = THREE.MathUtils.smoothstep(
+      blob2 * 0.34 + 0.56 + (brindle - 0.5) * 0.26, 0.6, 0.72,
+    );
     let m = THREE.MathUtils.smoothstep(
       blob * 0.34 + 0.72 + (brindle - 0.5) * 0.3, 0.48, 0.64,
     );
     m = THREE.MathUtils.smoothstep(m, 0.3, 0.62);
+    m = THREE.MathUtils.lerp(m, 0.5, brown * 0.92);
     if (zone === COAT_ZONE.ear) return THREE.MathUtils.clamp(0.93 + brindle * 0.04, 0, 0.97);
     if (zone === COAT_ZONE.paw) {
       // Cream toes with occasional black toe-spots (ref front-sit).
@@ -338,6 +346,7 @@ export function colorMaskAt(zone, p, headCenter, phenotype = null, opts = null) 
         blob * 0.34 + 0.74 + (brindle - 0.5) * 0.3, 0.48, 0.64,
       );
       ml = THREE.MathUtils.smoothstep(ml, 0.3, 0.62);
+      ml = THREE.MathUtils.lerp(ml, 0.5, brown * 0.8);
       return THREE.MathUtils.clamp(THREE.MathUtils.lerp(ml, 0.07, pale), 0.03, 0.97);
     }
     if (zone === COAT_ZONE.muzzle && headCenter) {
@@ -362,6 +371,8 @@ export function colorMaskAt(zone, p, headCenter, phenotype = null, opts = null) 
         blob * 0.3 + 0.84 + (fleck - 0.5) * 0.42 + split - blaze * 0.95, 0.48, 0.64,
       );
       mh = THREE.MathUtils.smoothstep(mh, 0.32, 0.6);
+      // Chocolate cheek/crown patches; the orange blaze stays orange.
+      mh = THREE.MathUtils.lerp(mh, 0.5, brown * 0.55 * (1 - blaze));
       return THREE.MathUtils.clamp(mh, 0.04, 0.96);
     }
     if (zone === COAT_ZONE.tail) {
@@ -1145,6 +1156,37 @@ export function colorMaskAt(zone, p, headCenter, phenotype = null, opts = null) 
     }
     const dorsal = THREE.MathUtils.smoothstep(p.y, 0.32, 0.5);
     return THREE.MathUtils.clamp(0.56 + (ticking - 0.5) * 0.2 + (fleck - 0.5) * 0.08 + dorsal * 0.18, 0.34, 0.86);
+  }
+  if (pattern === 'bay-points') {
+    // Bay horse (equid-ref board): red-brown body with BLACK points — lower
+    // legs, tail, muzzle tip and ear rims. Mane blackness comes from the
+    // crest-mane loft's own mask override. Mask 0 → red-brown undercoat,
+    // 1 → black guard.
+    if (zone === COAT_ZONE.paw) return 0.95;
+    if (zone === COAT_ZONE.leg) {
+      const dark = 1 - THREE.MathUtils.smoothstep(p.y, 0.22, 0.42);
+      return THREE.MathUtils.clamp(0.18 + dark * 0.78, 0.12, 0.95);
+    }
+    if (zone === COAT_ZONE.tail) return 0.94;
+    if (zone === COAT_ZONE.ear) return 0.6;
+    if (zone === COAT_ZONE.muzzle && headCenter) {
+      // Soft dark muzzle tip fading into the red-brown face.
+      const tip = THREE.MathUtils.smoothstep(p.z - headCenter.z, 0.1, 0.19);
+      return 0.24 + tip * 0.6;
+    }
+    if (zone === COAT_ZONE.head) return 0.3;
+    if (zone === COAT_ZONE.belly) return 0.24;
+    // Body: red-brown with a slightly darker dorsal wash. The wash keys off
+    // world Y, which is fine for a horizontal-backed dog torso — but the
+    // equid neck rises steeply from chest to poll, so the same world-Y band
+    // cuts diagonally across the neck's length and reads as a dark stripe/X
+    // instead of a smooth all-over tint. Fade the wash out as the body loft
+    // approaches the head (the neck) so only the level back gets it.
+    const neckFade = headCenter
+      ? 1 - THREE.MathUtils.smoothstep(p.z, headCenter.z - 0.55, headCenter.z - 0.18)
+      : 1;
+    const dorsal = THREE.MathUtils.smoothstep(p.y, 0.4, 0.58);
+    return 0.14 + dorsal * 0.1 * neckFade;
   }
   if (pattern === 'solid') return 0.35;
   if (zone === COAT_ZONE.belly) return 0.06;

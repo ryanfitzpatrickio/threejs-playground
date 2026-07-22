@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { DogMudContactHelper } from './DogMudContactHelper.js';
 import { DogClipPlayer, animalUsesDogClipLibrary } from './DogClipPlayer.js';
 import { plantDogFeet } from './dogFootPlant.js';
+import { advanceLocomotionSpeed } from './animalLocalAvoidance.js';
 
 const desired = new THREE.Vector3();
 const bodyForward = new THREE.Vector3();
@@ -60,6 +61,9 @@ export class DogNpcController {
     this.target = null;
     this.sprint = false;
     this.hasFlopped = false;
+    /** Accel/decel-ramped movement speed (m/s) — feeds both translation and gait cadence. */
+    this.currentSpeed = 0;
+    this._lastMoveDir = new THREE.Vector3(0, 0, 1);
 
     this.pawHelper = mudField
       ? new DogMudContactHelper({ dog, levelSystem, mudField, onPawStamp })
@@ -169,6 +173,32 @@ export class DogNpcController {
       }
     }
 
+    const dogYaw = this.dog.animation.getRootYaw();
+    bodyForward.set(Math.sin(dogYaw), 0, Math.cos(dogYaw));
+
+    const phenotypeSpeed = this.dog.phenotype?.motion?.speed ?? 1;
+    const baseSpeed = sprint ? 3.1 : 1.55;
+    const surfaceSpeed = SURFACE_SPEED[this.surfaceClass] ?? 1;
+    const align = moving ? THREE.MathUtils.clamp(bodyForward.dot(desired), -1, 1) : 1;
+    const turnSlow = THREE.MathUtils.lerp(0.62, 1, THREE.MathUtils.smoothstep(align, -0.2, 0.85));
+
+    if (moving) {
+      moveDir.copy(bodyForward).multiplyScalar(0.78).addScaledVector(desired, 0.22);
+      if (moveDir.lengthSq() > 1e-6) moveDir.normalize();
+      else moveDir.copy(bodyForward);
+      this._lastMoveDir.copy(moveDir);
+    }
+
+    // Accel-clamped ramp toward the commanded speed — real momentum instead
+    // of an instant snap, and also drives the gait's walk/trot blend below.
+    const targetSpeed = moving ? baseSpeed * phenotypeSpeed * surfaceSpeed * turnSlow : 0;
+    this.currentSpeed = advanceLocomotionSpeed(this.currentSpeed, targetSpeed, dt, { accel: 6, decel: 9 });
+    if (this.currentSpeed > 1e-4) {
+      const distance = this.currentSpeed * dt;
+      candidate.copy(position).addScaledVector(this._lastMoveDir, distance);
+      this._moveWithCollision(position, candidate);
+    }
+
     this.dog.animation.setMoveIntent({
       x: moving ? desired.x : 0,
       z: moving ? desired.z : 0,
@@ -176,24 +206,8 @@ export class DogNpcController {
       sprint,
       sit,
       look: false,
+      speedMps: this.currentSpeed,
     });
-
-    const dogYaw = this.dog.animation.getRootYaw();
-    bodyForward.set(Math.sin(dogYaw), 0, Math.cos(dogYaw));
-
-    if (moving) {
-      const phenotypeSpeed = this.dog.phenotype?.motion?.speed ?? 1;
-      const baseSpeed = sprint ? 3.1 : 1.55;
-      const surfaceSpeed = SURFACE_SPEED[this.surfaceClass] ?? 1;
-      const align = THREE.MathUtils.clamp(bodyForward.dot(desired), -1, 1);
-      const turnSlow = THREE.MathUtils.lerp(0.62, 1, THREE.MathUtils.smoothstep(align, -0.2, 0.85));
-      moveDir.copy(bodyForward).multiplyScalar(0.78).addScaledVector(desired, 0.22);
-      if (moveDir.lengthSq() > 1e-6) moveDir.normalize();
-      else moveDir.copy(bodyForward);
-      const distance = baseSpeed * phenotypeSpeed * surfaceSpeed * turnSlow * dt;
-      candidate.copy(position).addScaledVector(moveDir, distance);
-      this._moveWithCollision(position, candidate);
-    }
 
     const sampledGround = this.levelSystem.getGroundHeightAt(position, this.radius, {
       maxStepUp: 0.48,

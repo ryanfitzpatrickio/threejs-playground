@@ -218,7 +218,10 @@ export function App() {
         return;
       }
       shaderPaneHandle = handle;
-      const open = showDebugPanel() && viewMode() === 'game' && hudVisible() && appPhase() === 'playing';
+      const open = showDebugPanel() && (
+        (viewMode() === 'game' && hudVisible() && appPhase() === 'playing')
+        || viewMode() === 'dogSim'
+      );
       handle?.setVisible?.(open);
     });
     onCleanup(() => {
@@ -228,10 +231,10 @@ export function App() {
     });
   });
   createEffect(() => {
-    const open = showDebugPanel()
-      && viewMode() === 'game'
-      && hudVisible()
-      && appPhase() === 'playing';
+    const open = showDebugPanel() && (
+      (viewMode() === 'game' && hudVisible() && appPhase() === 'playing')
+      || viewMode() === 'dogSim'
+    );
     shaderPaneHandle?.setVisible?.(open);
   });
 
@@ -494,7 +497,8 @@ export function App() {
       }
     }
     if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'p') {
-      if (appPhase() === 'playing' && isGame()) {
+      // Game play + Dog Studio both host the Tweakpane debug surface.
+      if ((appPhase() === 'playing' && isGame()) || isDogSim()) {
         e.preventDefault();
         setShowDebugPanel((v) => !v);
       }
@@ -623,6 +627,10 @@ export function App() {
           onSelectExperience={(id) => {
             if (id === 'dog') {
               enterExperience('dog-park');
+              return;
+            }
+            if (id === 'dog-studio') {
+              switchTo('dogSim');
               return;
             }
             enterExperience(id);

@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { color } from 'three/tsl';
 import { createWaterMaterial } from '../materials/createWaterMaterial.js';
 import { createSceneSurfaceMaterial } from '../materials/createSceneSurfaceMaterial.js';
 import { createMallWaterHeightfield } from '../render/createMallWaterHeightfield.js';
@@ -15,13 +17,24 @@ import {
   createGeneratorCityLevel,
   getCityStride,
 } from './createGeneratorCityLevel.js';
+import { createSkyscraperMaterial } from '../../three-addons/generators/city/SkyscraperGenerator.js';
 
 const PARK_HALF_X = 30;
 const PARK_HALF_Z = 22.5;
-/** Keep city roads/buildings/furniture outside the fenced lot (+ small buffer). */
-const CITY_CLEAR_MARGIN = 3;
-/** Chebyshev radius of full downtown tiles around the carved park block. */
-const CITY_RING_RADIUS = 1;
+/**
+ * Grass apron past the fence before city cement starts. City clearRect uses the
+ * same extent so asphalt/sidewalk don't poke through under the lawn.
+ */
+const LAWN_OVERSHOOT = 14;
+/** Keep city roads/buildings/furniture outside the grass apron. */
+const CITY_CLEAR_MARGIN = LAWN_OVERSHOOT;
+/**
+ * Chebyshev radius of full downtown tiles around the carved park block.
+ * Default 0 = center tile only (fence-adjacent real buildings). Radius 1 is
+ * nine full downtown generators and tanks GPU draw cost — avoid unless needed.
+ * Skip entirely with dogParkSkipCity: true.
+ */
+const CITY_RING_RADIUS = 0;
 const FLOOR_Y = 0;
 const MUD_Y = 0.052;
 const WATER_Y = 0.04;
@@ -86,6 +99,15 @@ export function createDogParkLevel(qualityPreset = {}, { renderer = null } = {})
   materials.lawn.side = THREE.FrontSide;
   materials.sand.side = THREE.DoubleSide;
   materials.dirt.side = THREE.DoubleSide;
+  // Agility tube is an open cylinder — need PBR on the interior when dogs run through.
+  materials.tunnel = materials.metal.clone();
+  materials.tunnel.side = THREE.DoubleSide;
+  materials.tunnel.userData = {
+    ...(materials.metal.userData ?? {}),
+    ...(materials.tunnel.userData ?? {}),
+    sceneSurface: 'metal',
+    dogParkTunnel: true,
+  };
   const pawTrailVisual = createDogPawTrailVisual(160);
   group.add(pawTrailVisual.mesh);
   materials.pawPrint = pawTrailVisual.mesh.material;
@@ -144,12 +166,26 @@ export function createDogParkLevel(qualityPreset = {}, { renderer = null } = {})
   addPlayStructure(group, colliders, walkableSurfaces, materials);
   addParkFurniture(group, colliders, materials);
 
-  // Neighborhood ring: one carved downtown tile under the park (buildings +
-  // street furniture outside the fence) plus radius-1 neighbor tiles for a
-  // readable skyline. Sync build — dog-park boot already waits on forest.
-  const cityChunks = qualityPreset.dogParkSkipCity === true
+  // Real downtown near the fence (default: center tile only). The far skyline
+  // matte sits *behind* this city, not around the park fence.
+  const cityRadius = resolveDogParkCityRadius(qualityPreset);
+  const cityChunks = cityRadius == null
     ? []
-    : buildDogParkCityRing(group, colliders, qualityPreset);
+    : buildDogParkCityRing(group, colliders, {
+      ...qualityPreset,
+      dogParkCityRadius: cityRadius,
+    });
+
+  // Thin connected building-face wall on the outer edge of the city tiles —
+  // occludes empty draw distance behind the real blocks. Opt out:
+  // dogParkSkipSkylineMatte: true.
+  const skylineMatte = qualityPreset.dogParkSkipSkylineMatte === true
+    ? null
+    : addCitySkylineMatte(group, qualityPreset, {
+      // Match city ring even when city is skipped, so extents stay consistent.
+      cityRadius: cityRadius ?? CITY_RING_RADIUS,
+    });
+  if (skylineMatte?.material) materials.skyline = skylineMatte.material;
 
   const spawnPoint = new THREE.Vector3(-2, FLOOR_Y, -15.5);
   const dogSpawnPoint = new THREE.Vector3(-2, FLOOR_Y, -9.2);
@@ -321,8 +357,7 @@ export function createDogParkLevel(qualityPreset = {}, { renderer = null } = {})
         'Dog Park Pipeline Warmup',
       );
       if (!cityChunks.length) return parkWarmup;
-      // City TSL materials (asphalt, skyscraper, benches, cars…) need the same
-      // prewarm path as the infinite-city mode or first look-around hitches.
+      // Full city tiles (optional) — asphalt, furniture, extra skyscraper variants.
       const cityWarmup = createCityMaterialWarmupGroup();
       parkWarmup.add(cityWarmup);
       const parkDispose = parkWarmup.userData.disposeWarmup;
@@ -371,6 +406,15 @@ export function createDogParkLevel(qualityPreset = {}, { renderer = null } = {})
       city: {
         chunks: cityChunks.length,
         keys: cityChunks.map((chunk) => chunk.chunkKey),
+        skylineMatte: skylineMatte
+          ? {
+              segments: skylineMatte.segments,
+              heightMin: skylineMatte.heightMin,
+              heightMax: skylineMatte.heightMax,
+              halfX: skylineMatte.halfX,
+              halfZ: skylineMatte.halfZ,
+            }
+          : null,
       },
       playStructureSurfaces: walkableSurfaces.length,
       mud: {
@@ -400,11 +444,232 @@ export function createDogParkLevel(qualityPreset = {}, { renderer = null } = {})
   };
 }
 
+/** Skyscraper material part ids (WALL brick + GLASS window panes). */
+const SKYLINE_PART = Object.freeze({ WALL: 0, GLASS: 4 });
+/** Extra metres past the city tile outer edge. */
+const SKYLINE_OUTER_GAP = 4;
+/** Thin shell depth — far backdrop wall, not a walkable block. */
+const SKYLINE_THICK = 1.2;
+/** Bay width along the city outer edge (one “building” face). Wider = cheaper. */
+const SKYLINE_BAY = 14;
+/** Window grid inset from each bay edge. */
+const SKYLINE_WIN_INSET = 1.1;
+const SKYLINE_WIN_COLS = 2;
+const SKYLINE_FLOOR_H = 3.4;
+
 /**
- * Downtown tile under the park (lot carved out) + one-block ring of neighbors.
+ * Resolve city ring radius: null = no city tiles.
+ * @param {object} [qualityPreset]
+ * @returns {number | null}
+ */
+function resolveDogParkCityRadius(qualityPreset = {}) {
+  if (qualityPreset.dogParkSkipCity === true) return null;
+  if (Number.isFinite(qualityPreset.dogParkCityRadius)) {
+    return Math.max(0, Math.min(2, qualityPreset.dogParkCityRadius | 0));
+  }
+  return CITY_RING_RADIUS;
+}
+
+/**
+ * Half-extents of the outer city boundary (world metres from origin).
+ * Matte sits just past this so it is *behind* the real city, not around the park.
+ * @param {number} cityRadius
+ */
+function cityOuterHalfExtents(cityRadius = 0) {
+  const stride = getCityStride();
+  const r = Math.max(0, cityRadius | 0);
+  // Outer edge of the outermost tile: (radius + 0.5) * stride.
+  return {
+    halfX: (r + 0.5) * stride.x + SKYLINE_OUTER_GAP,
+    halfZ: (r + 0.5) * stride.z + SKYLINE_OUTER_GAP,
+  };
+}
+
+/**
+ * Continuous thin facade wall on the *outer* edge of the city ring — behind the
+ * real downtown tiles. Connected building faces with brick + sparse windows,
+ * one merged mesh / one draw call. Hides empty horizon past city draw distance.
+ *
+ * @param {THREE.Group} group
+ * @param {object} [qualityPreset]
+ * @param {{ cityRadius?: number }} [opts]
+ * @returns {{ mesh: THREE.Mesh, material: THREE.Material, segments: number, heightMin: number, heightMax: number, halfX: number, halfZ: number } | null}
+ */
+function addCitySkylineMatte(group, qualityPreset = {}, opts = {}) {
+  const cityRadius = Number.isFinite(opts.cityRadius) ? opts.cityRadius : CITY_RING_RADIUS;
+  const { halfX, halfZ } = cityOuterHalfExtents(cityRadius);
+  const castShadows = qualityPreset.shadows !== false;
+  const seed = (qualityPreset.dogParkSkylineSeed | 0) || 4107;
+
+  /** @type {THREE.BufferGeometry[]} */
+  const geos = [];
+  let segments = 0;
+  let heightMin = Infinity;
+  let heightMax = 0;
+
+  /**
+   * @param {number} cx
+   * @param {number} cy
+   * @param {number} cz
+   * @param {number} sx
+   * @param {number} sy
+   * @param {number} sz
+   * @param {number} partId
+   * @param {number} [yaw]
+   */
+  const pushBox = (cx, cy, cz, sx, sy, sz, partId, yaw = 0) => {
+    const geo = new THREE.BoxGeometry(sx, sy, sz).toNonIndexed();
+    const matrix = new THREE.Matrix4();
+    matrix.makeRotationY(yaw);
+    matrix.setPosition(cx, cy, cz);
+    geo.applyMatrix4(matrix);
+    const n = geo.attributes.position.count;
+    geo.setAttribute('partId', new THREE.BufferAttribute(new Float32Array(n).fill(partId), 1));
+    geos.push(geo);
+  };
+
+  /**
+   * Place a run of building bays along an axis-aligned edge facing the park.
+   * @param {'n'|'s'|'e'|'w'} side
+   */
+  const placeEdge = (side) => {
+    const alongX = side === 'n' || side === 's';
+    const length = alongX ? halfX * 2 : halfZ * 2;
+    const bayCount = Math.max(2, Math.round(length / SKYLINE_BAY));
+    const bayW = length / bayCount;
+    for (let i = 0; i < bayCount; i += 1) {
+      const t = (i + 0.5) / bayCount;
+      // Far backdrop skyline — taller massing so it reads behind near city blocks.
+      const hHash = skylineHash(seed, side.charCodeAt(0) * 31 + i);
+      const stories = 8 + Math.floor(hHash * 14); // 8–21 floors
+      const height = stories * SKYLINE_FLOOR_H + 2.0 + (hHash - 0.5) * 2.2;
+      heightMin = Math.min(heightMin, height);
+      heightMax = Math.max(heightMax, height);
+
+      let cx;
+      let cz;
+      let sx;
+      let sz;
+      let yaw = 0;
+      if (side === 'n') {
+        cx = -halfX + t * length;
+        cz = halfZ;
+        sx = bayW;
+        sz = SKYLINE_THICK;
+      } else if (side === 's') {
+        cx = -halfX + t * length;
+        cz = -halfZ;
+        sx = bayW;
+        sz = SKYLINE_THICK;
+      } else if (side === 'e') {
+        cx = halfX;
+        cz = -halfZ + t * length;
+        sx = SKYLINE_THICK;
+        sz = bayW;
+      } else {
+        cx = -halfX;
+        cz = -halfZ + t * length;
+        sx = SKYLINE_THICK;
+        sz = bayW;
+      }
+
+      // Main brick face — slightly proud of window panes so sills read.
+      pushBox(cx, height * 0.5, cz, sx, height, sz, SKYLINE_PART.WALL, yaw);
+
+      // Window grid on the city-facing side (inward toward the park/city).
+      // Every other floor keeps far-matte geometry cheap.
+      const faceInset = SKYLINE_THICK * 0.52;
+      const winDepth = 0.12;
+      const colW = (bayW - SKYLINE_WIN_INSET * 2) / SKYLINE_WIN_COLS;
+      const winW = colW * 0.7;
+      const winH = SKYLINE_FLOOR_H * 0.46;
+      for (let floor = 2; floor < stories; floor += 2) {
+        const wy = floor * SKYLINE_FLOOR_H + winH * 0.3;
+        for (let col = 0; col < SKYLINE_WIN_COLS; col += 1) {
+          const along = -bayW * 0.5 + SKYLINE_WIN_INSET + (col + 0.5) * colW;
+          let wcx = cx;
+          let wcz = cz;
+          let wsx = winW;
+          let wsz = winDepth;
+          if (side === 'n') {
+            wcx = cx + along;
+            wcz = cz - faceInset;
+            wsx = winW;
+            wsz = winDepth;
+          } else if (side === 's') {
+            wcx = cx + along;
+            wcz = cz + faceInset;
+            wsx = winW;
+            wsz = winDepth;
+          } else if (side === 'e') {
+            wcx = cx - faceInset;
+            wcz = cz + along;
+            wsx = winDepth;
+            wsz = winW;
+          } else {
+            wcx = cx + faceInset;
+            wcz = cz + along;
+            wsx = winDepth;
+            wsz = winW;
+          }
+          const lit = skylineHash(seed, floor * 97 + col * 13 + i * 7 + side.charCodeAt(0)) > 0.22;
+          if (!lit) continue;
+          pushBox(wcx, wy, wcz, wsx, winH, wsz, SKYLINE_PART.GLASS, yaw);
+        }
+      }
+      segments += 1;
+    }
+  };
+
+  placeEdge('n');
+  placeEdge('s');
+  placeEdge('e');
+  placeEdge('w');
+
+  if (!geos.length) return null;
+  const merged = mergeGeometries(geos, false);
+  for (const g of geos) g.dispose();
+  if (!merged) return null;
+
+  // Reuse city skyscraper TSL — brick coursing + dark glazing from partId.
+  const material = createSkyscraperMaterial(color(0xb8b0a0));
+  material.side = THREE.DoubleSide;
+  material.userData.dogParkSkylineMatte = true;
+
+  const mesh = new THREE.Mesh(merged, material);
+  mesh.name = 'Dog Park City Skyline Matte';
+  mesh.castShadow = castShadows;
+  mesh.receiveShadow = true;
+  mesh.frustumCulled = true;
+  mesh.userData.freezeStaticWorldMatrices = true;
+  mesh.userData.skipLevelRaycast = true;
+  mesh.userData.noCollision = true;
+  group.add(mesh);
+
+  return {
+    mesh,
+    material,
+    segments,
+    heightMin: Number.isFinite(heightMin) ? heightMin : 0,
+    heightMax,
+    halfX,
+    halfZ,
+  };
+}
+
+/** Deterministic 0–1 hash for skyline bay heights / window skip. */
+function skylineHash(seed, n) {
+  let h = (seed ^ (n * 374761393)) >>> 0;
+  h = Math.imul(h ^ (h >>> 16), 2246822519) >>> 0;
+  h = Math.imul(h ^ (h >>> 13), 3266489917) >>> 0;
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+/**
+ * Downtown tile under the park (lot carved out) + optional neighbor tiles.
  * Center tile: full physics + furniture outside the fence.
- * Neighbor tiles: skyline/furniture visuals only (too far for park play; skips
- * ~2.5k Rapier bodies that would dominate dog-park physics).
+ * Neighbor tiles (radius ≥ 1): skyline visuals only — no Rapier bodies — but
+ * still full CityGenerator meshes/materials (very expensive; keep radius 0).
  */
 function buildDogParkCityRing(group, colliders, qualityPreset = {}) {
   const stride = getCityStride();
@@ -463,7 +728,12 @@ function buildDogParkCityRing(group, colliders, qualityPreset = {}) {
 }
 
 function addLawn(group, lawnMaterial) {
-  const geometry = new THREE.PlaneGeometry(PARK_HALF_X * 2, PARK_HALF_Z * 2, 60, 45);
+  // Extend past the fence so the apron fills the gap before city cement.
+  const halfX = PARK_HALF_X + LAWN_OVERSHOOT;
+  const halfZ = PARK_HALF_Z + LAWN_OVERSHOOT;
+  const segsX = Math.max(60, Math.round(halfX * 2.2));
+  const segsZ = Math.max(45, Math.round(halfZ * 2.2));
+  const geometry = new THREE.PlaneGeometry(halfX * 2, halfZ * 2, segsX, segsZ);
   geometry.rotateX(-Math.PI / 2);
   const position = geometry.getAttribute('position');
   for (let index = 0; index < position.count; index += 1) {
@@ -746,9 +1016,11 @@ function addPlayStructure(group, colliders, walkable, materials) {
     material: materials.wood,
   });
 
+  // openEnded cylinder: outward normals only show the exterior with FrontSide.
+  // materials.tunnel is DoubleSide so the interior PBR reads when running through.
   const tunnel = new THREE.Mesh(
     new THREE.CylinderGeometry(0.75, 0.75, 3.8, 32, 1, true),
-    materials.metal,
+    materials.tunnel ?? materials.metal,
   );
   tunnel.name = 'Dog Agility Tunnel';
   tunnel.rotation.z = Math.PI / 2;

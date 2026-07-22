@@ -22,6 +22,12 @@ import {
   resolveDogPhenotypeFromRecipe,
 } from './animalPhenotypeClamp.js';
 import { plantDogFeet } from './dogFootPlant.js';
+import {
+  applyDogBodyTypeToPhenotype,
+  primaryDogBodyTypeId,
+} from './dogBodyTypeDefaults.js';
+import { getDogBreed } from './dogCatalog.js';
+import { shellCountForDetailLevel } from './dogFurLod.js';
 
 /**
  * Build a procedural skinned animal (shared quadruped rig).
@@ -65,6 +71,25 @@ export function createProceduralDog(options = {}) {
   }
 
   const breed = getBreedOrVirtual(phenotype);
+  // Apply shared lineage body-type skeleton/geometry (P-menu Dog Body store).
+  // Skip non-canine extensions so cats/rodents/etc. keep their own profiles.
+  // Clone first — resolveDogPhenotype returns a deep-frozen object.
+  const catalogBreed = getDogBreed(phenotype.breedId) ?? breed;
+  const isNonCanine = Boolean(
+    catalogBreed?.conformationFlags?.includes('non-canine-extension')
+    || catalogBreed?.conformationFlags?.includes('bird-rig')
+    || catalogBreed?.conformationFlags?.includes('avian')
+    || catalogBreed?.conformationFlags?.includes('insect'),
+  );
+  if (!isNonCanine && options.applyBodyType !== false) {
+    phenotype = {
+      ...phenotype,
+      skeleton: { ...phenotype.skeleton },
+      geometry: { ...phenotype.geometry },
+    };
+    const bodyTypeId = primaryDogBodyTypeId(catalogBreed);
+    applyDogBodyTypeToPhenotype(phenotype, bodyTypeId);
+  }
 
   const rig = createDogSkeleton({ phenotype });
   // Geometry is authored in the skeleton's bind world space.
@@ -161,28 +186,22 @@ export function createProceduralDog(options = {}) {
 
   /**
    * Distance / budget LOD for park crowds.
-   * 0 = body only (far)
-   * 1 = body + one shell, face on (mid)
-   * 2 = full shells + face/headgear (near)
+   * 0 = far (short dense base coat — never bare undercoat)
+   * 1 = mid (reduced shells, face on)
+   * 2 = near (full shells + face/headgear)
+   *
+   * Shell counts come from `shellCountForDetailLevel` so we never leave a lone
+   * root shell (layerT=0) which z-fights white triangles.
    * @param {0|1|2} level
    */
   function setDetailLevel(level) {
     const next = Math.max(0, Math.min(2, Math.floor(Number(level) || 0)));
     if (next === detailLevel) return detailLevel;
     detailLevel = next;
-    if (detailLevel <= 0) {
-      visibleShellCount = 0;
-      faceVisible = false;
-      headgearVisible = false;
-    } else if (detailLevel === 1) {
-      visibleShellCount = Math.min(1, shellCount);
-      faceVisible = true;
-      headgearVisible = false;
-    } else {
-      visibleShellCount = shellCount;
-      faceVisible = true;
-      headgearVisible = true;
-    }
+    visibleShellCount = shellCountForDetailLevel(detailLevel, shellCount);
+    // Face can stay on whenever we have any coat — only hide tiny headgear far.
+    faceVisible = true;
+    headgearVisible = detailLevel >= 2;
     applyVisibility();
     return detailLevel;
   }
@@ -199,13 +218,18 @@ export function createProceduralDog(options = {}) {
    * }} [opts]
    */
   function update(dt, opts = {}) {
-    animation.update(dt, { fixed: opts.fixed });
+    // getGroundHeight now also reaches the gait itself (per-leg IK + whole-body
+    // slope conform in dogAnimation.js) — previously only plantDogFeet below
+    // ever saw it, leaving the procedural gait ground-blind.
+    animation.update(dt, { fixed: opts.fixed, getGroundHeight: opts.getGroundHeight });
     // After procedural (or pre-clip) pose: plant pads on ground for any breed
     // scale / legLength. Controllers pass getGroundHeight; studio uses y=0.
     if (opts.plantFeet !== false) {
       plantDogFeet({ root, rig, phenotype }, {
         getGroundHeight: opts.getGroundHeight ?? (() => 0),
-        ik: opts.plantIk !== false,
+        // Omitted plantIk falls through to the shared footIkEnabled default
+        // (off); pass true/false to force per-call.
+        ik: opts.plantIk,
       });
     }
     if (opts.skipFurDynamics || detailLevel <= 0) {

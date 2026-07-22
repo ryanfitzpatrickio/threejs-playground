@@ -17,9 +17,31 @@ const FACE_STATES = [
   { id: 'alert', label: 'Alert (ears twinged)' },
 ];
 
+/** Park chase-camera focus (mirrors DogParkRuntimeFeature.normalizeCameraMode). */
+const CAMERA_MODES = [
+  { id: 'player', label: 'Your dog' },
+  { id: 'squirrel-chase', label: 'Squirrel chase' },
+  { id: 'cinematic', label: 'Cinematic tour' },
+];
+
 function normalizeFaceState(value) {
   if (value === 'open' || value === 'alert' || value === 'closed') return value;
   return 'closed';
+}
+
+function normalizeCameraMode(value) {
+  const raw = String(value ?? '').trim().toLowerCase();
+  if (raw === 'cinematic' || raw === 'tour' || raw === 'cinema') {
+    return 'cinematic';
+  }
+  if (
+    raw === 'squirrel-chase'
+    || raw === 'squirrel'
+    || raw === 'chase'
+  ) {
+    return 'squirrel-chase';
+  }
+  return 'player';
 }
 
 /**
@@ -52,9 +74,18 @@ export function DogParkHud(props) {
   const [seed, setSeed] = createSignal(initial.seed ?? 1);
   const [shellCount, setShellCount] = createSignal(initial.shellCount ?? 18);
   const [faceState, setFaceState] = createSignal(normalizeFaceState(initial.mouthState ?? initial.faceState));
+  const [cameraMode, setCameraMode] = createSignal(
+    normalizeCameraMode(initial.cameraMode ?? initial.camera?.mode),
+  );
   const [naked, setNaked] = createSignal(Boolean(initial.naked));
   const speciesFamilies = createMemo(() => getFamiliesForSpecies(speciesId()));
   const breeds = createMemo(() => getDogBreeds(familyId()));
+  /** Live mode from runtime snapshot, falling back to the local control. */
+  const activeCameraMode = createMemo(() => normalizeCameraMode(
+    props.snapshot?.cameraMode
+      ?? props.snapshot?.camera?.mode
+      ?? cameraMode(),
+  ));
 
   const publish = (detail) => globalThis.dispatchEvent(new CustomEvent(CONFIG_EVENT, { detail }));
 
@@ -92,7 +123,17 @@ export function DogParkHud(props) {
     <>
       {/* Compact always-visible control reminder (no big panel). */}
       <div class="dog-park-hint" aria-hidden="true">
-        WASD · Shift trot · C sit · V look · Z flop · K camera
+        {activeCameraMode() === 'cinematic'
+          ? (
+            props.snapshot?.camera?.cinematic?.shotLabel
+              ? `Cinematic · ${props.snapshot.camera.cinematic.shotLabel}`
+              : 'Cinematic tour · rotating park cameras'
+          )
+          : activeCameraMode() === 'squirrel-chase'
+            ? 'Squirrel cam · LMB orbit · RMB free look · scroll zoom · R behind'
+            : (props.snapshot?.isGoose || props.snapshot?.isBird)
+              ? 'Bird · WASD · Space takeoff/flap · C dive · Shift sprint · land on ground · K camera'
+              : 'WASD · Shift trot · C sit · V look · Z flop · K camera'}
       </div>
 
       <Show when={open()}>
@@ -112,7 +153,7 @@ export function DogParkHud(props) {
             <header class="dog-park-hud__header">
               <div>
                 <div class="dog-park-hud__title">Customize</div>
-                <p class="dog-park-hud__subtitle">Species, breed, fur, and face</p>
+                <p class="dog-park-hud__subtitle">Species, breed, fur, face, and camera</p>
               </div>
               <button
                 type="button"
@@ -216,7 +257,33 @@ export function DogParkHud(props) {
                   <For each={FACE_STATES}>{(face) => <option value={face.id}>{face.label}</option>}</For>
                 </select>
               </label>
+              <label>
+                Camera
+                <select
+                  value={cameraMode()}
+                  onChange={(event) => {
+                    const value = normalizeCameraMode(event.currentTarget.value);
+                    setCameraMode(value);
+                    publish({ cameraMode: value });
+                  }}
+                >
+                  <For each={CAMERA_MODES}>{(mode) => <option value={mode.id}>{mode.label}</option>}</For>
+                </select>
+              </label>
             </div>
+
+            <Show when={cameraMode() === 'squirrel-chase'}>
+              <p class="dog-park-hud__hint dog-park-hud__hint--cinematic">
+                Orbit the grey squirrel while the golden chases.
+                LMB orbit · RMB free look · scroll zoom · R behind · your dog waits.
+              </p>
+            </Show>
+            <Show when={cameraMode() === 'cinematic'}>
+              <p class="dog-park-hud__hint dog-park-hud__hint--cinematic">
+                Auto tour: geese V → squirrel drive-by → canopy pigeons → lake → cat fight.
+                Your dog waits; freecam (K) still works.
+              </p>
+            </Show>
 
             <div class="dog-park-hud__actions">
               <button
@@ -240,7 +307,8 @@ export function DogParkHud(props) {
             </div>
 
             <p class="dog-park-hud__hint">
-              WASD move · Shift trot · C sit · V look · Z flop · mud splash · K camera mode · LMB orbit · RMB free look · scroll zoom · R behind
+              WASD move · Shift trot · C sit · V look · Z flop · mud splash · K freecam · LMB orbit · RMB free look · scroll zoom · R behind
+              · Customize → Camera for squirrel chase or cinematic tour
             </p>
           </aside>
         </div>

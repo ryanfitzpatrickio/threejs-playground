@@ -18,7 +18,7 @@ import {
   packCoatMask,
   hairPartStrength,
 } from './dogCoatFields.js';
-import { buildCaviidPolyHead, buildSuidPolyHead } from './animalPolyHead.js';
+import { buildCaviidPolyHead, buildEquidPolyHead, buildSuidPolyHead } from './animalPolyHead.js';
 
 export { COAT_ZONE };
 
@@ -239,6 +239,16 @@ function loftChain(stations, segs, coatFn, { soft = true, n = 2.15 } = {}) {
 function earLeafGeometry(stations, coatFn, {
   thickness = 0.003,
   faceNormal = new THREE.Vector3(0, 0, 1),
+  // When set, the "inner" face (short fur / dark tint, vertexIndex%4<2) is
+  // derived per-station as the direction toward this point instead of a
+  // fixed world axis. A fixed axis picks an arbitrary face per ear chain —
+  // since the two ears are mirror images, the *same* fixed axis can resolve
+  // to the skull-facing side on one ear and the outward (long-fur) side on
+  // the other, leaving one ear looking bald/flat while its mirror looks
+  // properly furred. Anchoring to the skull center keeps "inner" always
+  // facing the head and "outer" (full coat) always facing away, on both
+  // ears symmetrically.
+  innerTowardPoint = null,
 } = {}) {
   if (stations.length < 2) throw new Error('earLeafGeometry needs at least two stations');
   const positions = [];
@@ -250,7 +260,11 @@ function earLeafGeometry(stations, coatFn, {
     const prev = stations[Math.max(0, i - 1)].c;
     const next = stations[Math.min(stations.length - 1, i + 1)].c;
     const tangent = next.clone().sub(prev).normalize();
-    const normal = faceNormal.clone().addScaledVector(tangent, -faceNormal.dot(tangent));
+    const station = stations[i];
+    const stationFaceNormal = innerTowardPoint
+      ? innerTowardPoint.clone().sub(station.c).normalize()
+      : faceNormal;
+    const normal = stationFaceNormal.clone().addScaledVector(tangent, -stationFaceNormal.dot(tangent));
     if (normal.lengthSq() < 1e-8) normal.set(0, 0, 1);
     normal.normalize();
     const widthDir = new THREE.Vector3().crossVectors(normal, tangent).normalize();
@@ -258,7 +272,6 @@ function earLeafGeometry(stations, coatFn, {
     previousWidth = widthDir.clone();
     frames.push({ normal, widthDir });
 
-    const station = stations[i];
     const halfThickness = thickness * 0.5;
     const left = station.c.clone().addScaledVector(widthDir, -station.width);
     const right = station.c.clone().addScaledVector(widthDir, station.width);
@@ -361,6 +374,7 @@ export function buildDogBodyGeometry(rig, phenotype = rig.phenotype ?? null) {
   // 'hydrochoerine' kept as alias of 'suid' for older phenotypes.
   const headShape = geom.headShape ?? 'canid';
   const isCaviidPoly = headShape === 'caviid';
+  const isEquid = headShape === 'equid';
   const isSuid = headShape === 'suid' || headShape === 'hydrochoerine';
   const isHydrochoerine = isSuid; // legacy name used by the blocky loft path
   const legThickness = geom.legThickness ?? 1;
@@ -370,8 +384,8 @@ export function buildDogBodyGeometry(rig, phenotype = rig.phenotype ?? null) {
     ?? legThickness * 1.14;
   const pawSize = geom.pawSize ?? 1;
   const faceShape = phenotype?.face ?? {};
-  const eyeX = 0.032 * headScale * (faceShape.eyeSpacing ?? 1);
-  const eyeY = 0.016 * headScale * (faceShape.eyeHeight ?? 1);
+  const eyeX = (isEquid ? 0.044 : 0.032) * headScale * (faceShape.eyeSpacing ?? 1);
+  const eyeY = 0.016 * headScale * (faceShape.eyeHeight ?? 1) + (isEquid ? 0.012 * headScale : 0);
   // Match skullRx/Ry/Rz to the actual head mesh scales (canid / suid / caviid).
   const skullRx = 0.07 * headScale * (isCaviidPoly ? 0.78 : isSuid ? 0.95 : 1.18) * skullWidth;
   const skullRy = 0.07 * headScale * (isCaviidPoly ? 0.72 : isSuid ? 0.9 : 0.97) * skullHeight;
@@ -380,8 +394,10 @@ export function buildDogBodyGeometry(rig, phenotype = rig.phenotype ?? null) {
     0.08,
     1 - (eyeX / skullRx) ** 2 - ((eyeY - 0.008) / skullRy) ** 2,
   ));
-  const eyeZ = 0.005 + skullRz * eyeSurface
-    + ((faceShape.eyeForward ?? 1) - 1) * 0.008 * headScale;
+  const eyeZ = isEquid
+    ? 0.01 * headScale * skullLength * (faceShape.eyeForward ?? 1)
+    : 0.005 + skullRz * eyeSurface
+      + ((faceShape.eyeForward ?? 1) - 1) * 0.008 * headScale;
   const coatLength = (zone, p) => lengthAt(zone, p, headCenter, phenotype);
   const coatMask = (zone, p) => colorMaskAt(zone, p, headCenter, phenotype);
 
@@ -543,6 +559,50 @@ export function buildDogBodyGeometry(rig, phenotype = rig.phenotype ?? null) {
     })));
   }
 
+  // ---- Equid crest mane: ridge along the neck topline, hair to one side ----
+  // The mane needs to read as a solid hanging hank from every angle,
+  // including near edge-on (3/4 views looking down the neck length) — a
+  // thin base ribbon that relies on long shell-fur extrusion for its width
+  // goes translucent/gray at grazing angles (sparse shells over a long
+  // extrusion never resolve to a solid tint, unlike the tail's much thicker
+  // base loft). So the base ribbon itself now carries most of the visual
+  // bulk (comparable to the tail's ~0.03-0.04 base radius); fur only adds a
+  // short fuzzy edge on top.
+  const crestManeAmt = THREE.MathUtils.clamp(phenotype?.furnishings?.crestMane ?? 0, 0, 1);
+  if (crestManeAmt > 0.02) {
+    const chest = wp('Chest');
+    const neck = wp('Neck');
+    const head = wp('Head');
+    const w = 0.03 + 0.032 * crestManeAmt;
+    const up = new THREE.Vector3(0, 1, 0);
+    const neckDir = head.clone().sub(chest).normalize();
+    // Perpendicular lift off the neck topline (not straight up) so the ridge
+    // hugs the raised neck column at any carriage angle. Hair hangs to one
+    // side, so the ribbon itself leans that way too (not a centered mohawk).
+    const lift = up.clone().addScaledVector(neckDir, -up.dot(neckDir)).normalize();
+    const side = new THREE.Vector3().crossVectors(neckDir, lift).normalize();
+    const at = (a, b, t, liftAmt, sideAmt = 0) => a.clone().lerp(b, t)
+      .addScaledVector(lift, liftAmt)
+      .addScaledVector(side, sideAmt);
+    // Tall crest (ry) + proud lift so the mane reads as a solid dark ridge in
+    // profile too — a thin low ribbon goes edge-on and vanishes from the side.
+    const stations = [
+      { c: at(chest, neck, 0.05, 0.07, 0.014), rx: w * 0.78, ry: w * 0.6, bone: idx('Chest'), up },
+      { c: at(chest, neck, 0.5, 0.074, 0.02), rx: w, ry: w * 0.66, bone: idx('Neck'), up },
+      { c: at(neck, head, 0.05, 0.07, 0.022), rx: w * 1.02, ry: w * 0.66, bone: idx('Neck'), up },
+      { c: at(neck, head, 0.55, 0.062, 0.02), rx: w * 0.85, ry: w * 0.58, bone: idx('Head'), up },
+      { c: head.clone().add(new THREE.Vector3(0, 0.026, -0.048)), rx: w * 0.55, ry: w * 0.42, bone: idx('Head'), up },
+    ];
+    parts.push(loftChain(stations, 20, (p) => ({
+      // Short fuzz only — the base ribbon above already carries the mane's
+      // visual width and thickness. Mask ~1 → guard (black on bay).
+      length: 0.014 + 0.012 * crestManeAmt,
+      colorMask: 0.96,
+      groom: [0.35, -0.75, -0.15],
+      zone: COAT_ZONE.body,
+    })));
+  }
+
   // ---- Dorsal quill field (porcupine) ----
   const quillAmt = THREE.MathUtils.clamp(phenotype?.furnishings?.quills ?? 0, 0, 1.5);
   if (quillAmt > 0.02) {
@@ -629,6 +689,8 @@ export function buildDogBodyGeometry(rig, phenotype = rig.phenotype ?? null) {
 
     if (isCaviidPoly) {
       parts.push(...buildCaviidPolyHead(polyCtx));
+    } else if (isEquid) {
+      parts.push(...buildEquidPolyHead(polyCtx));
     } else if (isSuid) {
       parts.push(...buildSuidPolyHead(polyCtx));
     } else {
@@ -1127,7 +1189,7 @@ export function buildDogBodyGeometry(rig, phenotype = rig.phenotype ?? null) {
       zone: COAT_ZONE.ear,
     }), {
       thickness: headScale * (isFolded ? 0.0032 : isErect ? 0.0026 : 0.003),
-      faceNormal: new THREE.Vector3(0, 0, 1),
+      innerTowardPoint: headCenter,
     }));
 
     // A flat leaf meets a round skull at a single tangent point at best —
@@ -1380,13 +1442,41 @@ export function buildDogBodyGeometry(rig, phenotype = rig.phenotype ?? null) {
         bone: idx(names[names.length - 2]),
         up: padUp,
       });
-      stations[stations.length - 1] = {
-        c: paw.clone().add(new THREE.Vector3(0, -0.004, 0.002)),
-        rx: 0.016 * pawSize * hoofSize,
-        ry: 0.014 * pawSize * hoofSize,
-        bone: idx(names[names.length - 1]),
-        up: padUp,
-      };
+      if (footType === 'solid-hoof') {
+        // Equid hoof: narrow coronet flaring into a wall that meets the
+        // ground on a flat rim with a slight forward toe — a readable hoof
+        // capsule, not a tapered stump.
+        // The coronet ring is DUPLICATED: the packed coatMask encodes
+        // zone*4 + mask, so a triangle spanning a leg-zone ring and a
+        // paw-zone ring interpolates through garbage encodings (phantom
+        // earInner flags, out-of-range mixes → orange/white bands down the
+        // pastern). A zero-length seam segment keeps every triangle within
+        // one zone; the paw boundary is pinned to this seam below.
+        const hb = idx(names[names.length - 1]);
+        const hw = pawSize * hoofSize;
+        const coronet = {
+          c: paw.clone().add(new THREE.Vector3(0, 0.012, 0.001)),
+          rx: 0.019 * hw, ry: 0.016 * hw, bone: hb, up: padUp,
+        };
+        stations[stations.length - 1] = coronet;
+        stations.push({ ...coronet, c: coronet.c.clone().add(new THREE.Vector3(0, -0.0006, 0)) });
+        stations.push({
+          c: paw.clone().add(new THREE.Vector3(0, -0.004, 0.005)),
+          rx: 0.024 * hw, ry: 0.02 * hw, bone: hb, up: padUp,
+        });
+        stations.push({
+          c: paw.clone().add(new THREE.Vector3(0, -0.015, 0.008)),
+          rx: 0.026 * hw, ry: 0.021 * hw, bone: hb, up: padUp,
+        });
+      } else {
+        stations[stations.length - 1] = {
+          c: paw.clone().add(new THREE.Vector3(0, -0.004, 0.002)),
+          rx: 0.016 * pawSize * hoofSize,
+          ry: 0.014 * pawSize * hoofSize,
+          bone: idx(names[names.length - 1]),
+          up: padUp,
+        };
+      }
     } else if (isRodentPaw) {
       // Skinny plantigrade foot: narrow ankle into a small elongated sole
       // (mouse/rat/squirrel — not a dog pad loaf). Slightly longer along Z
@@ -1480,7 +1570,18 @@ export function buildDogBodyGeometry(rig, phenotype = rig.phenotype ?? null) {
     const legLen = chainLength(stations);
     const mergedLen = capLen + legLen || 1;
     const capEndT = capLen / mergedLen;
-    const pawStartT = (capLen + 0.72 * legLen) / mergedLen;
+    let pawStartT;
+    if (footType === 'solid-hoof') {
+      // Zone boundary pinned to the duplicated coronet seam ring: the leg→paw
+      // switch happens across the near-zero seam segment, never mid-pastern.
+      const seamIdx = stations.length - 3;
+      let sum = 0;
+      for (let i = 1; i <= seamIdx; i += 1) sum += stations[i].c.distanceTo(stations[i - 1].c);
+      const half = stations[seamIdx].c.distanceTo(stations[seamIdx - 1].c) * 0.5;
+      pawStartT = (capLen + sum - half) / mergedLen;
+    } else {
+      pawStartT = (capLen + 0.72 * legLen) / mergedLen;
+    }
     const mergedStations = [...capStations, ...stations];
 
     parts.push(loftChain(mergedStations, 20, (p, t) => {

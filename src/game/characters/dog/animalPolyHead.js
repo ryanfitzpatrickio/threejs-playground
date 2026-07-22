@@ -495,6 +495,126 @@ export function buildCaviidPolyHead(ctx) {
   return [headMesh, jawMesh];
 }
 
+// ---------------------------------------------------------------------------
+// Equid (horse) — long rectangular head: deep cheek/masseter at the back,
+// flat forehead with a slight brow, straight nasal line, long tapering
+// rectangular muzzle ending in a soft squared tip (no dog stop).
+// Path follows the Head→Muzzle→NoseTip bones so the head keeps the equid
+// down-forward carriage from the skeleton.
+// ---------------------------------------------------------------------------
+export function buildEquidPolyHead(ctx) {
+  const {
+    headCenter, muzzle, nose, headScale,
+    skullWidth, skullHeight, skullLength,
+    muzzleWidth, muzzleHeight, cheekFullness,
+    headBone, muzzleBone, phenotype,
+  } = ctx;
+
+  const hs = headScale;
+  const sw = skullWidth;
+  const sh = skullHeight;
+  const sl = skullLength;
+  const mw = muzzleWidth;
+  const mh = muzzleHeight;
+  const cheek = Math.max(cheekFullness, 0.4);
+  const segs = 44;
+
+  // Nape reaches back far enough to overlap the raised neck loft (carriage
+  // leaves a visible ring gap otherwise).
+  const nape = headCenter.clone().add(new THREE.Vector3(0, 0.002 * hs, -0.072 * hs * sl));
+  const path = [
+    nape,
+    headCenter.clone().add(new THREE.Vector3(0, 0.008 * hs, 0)),
+    headCenter.clone().lerp(muzzle, 0.5).add(new THREE.Vector3(0, 0, 0)),
+    muzzle.clone().add(new THREE.Vector3(0, -0.004 * hs, 0)),
+    muzzle.clone().lerp(nose, 0.6).add(new THREE.Vector3(0, -0.006 * hs, 0)),
+    nose.clone().add(new THREE.Vector3(0, -0.006 * hs, 0.002 * hs)),
+  ];
+  const samplePath = makePathSampler(path);
+  // Slight brow rise at the crown; nasal line declines gently to the nose.
+  const profileLift = (u) => {
+    const brow = Math.exp(-((u - 0.16) ** 2) / (2 * 0.1 * 0.1));
+    const drop = THREE.MathUtils.smoothstep(u, 0.55, 1);
+    return 0.01 * hs * sh * brow - 0.006 * hs * drop;
+  };
+
+  const schedule = [
+    { u: 0.0, rx: 0.028 * sw, ry: 0.040 * sh, bone: headBone, n: 2.2, topFlat: 0.1, bottomFlat: 0.1, upper: 1.0, lower: 1.0, cheekAmt: 0.05, cheekY: -0.1, faceFlat: 0 },
+    { u: 0.1, rx: 0.044 * sw, ry: 0.050 * sh, bone: headBone, n: 2.25, topFlat: 0.16, bottomFlat: 0.08, upper: 0.98, lower: 1.08, cheekAmt: 0.22, cheekY: -0.12, faceFlat: 0 },
+    { u: 0.2, rx: 0.048 * sw, ry: 0.053 * sh, bone: headBone, n: 2.28, topFlat: 0.18, bottomFlat: 0.08, upper: 0.96, lower: 1.16, cheekAmt: 0.42, cheekY: -0.16, faceFlat: 0 },
+    { u: 0.32, rx: 0.045 * sw, ry: 0.049 * sh, bone: headBone, n: 2.28, topFlat: 0.16, bottomFlat: 0.09, upper: 0.95, lower: 1.1, cheekAmt: 0.34, cheekY: -0.16, faceFlat: 0 },
+    { u: 0.45, rx: 0.055 * mw, ry: 0.042 * sh, bone: headBone, n: 2.3, topFlat: 0.14, bottomFlat: 0.1, upper: 0.95, lower: 1.02, cheekAmt: 0.18, cheekY: -0.1, faceFlat: 0 },
+    { u: 0.58, rx: 0.051 * mw, ry: 0.037 * mh, bone: muzzleBone, n: 2.32, topFlat: 0.13, bottomFlat: 0.11, upper: 0.95, lower: 1.0, cheekAmt: 0.08, cheekY: -0.05, faceFlat: 0.04 },
+    { u: 0.72, rx: 0.048 * mw, ry: 0.033 * mh, bone: muzzleBone, n: 2.34, topFlat: 0.12, bottomFlat: 0.12, upper: 0.96, lower: 0.99, cheekAmt: 0.03, cheekY: 0, faceFlat: 0.08 },
+    { u: 0.84, rx: 0.046 * mw, ry: 0.030 * mh, bone: muzzleBone, n: 2.38, topFlat: 0.12, bottomFlat: 0.13, upper: 0.97, lower: 0.98, cheekAmt: 0, cheekY: 0, faceFlat: 0.16 },
+    { u: 0.93, rx: 0.045 * mw, ry: 0.028 * mh, bone: muzzleBone, n: 2.44, topFlat: 0.13, bottomFlat: 0.14, upper: 0.98, lower: 0.97, cheekAmt: 0, cheekY: 0, faceFlat: 0.3 },
+    { u: 1.0, rx: 0.042 * mw, ry: 0.026 * mh, bone: muzzleBone, n: 2.5, topFlat: 0.14, bottomFlat: 0.15, upper: 0.98, lower: 0.96, cheekAmt: 0, cheekY: 0, faceFlat: 0.45 },
+  ];
+
+  const stations = schedule.map((s) => {
+    const c = samplePath(s.u);
+    c.y += profileLift(s.u);
+    return {
+      c,
+      bone: s.bone,
+      local: sectionPolygon(s.rx * hs, s.ry * hs, segs, {
+        n: s.n,
+        topFlat: s.topFlat,
+        bottomFlat: s.bottomFlat,
+        upperHalf: s.upper,
+        lowerHalf: s.lower,
+        cheek: s.cheekAmt * cheek,
+        cheekY: s.cheekY,
+        faceFlat: s.faceFlat,
+      }),
+    };
+  });
+
+  const coatLength = (zone, p) => lengthAt(zone, p, headCenter, phenotype);
+  const coatMaskFn = (zone, p) => colorMaskAt(zone, p, headCenter, phenotype);
+  const headMesh = loftPolyStations(
+    stations,
+    headCoatFn(ctx, coatLength, coatMaskFn, { tipStart: 0.8, frontStart: 0.5 }),
+  );
+  // Closed-mouth stills: compact internal jaw token (hinge mass for open-mouth
+  // frames). The shared jaw loft is wider than this narrow muzzle and poked
+  // through the side walls as a discolored band.
+  const jawRy = 0.007 * hs;
+  const jawInside = [
+    {
+      c: samplePath(0.5).add(new THREE.Vector3(0, -0.024 * hs * mh, 0)),
+      bone: ctx.jawBone,
+      local: sectionPolygon(0.03 * hs * mw, jawRy, 20, { n: 2.5, upperHalf: 0.4, lowerHalf: 1.0 }),
+    },
+    {
+      c: samplePath(0.88).add(new THREE.Vector3(0, -0.018 * hs * mh, 0)),
+      bone: ctx.jawBone,
+      local: sectionPolygon(0.024 * hs * mw, jawRy * 0.85, 20, { n: 2.6, upperHalf: 0.4, lowerHalf: 1.0 }),
+    },
+  ];
+  const jawMesh = loftPolyStations(jawInside, (p) => ({
+    length: 0.0004,
+    colorMask: coatMaskFn(COAT_ZONE.muzzle, p) * 0.3,
+    groom: headGroomAt(p, headCenter),
+    zone: COAT_ZONE.muzzle,
+  }));
+  return [headMesh, jawMesh];
+}
+
+/**
+ * Eye placement radii for the equid head: eyes sit on the SIDE WALL at the
+ * brow (wide monocular field), not on a forward sphere surface.
+ */
+export function equidEyeSkullRadii(headScale, skullWidth, skullHeight, skullLength) {
+  return {
+    skullRx: 0.046 * headScale * skullWidth,
+    skullRy: 0.05 * headScale * skullHeight,
+    skullRz: 0.07 * headScale * 1.1 * skullLength,
+    eyeYBoost: 0.012 * headScale,
+    eyeZBase: 0.004,
+  };
+}
+
 /**
  * Approximate skull radii for eye placement (head features).
  */

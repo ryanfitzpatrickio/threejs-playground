@@ -95,6 +95,13 @@ export class InputSystem {
     this.dodgeDirectionPending = null; // {x, z} | null — one-frame edge
     this.jumpDoubleTapPending = false; // one-frame edge (air-dash)
     this.jumpDoubleTapRaw = false; // raw double-jump edge for wingsuit (AbilitySystem gates)
+    /** Analog stick from virtual touch (nipple.js) — x right, z back (same as keys). */
+    this.virtualMoveX = 0;
+    this.virtualMoveZ = 0;
+    /** Stick magnitude 0..1 — force > threshold can drive virtual sprint. */
+    this.virtualMoveForce = 0;
+    /** @type {Set<string>} virtual action holds (jump, brace, drawSheathe, …) */
+    this.virtualActions = new Set();
     this.handleKeyDown = this.handleKeyDown.bind(this);
     this.handleKeyUp = this.handleKeyUp.bind(this);
     this.handleMouseDown = this.handleMouseDown.bind(this);
@@ -125,6 +132,83 @@ export class InputSystem {
     if (!this.pointerLockEnabled && document.pointerLockElement === this.target) {
       document.exitPointerLock?.();
     }
+  }
+
+  /**
+   * Virtual stick axes from nipple.js (or any touch pad).
+   * Convention matches keyboard: +x = right, +z = backward (S), −z = forward (W).
+   * @param {number} x -1..1
+   * @param {number} z -1..1
+   * @param {number} [force] 0..1 stick strength
+   */
+  setVirtualMove(x = 0, z = 0, force = 0) {
+    const nx = Number(x) || 0;
+    const nz = Number(z) || 0;
+    const len = Math.hypot(nx, nz);
+    if (len > 1) {
+      this.virtualMoveX = nx / len;
+      this.virtualMoveZ = nz / len;
+    } else {
+      this.virtualMoveX = nx;
+      this.virtualMoveZ = nz;
+    }
+    this.virtualMoveForce = Math.min(1, Math.max(0, Number(force) || len || 0));
+  }
+
+  clearVirtualMove() {
+    this.virtualMoveX = 0;
+    this.virtualMoveZ = 0;
+    this.virtualMoveForce = 0;
+  }
+
+  /**
+   * Hold/release a logical action from on-screen buttons (same names as KEY_BINDINGS).
+   * @param {string} action
+   * @param {boolean} held
+   */
+  setVirtualAction(action, held) {
+    if (!action || typeof action !== 'string') return;
+    const wasVirtual = this.virtualActions.has(action);
+    if (held) {
+      if (!wasVirtual) {
+        // Edge only when this virtual control newly presses (keys may already hold).
+        if (!this.actions.has(action)) {
+          this.pressedActions.add(action);
+        }
+        if (action === 'jump') {
+          const now = performance.now() / 1000;
+          if (now - this.lastJumpPressTime <= JUMP_DOUBLE_TAP_SECONDS) {
+            this.jumpDoubleTapPending = true;
+            this.jumpDoubleTapRaw = true;
+          }
+          this.lastJumpPressTime = now;
+          this.wallRunJumpHold = true;
+        }
+        if (action === 'ability') {
+          const now = performance.now() / 1000;
+          if (now - this.lastAbilityPressTime <= ABILITY_DOUBLE_TAP_SECONDS) {
+            this.abilityDoubleTapPending = true;
+          }
+          this.lastAbilityPressTime = now;
+        }
+      }
+      this.virtualActions.add(action);
+      this.actions.add(action);
+    } else if (wasVirtual) {
+      this.virtualActions.delete(action);
+      this.releasedActions.add(action);
+      if (action === 'jump') this.wallRunJumpHold = false;
+      // Drop hold; if a physical key is still down, next keydown isn't re-sent —
+      // acceptable for mobile-first virtual buttons.
+      this.actions.delete(action);
+    }
+  }
+
+  clearVirtualActions() {
+    for (const action of [...this.virtualActions]) {
+      this.setVirtualAction(action, false);
+    }
+    this.virtualActions.clear();
   }
 
   getState() {
@@ -225,14 +309,27 @@ export class InputSystem {
     const leftHeld = this.actions.has('left');
     const rightHeld = this.actions.has('right');
 
+    // Keyboard is digital −1/0/1; virtual stick is analog. Prefer stick when active.
+    const keyMoveX = leanModHeld ? 0 : Number(rightHeld) - Number(leftHeld);
+    const keyMoveZ = Number(this.actions.has('backward')) - Number(this.actions.has('forward'));
+    const stickActive = Math.hypot(this.virtualMoveX, this.virtualMoveZ) > 0.02;
+    const moveX = stickActive ? this.virtualMoveX : keyMoveX;
+    const moveZ = stickActive ? this.virtualMoveZ : keyMoveZ;
+    // Auto-sprint when stick is pushed past ~half (or explicit Sprint button).
+    // 0.55 matches DogPlayerController inputMagnitude run gate.
+    const virtualSprint = this.virtualMoveForce >= 0.55;
+    const braceHeld = this.actions.has('brace')
+      || this.virtualActions.has('brace')
+      || virtualSprint;
+
     return {
-      moveX: leanModHeld ? 0 : Number(rightHeld) - Number(leftHeld),
-      moveZ: Number(this.actions.has('backward')) - Number(this.actions.has('forward')),
+      moveX,
+      moveZ,
       lookX,
       lookY,
       zoomDelta,
       pointerLocked: this.pointerLocked,
-      brace: this.actions.has('brace'),
+      brace: braceHeld,
       bracePressed,
       jump: this.actions.has('jump'),
       wallRunJump: this.wallRunJumpHold && this.actions.has('jump'),
@@ -315,6 +412,8 @@ export class InputSystem {
     this.actions.clear();
     this.pressedActions.clear();
     this.releasedActions.clear();
+    this.virtualActions.clear();
+    this.clearVirtualMove();
     this.lookDelta.x = 0;
     this.lookDelta.y = 0;
     this.zoomDelta = 0;
@@ -493,6 +592,8 @@ export class InputSystem {
     this.actions.clear();
     this.pressedActions.clear();
     this.releasedActions.clear();
+    this.virtualActions.clear();
+    this.clearVirtualMove();
     this.wallRunJumpHold = false;
     this.lookDelta.x = 0;
     this.lookDelta.y = 0;

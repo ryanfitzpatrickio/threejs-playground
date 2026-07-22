@@ -50,6 +50,10 @@ export class DogCameraSystem {
     // Far / mid framing (withers aim, shoulder-high cam). Close zoom lerps
     // toward dog-eye height so the view sits lower to the ground — but only
     // while the player owns framing (orbit / free-look). Auto-settle stays high.
+    this._aimHeightFar = 0.48;
+    this._aimHeightClose = 0.28;
+    this._baseHeightFar = 0.42;
+    this._baseHeightClose = 0.08;
 
     this.steerOffset = 0;
     this.lateralOffset = 0;
@@ -60,12 +64,30 @@ export class DogCameraSystem {
     this.orbitHold = 0;
     /** True while RMB free-look is held (or short settle after release). */
     this.freeLookHold = 0;
+    /**
+     * Framing preset:
+     * - `player` — default chase
+     * - `cinematic` — wider orbit for park spectacles (squirrel chase)
+     * - `aerial` — far pull-back for sky subjects (goose flock)
+     */
+    this.subjectMode = 'player';
+    /**
+     * Scales orbit distances + aim heights for small/large animals (dog phenotype
+     * skeleton.scale, bird presentation.scale). 1 = golden-retriever baseline.
+     */
+    this.framingScale = 1;
     this.active = false;
   }
 
-  initialize(camera, targetObject, { yaw = Math.PI } = {}) {
+  initialize(camera, targetObject, {
+    yaw = Math.PI,
+    subjectMode = 'player',
+    framingScale = 1,
+  } = {}) {
     this.camera = camera;
     this.targetObject = targetObject;
+    this.setFramingScale(framingScale, { apply: false });
+    this.applySubjectMode(subjectMode, { resetDistance: true });
     this.yaw = yaw;
     this.pitch = this.settlePitch;
     this.distance = this.defaultDistance;
@@ -78,6 +100,95 @@ export class DogCameraSystem {
     this.hasLookTarget = false;
     this.active = true;
     this.snap();
+  }
+
+  /**
+   * Retarget the orbit focus (e.g. player dog → grey squirrel) without rebuilding
+   * the camera system. Optional yaw keeps continuity when switching subjects.
+   *
+   * @param {THREE.Object3D | null} targetObject
+   * @param {{
+   *   yaw?: number,
+   *   subjectMode?: 'player' | 'cinematic' | 'aerial',
+   *   snap?: boolean,
+   * }} [opts]
+   */
+  setTarget(targetObject, {
+    yaw,
+    subjectMode,
+    framingScale,
+    snap = true,
+  } = {}) {
+    if (!targetObject) return;
+    this.targetObject = targetObject;
+    if (Number.isFinite(framingScale)) this.setFramingScale(framingScale, { apply: false });
+    if (subjectMode) this.applySubjectMode(subjectMode, { resetDistance: true });
+    else if (Number.isFinite(framingScale)) this.applySubjectMode(this.subjectMode, { resetDistance: false });
+    if (Number.isFinite(yaw)) this.yaw = yaw;
+    this.orbitHold = 0;
+    this.freeLookHold = 0;
+    this.steerOffset = 0;
+    this.lateralOffset = 0;
+    this.hasLookTarget = false;
+    if (snap) this.snap();
+  }
+
+  /**
+   * Scale chase framing for the current animal size.
+   * @param {number} scale
+   * @param {{ apply?: boolean }} [opts]
+   */
+  setFramingScale(scale = 1, { apply = true } = {}) {
+    this.framingScale = THREE.MathUtils.clamp(Number(scale) || 1, 0.28, 2.8);
+    if (apply) this.applySubjectMode(this.subjectMode, { resetDistance: false });
+  }
+
+  /**
+   * @param {'player' | 'cinematic' | 'aerial'} mode
+   * @param {{ resetDistance?: boolean }} [opts]
+   */
+  applySubjectMode(mode = 'player', { resetDistance = false } = {}) {
+    const next = mode === 'cinematic' || mode === 'aerial' ? mode : 'player';
+    this.subjectMode = next;
+    const s = this.framingScale ?? 1;
+    if (next === 'aerial') {
+      // Sky subjects (goose V): far pull-back, flatter pitch, high aim on body.
+      this.minDistance = 4.5 * s;
+      this.maxDistance = 32 * Math.max(1, s);
+      this.defaultDistance = 14 * s;
+      this.settlePitch = 0.18;
+      this._aimHeightFar = 0.35 * s;
+      this._aimHeightClose = 0.2 * s;
+      this._baseHeightFar = 1.4 * s;
+      this._baseHeightClose = 0.6 * s;
+    } else if (next === 'cinematic') {
+      // Wider, slightly higher framing for the tiny squirrel + chasing golden.
+      this.minDistance = 1.15 * s;
+      this.maxDistance = 10.5 * Math.max(1, s);
+      this.defaultDistance = 3.6 * s;
+      this.settlePitch = 0.38;
+      this._aimHeightFar = 0.22 * s;
+      this._aimHeightClose = 0.12 * s;
+      this._baseHeightFar = 0.55 * s;
+      this._baseHeightClose = 0.18 * s;
+    } else {
+      // Player chase: slightly tighter than the original park defaults so the
+      // animal fills more frame at a walk; still pulls out for a full body.
+      this.minDistance = 0.62 * s;
+      this.maxDistance = 5.8 * Math.max(1, s);
+      this.defaultDistance = 2.05 * s;
+      this.settlePitch = 0.28;
+      this._aimHeightFar = 0.46 * s;
+      this._aimHeightClose = 0.26 * s;
+      this._baseHeightFar = 0.40 * s;
+      this._baseHeightClose = 0.07 * s;
+    }
+    if (resetDistance) {
+      this.distance = this.defaultDistance;
+      this.pitch = this.settlePitch;
+    } else {
+      this.distance = THREE.MathUtils.clamp(this.distance, this.minDistance, this.maxDistance);
+    }
   }
 
   /**
@@ -199,20 +310,32 @@ export class DogCameraSystem {
     // Auto-settle always uses elevated withers / shoulder-high heights.
     const closeT = this._closeZoomT(this.distance);
     const lowT = userFraming ? closeT : 0;
-    const aimHeight = THREE.MathUtils.lerp(0.48, 0.28, lowT);
+    const aimFar = this._aimHeightFar ?? 0.48;
+    const aimClose = this._aimHeightClose ?? 0.28;
+    const aimHeight = THREE.MathUtils.lerp(aimFar, aimClose, lowT);
     targetGoal.y += aimHeight;
-    const targetSmooth = 1 - Math.exp(-(moving ? 12 : 9) * dt);
+    // Spectacle subjects (squirrel / flock) move fast — stick tighter so orbit stays readable.
+    const targetRate = this.subjectMode === 'cinematic' || this.subjectMode === 'aerial'
+      ? (moving ? 16 : 12)
+      : (moving ? 12 : 9);
+    const targetSmooth = 1 - Math.exp(-targetRate * dt);
     this.target.lerp(targetGoal, targetSmooth);
 
     const speedEase = smoothstep01(this.smoothedSpeed / 3.6);
     const turnEase = Math.abs(turnSign);
     // Slight pull-back when sprinting or carving a turn.
     const framedDistance = this.distance
-      + speedEase * 0.55
+      + speedEase * (
+        this.subjectMode === 'aerial' ? 1.4
+          : this.subjectMode === 'cinematic' ? 0.85
+            : 0.55
+      )
       + turnEase * 0.22;
 
-    // Auto-settle base lift stays high (~0.42). Close user framing dips to ~0.08.
-    const baseHeight = THREE.MathUtils.lerp(0.42, 0.08, lowT);
+    // Auto-settle base lift stays high. Close user framing dips lower.
+    const baseFar = this._baseHeightFar ?? 0.42;
+    const baseClose = this._baseHeightClose ?? 0.08;
+    const baseHeight = THREE.MathUtils.lerp(baseFar, baseClose, lowT);
 
     const cameraYaw = this.yaw + this.steerOffset;
     const horizontal = Math.cos(this.pitch) * framedDistance;
@@ -284,8 +407,8 @@ export class DogCameraSystem {
     if (!this.camera || !this.targetObject) return;
     this.targetObject.getWorldPosition(this.target);
     // Snap uses elevated settle framing (not low close-zoom).
-    const aimHeight = 0.48;
-    const baseHeight = 0.42;
+    const aimHeight = this._aimHeightFar ?? 0.48;
+    const baseHeight = this._baseHeightFar ?? 0.42;
     this.pitch = this.settlePitch;
     this.target.y += aimHeight;
     const horizontal = Math.cos(this.pitch) * this.distance;
@@ -306,6 +429,8 @@ export class DogCameraSystem {
   snapshot() {
     return {
       active: this.active,
+      subjectMode: this.subjectMode,
+      framingScale: this.framingScale,
       target: { x: this.target.x, y: this.target.y, z: this.target.z },
       yaw: this.yaw,
       pitch: this.pitch,

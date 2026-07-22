@@ -17,6 +17,15 @@ import {
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { createProceduralDog } from '../characters/dog/createProceduralDog.js';
 import {
+  createProceduralGoose,
+  GOOSE_CLIP_CATALOG,
+} from '../characters/goose/createProceduralGoose.js';
+import { createProceduralCat } from '../characters/cat/createProceduralCat.js';
+import { createProceduralHorse } from '../characters/horse/createProceduralHorse.js';
+import { HORSE_CLIP_CATALOG } from '../characters/horse/horseAnimation.js';
+import { createProceduralLadybug } from '../characters/insect/createProceduralLadybug.js';
+import { LADYBUG_CLIP_CATALOG } from '../characters/insect/ladybugAnimation.js';
+import {
   DogClipPlayer,
   animalUsesDogClipLibrary,
 } from '../characters/dog/DogClipPlayer.js';
@@ -31,12 +40,20 @@ import {
   getDogVariants,
   getFamiliesForSpecies,
   getPopulatedFamiliesForSpecies,
+  getSpeciesIdForBreed,
   getSpeciesIdForFamily,
+  isBirdBreed,
+  isCatRigBreed,
+  isHorseRigBreed,
+  isInsectBreed,
+  isLadybugBreed,
   normalizeDogBreedId,
   normalizeDogSeed,
   normalizeDogVariantId,
 } from '../characters/dog/index.js';
 import { createDogSimStudioLighting } from './createDogSimStudioLighting.js';
+import { DogCameraSystem } from '../systems/DogCameraSystem.js';
+import { StudioFreeRoamController } from './StudioFreeRoamController.js';
 
 const FIXED_DT = 1 / 60;
 
@@ -57,6 +74,19 @@ const ROOT_REF_ALIASES = Object.freeze({
   'head-close-front.jpg': ['front-sit.jpg'],
 });
 
+/**
+ * Breeds without a photo board of their own borrow another breed's stills.
+ * The procedural cat iterates against the existing tortoiseshell references.
+ */
+const CAT_REF_BREED_ALIASES = Object.freeze({
+  'tortoiseshell-procedural': 'tortoiseshell',
+});
+
+/** Horse v2 iterates against the v1 domestic-horse equid-ref board. */
+const EQUID_REF_BREED_ALIASES = Object.freeze({
+  'domestic-horse-procedural': 'domestic-horse',
+});
+
 function isFelineBreed(breedId) {
   return getDogBreed(breedId)?.familyId === 'feline';
 }
@@ -66,8 +96,33 @@ function isRodentBreed(breedId) {
   return Boolean(breed?.conformationFlags?.includes('rodent'));
 }
 
-/** Resolve a still under public/assets/dog-ref/, cat-ref/, or rodent-ref/. */
+function isEquidaeBreed(breedId) {
+  const breed = getDogBreed(breedId);
+  return breed?.speciesId === 'equidae'
+    || breed?.familyId === 'equid'
+    || Boolean(breed?.conformationFlags?.includes('equidae'));
+}
+
+function isAvianBreed(breedId) {
+  return isBirdBreed(breedId);
+}
+
+function isInsectCatalogBreed(breedId) {
+  return isInsectBreed(breedId);
+}
+
+function isLadybugRigBreed(breedId) {
+  return isLadybugBreed(breedId);
+}
+
+/** Resolve a still under public/assets/{dog,cat,rodent,equid,bird,insect}-ref/. */
 export function dogRefUrl(filename, breedId = 'golden-retriever', variantId = 'default') {
+  if (isAvianBreed(breedId)) {
+    return `/assets/bird-ref/${breedId}/${filename}`;
+  }
+  if (isInsectCatalogBreed(breedId)) {
+    return `/assets/insect-ref/${breedId}/${filename}`;
+  }
   if (isFelineBreed(breedId)) {
     // Khao Manee eye variants use head-close-<variant>.jpg; other cats use head-close.jpg.
     if (breedId === 'khao-manee' && variantId && variantId !== 'default') {
@@ -76,10 +131,15 @@ export function dogRefUrl(filename, breedId = 'golden-retriever', variantId = 'd
         return `/assets/cat-ref/${breedId}/head-close-${variantId}.jpg`;
       }
     }
-    return `/assets/cat-ref/${breedId}/${filename}`;
+    const refBreedId = CAT_REF_BREED_ALIASES[breedId] ?? breedId;
+    return `/assets/cat-ref/${refBreedId}/${filename}`;
   }
   if (isRodentBreed(breedId)) {
     return `/assets/rodent-ref/${breedId}/${filename}`;
+  }
+  if (isEquidaeBreed(breedId)) {
+    const refBreedId = EQUID_REF_BREED_ALIASES[breedId] ?? breedId;
+    return `/assets/equid-ref/${refBreedId}/${filename}`;
   }
   if (breedId === 'golden-retriever') return `/assets/dog-ref/${filename}`;
   if (variantId && !isDogDefaultVariant(breedId, variantId)) {
@@ -105,10 +165,25 @@ export function dogRefUrlChain(filename, breedId = 'golden-retriever', variantId
     chain.push(url);
   };
 
-  if (isFelineBreed(breedId)) {
+  if (isAvianBreed(breedId)) {
     push(dogRefUrl(filename, breedId, variantId));
-    push(`/assets/cat-ref/${breedId}/head-close.jpg`);
-    push(`/assets/cat-ref/${breedId}/three-quarter.jpg`);
+    push(`/assets/bird-ref/${breedId}/three-quarter.jpg`);
+    push(`/assets/bird-ref/${breedId}/head-close.jpg`);
+    return chain;
+  }
+
+  if (isInsectCatalogBreed(breedId)) {
+    push(dogRefUrl(filename, breedId, variantId));
+    push(`/assets/insect-ref/${breedId}/three-quarter.jpg`);
+    push(`/assets/insect-ref/${breedId}/head-close.jpg`);
+    return chain;
+  }
+
+  if (isFelineBreed(breedId)) {
+    const refBreedId = CAT_REF_BREED_ALIASES[breedId] ?? breedId;
+    push(dogRefUrl(filename, breedId, variantId));
+    push(`/assets/cat-ref/${refBreedId}/head-close.jpg`);
+    push(`/assets/cat-ref/${refBreedId}/three-quarter.jpg`);
     // Eye-specific stills if variant was a generic filename.
     if (breedId === 'khao-manee') {
       push(`/assets/cat-ref/khao-manee/head-close-${variantId || 'odd-eye'}.jpg`);
@@ -123,6 +198,14 @@ export function dogRefUrlChain(filename, breedId = 'golden-retriever', variantId
     push(dogRefUrl(filename, breedId, variantId));
     push(`/assets/rodent-ref/${breedId}/head-close.jpg`);
     push(`/assets/rodent-ref/${breedId}/three-quarter.jpg`);
+    return chain;
+  }
+
+  if (isEquidaeBreed(breedId)) {
+    const refBreedId = EQUID_REF_BREED_ALIASES[breedId] ?? breedId;
+    push(dogRefUrl(filename, breedId, variantId));
+    push(`/assets/equid-ref/${refBreedId}/head-close.jpg`);
+    push(`/assets/equid-ref/${refBreedId}/three-quarter.jpg`);
     return chain;
   }
 
@@ -250,6 +333,17 @@ export class DogSimScene {
     /** @type {ReturnType<typeof createDogSimStudioLighting> | null} */
     this.studioLighting = null;
 
+    /** Free-roam: third-person walk-around (shared DogCameraSystem with dog park). */
+    this.freeRoam = false;
+    /** @type {DogCameraSystem | null} */
+    this.chaseCamera = null;
+    /** @type {StudioFreeRoamController | null} */
+    this.freeRoamController = null;
+    /** @type {ReturnType<DogSimScene['_createFreeRoamInput']> | null} */
+    this.freeRoamInput = null;
+    this._freeRoamSaved = null;
+    this._bootFreeRoam = false;
+
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       this.harnessMode = isTruthyParam(params.get('harness'));
@@ -259,6 +353,9 @@ export class DogSimScene {
       }
       if (params.get('naked') === '1') this._bootNaked = true;
       if (params.get('motion') === '0') this.liveMotion = false;
+      if (isTruthyParam(params.get('freeRoam')) || isTruthyParam(params.get('roam'))) {
+        this._bootFreeRoam = true;
+      }
     }
   }
 
@@ -268,7 +365,8 @@ export class DogSimScene {
     this.scene.background = new THREE.Color(0xc5cdc6);
     this.scene.fog = new THREE.Fog(0xc5cdc6, 6, 18);
 
-    this.camera = new THREE.PerspectiveCamera(40, 1, 0.05, 50);
+    // Far plane opens further for free-roam; studio orbit stays close.
+    this.camera = new THREE.PerspectiveCamera(40, 1, 0.05, 80);
     this.camera.position.set(1.45, 0.85, 1.55);
 
     this.renderer = new WebGPURenderer({
@@ -294,22 +392,17 @@ export class DogSimScene {
     this.resize();
 
     try {
-      this.dog = createProceduralDog({
+      // Same factory routing as rebuildDog (cat-rig / horse-rig / birds / dog).
+      await this.rebuildDog({
         breedId: this.breedId,
         seed: this.seed,
         variantId: this.variantId,
-        shellCount: this.shellCount,
       });
-      this.variantId = this.dog.variantId;
-      this.scene.add(this.dog.root);
-      if (this._bootNaked) this.dog.setNakedBody(true);
-      this._bindClipPlayer(this.dog);
-      // Bake probes after the dog is in the scene so SH capture sees the subject.
-      void this.studioLighting?.bakeProbes?.();
+      if (this._bootNaked) this.dog?.setNakedBody(true);
 
       if (this.harnessMode) {
         this.enterHarnessDefaults();
-      } else {
+      } else if (this.dog) {
         // Default framing matches the primary reference still for side-by-side.
         const headClose = DOG_REFERENCE_PRESETS.find((p) => p.id === 'head-close');
         if (headClose) {
@@ -321,6 +414,9 @@ export class DogSimScene {
 
       this.status = 'ready';
       this.installDebugApi();
+      if (this._bootFreeRoam && !this.harnessMode) {
+        this.setFreeRoam(true);
+      }
     } catch (err) {
       console.error('[DogSim] start failed', err);
       this.status = 'failed';
@@ -329,6 +425,293 @@ export class DogSimScene {
 
     this.emitSnapshot();
     this.renderFrame();
+  }
+
+  /**
+   * Framing scale for chase cam (dog skeleton scale, bird presentation scale).
+   * @param {object | null} [animal]
+   */
+  _animalFramingScale(animal = this.dog) {
+    if (!animal) return 1;
+    const sk = animal.phenotype?.skeleton?.scale;
+    if (Number.isFinite(sk) && sk > 0) return sk;
+    const pres = animal.presentation?.scale;
+    if (Number.isFinite(pres) && pres > 0) return pres;
+    return 1;
+  }
+
+  /**
+   * Orbit focus bone/root for chase cam (prefer skeleton root when nested).
+   * @param {object | null} [animal]
+   */
+  _chaseTarget(animal = this.dog) {
+    if (!animal) return null;
+    return animal.rig?.root ?? animal.root ?? null;
+  }
+
+  _createFreeRoamInput() {
+    const state = {
+      moveX: 0,
+      moveZ: 0,
+      lookX: 0,
+      lookY: 0,
+      zoomDelta: 0,
+      brace: false,
+      crouchHeld: false,
+      crouchPressed: false,
+      mousePrimaryHeld: false,
+      mouseSecondaryHeld: false,
+      mouseMiddleHeld: false,
+      reloadPressed: false,
+      keys: new Set(),
+    };
+    const codeToAxis = () => {
+      // Match InputSystem: moveX = right-left, moveZ = backward-forward
+      // (W/forward → moveZ = -1). StudioFreeRoamController / DogPlayerController
+      // both do desired += cameraForward * (-moveZ); a flipped sign here makes
+      // W aim 180° off camera and the chase cam auto-align fights it forever.
+      let x = 0;
+      let z = 0;
+      if (state.keys.has('KeyA') || state.keys.has('ArrowLeft')) x -= 1;
+      if (state.keys.has('KeyD') || state.keys.has('ArrowRight')) x += 1;
+      if (state.keys.has('KeyW') || state.keys.has('ArrowUp')) z -= 1;
+      if (state.keys.has('KeyS') || state.keys.has('ArrowDown')) z += 1;
+      state.moveX = x;
+      state.moveZ = z;
+      state.brace = state.keys.has('ShiftLeft') || state.keys.has('ShiftRight');
+      state.crouchHeld = state.keys.has('KeyC') || state.keys.has('ControlLeft');
+    };
+
+    const onKeyDown = (e) => {
+      if (!this.freeRoam) return;
+      if (e.code === 'Escape') {
+        this.setFreeRoam(false);
+        return;
+      }
+      if (e.code === 'KeyR' && !e.repeat && (e.metaKey || e.ctrlKey)) {
+        // avoid browser reload conflict — free roam recenter is plain R
+      }
+      if (e.code === 'KeyR' && !e.repeat && !e.metaKey && !e.ctrlKey) {
+        state.reloadPressed = true;
+      }
+      state.keys.add(e.code);
+      codeToAxis();
+      // Don't steal typing in panel selects — only when canvas focused or body.
+      if (e.target === this.canvas || e.target === document.body || e.target === document.documentElement) {
+        if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) {
+          e.preventDefault();
+        }
+      }
+    };
+    const onKeyUp = (e) => {
+      state.keys.delete(e.code);
+      codeToAxis();
+    };
+    const onMouseDown = (e) => {
+      if (!this.freeRoam) return;
+      if (e.button === 0) state.mousePrimaryHeld = true;
+      if (e.button === 2) state.mouseSecondaryHeld = true;
+      if (e.button === 1) state.mouseMiddleHeld = true;
+      this.canvas?.focus?.();
+    };
+    const onMouseUp = (e) => {
+      if (e.button === 0) state.mousePrimaryHeld = false;
+      if (e.button === 2) state.mouseSecondaryHeld = false;
+      if (e.button === 1) state.mouseMiddleHeld = false;
+    };
+    const onMouseMove = (e) => {
+      if (!this.freeRoam) return;
+      if (state.mousePrimaryHeld || state.mouseSecondaryHeld || state.mouseMiddleHeld) {
+        state.lookX += e.movementX || 0;
+        state.lookY += e.movementY || 0;
+      }
+    };
+    const onWheel = (e) => {
+      if (!this.freeRoam) return;
+      state.zoomDelta += Math.sign(e.deltaY);
+      e.preventDefault();
+    };
+    const onContextMenu = (e) => {
+      if (this.freeRoam) e.preventDefault();
+    };
+    const onBlur = () => {
+      state.keys.clear();
+      state.moveX = 0;
+      state.moveZ = 0;
+      state.brace = false;
+      state.crouchHeld = false;
+      state.mousePrimaryHeld = false;
+      state.mouseSecondaryHeld = false;
+      state.mouseMiddleHeld = false;
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
+    this.canvas?.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('mousemove', onMouseMove);
+    this.canvas?.addEventListener('wheel', onWheel, { passive: false });
+    this.canvas?.addEventListener('contextmenu', onContextMenu);
+    if (this.canvas) this.canvas.tabIndex = 0;
+
+    return {
+      state,
+      consumeFrame() {
+        const frame = {
+          moveX: state.moveX,
+          moveZ: state.moveZ,
+          lookX: state.lookX,
+          lookY: state.lookY,
+          zoomDelta: state.zoomDelta,
+          brace: state.brace,
+          crouchHeld: state.crouchHeld,
+          crouchPressed: false,
+          mousePrimaryHeld: state.mousePrimaryHeld,
+          mouseSecondaryHeld: state.mouseSecondaryHeld,
+          mouseMiddleHeld: state.mouseMiddleHeld,
+          reloadPressed: state.reloadPressed,
+        };
+        state.lookX = 0;
+        state.lookY = 0;
+        state.zoomDelta = 0;
+        state.reloadPressed = false;
+        return frame;
+      },
+      dispose: () => {
+        window.removeEventListener('keydown', onKeyDown);
+        window.removeEventListener('keyup', onKeyUp);
+        window.removeEventListener('blur', onBlur);
+        this.canvas?.removeEventListener('mousedown', onMouseDown);
+        window.removeEventListener('mouseup', onMouseUp);
+        window.removeEventListener('mousemove', onMouseMove);
+        this.canvas?.removeEventListener('wheel', onWheel);
+        this.canvas?.removeEventListener('contextmenu', onContextMenu);
+      },
+    };
+  }
+
+  /**
+   * Toggle third-person free roam (WASD + dog-park chase camera).
+   * @param {boolean} [on]
+   */
+  setFreeRoam(on) {
+    if (this.harnessMode) return false;
+    const next = on === undefined ? !this.freeRoam : Boolean(on);
+    if (next === this.freeRoam) return this.freeRoam;
+    if (next) this._enterFreeRoam();
+    else this._exitFreeRoam();
+    this.emitSnapshot();
+    return this.freeRoam;
+  }
+
+  getFreeRoam() {
+    return this.freeRoam;
+  }
+
+  _enterFreeRoam() {
+    if (!this.dog || !this.camera || !this.canvas) return;
+    this.freeRoam = true;
+    this.liveMotion = true;
+
+    this._freeRoamSaved = {
+      camPos: this.camera.position.clone(),
+      target: this.controls?.target.clone() ?? new THREE.Vector3(),
+      fov: this.camera.fov,
+      animalPos: this.dog.root.position.clone(),
+      animalYaw: this.dog.animation.getRootYaw?.() ?? 0,
+      behavior: this.dog.animation.getBehavior?.() ?? 'idle',
+      autopilot: this.dog.animation.getAutopilot?.() ?? false,
+      controlsEnabled: this.controls?.enabled ?? true,
+    };
+
+    if (this.controls) this.controls.enabled = false;
+    this.dog.animation.setAutopilot?.(false);
+
+    // Wider fog so the open floor reads as a roam pad.
+    if (this.scene?.fog) {
+      this.scene.fog.near = 10;
+      this.scene.fog.far = 36;
+    }
+    this.camera.fov = 48;
+    this.camera.updateProjectionMatrix();
+
+    const target = this._chaseTarget();
+    const yaw = (this.dog.animation.getRootYaw?.() ?? 0) + Math.PI;
+    const framingScale = this._animalFramingScale();
+    if (!this.chaseCamera) this.chaseCamera = new DogCameraSystem();
+    this.chaseCamera.initialize(this.camera, target, {
+      yaw,
+      subjectMode: 'player',
+      framingScale,
+    });
+
+    if (!this.freeRoamController) {
+      this.freeRoamController = new StudioFreeRoamController({
+        animal: this.dog,
+        camera: this.camera,
+      });
+    } else {
+      this.freeRoamController.setAnimal(this.dog);
+    }
+    this.freeRoamController.enabled = true;
+
+    if (!this.freeRoamInput) {
+      this.freeRoamInput = this._createFreeRoamInput();
+    }
+
+    // Drop the animal onto the floor origin facing +Z if it was in a portrait pose.
+    this.dog.root.position.set(0, 0, 0);
+    this.dog.animation.setRootPosition?.(0, 0, 0);
+    this.dog.animation.setRootYaw?.(0);
+    this.dog.animation.setBehavior?.('idle');
+    this.chaseCamera.recenter(0);
+    this.chaseCamera.snap();
+    this.canvas?.focus?.();
+  }
+
+  _exitFreeRoam() {
+    this.freeRoam = false;
+    if (this.freeRoamController) this.freeRoamController.enabled = false;
+    if (this.controls) this.controls.enabled = this._freeRoamSaved?.controlsEnabled ?? true;
+
+    if (this.scene?.fog) {
+      this.scene.fog.near = 6;
+      this.scene.fog.far = 18;
+    }
+    if (this._freeRoamSaved) {
+      this.camera.fov = this._freeRoamSaved.fov ?? 40;
+      this.camera.updateProjectionMatrix();
+      this.camera.position.copy(this._freeRoamSaved.camPos);
+      if (this.controls && this._freeRoamSaved.target) {
+        this.controls.target.copy(this._freeRoamSaved.target);
+        this.controls.update();
+      }
+      if (this.dog) {
+        this.dog.root.position.copy(this._freeRoamSaved.animalPos);
+        const p = this._freeRoamSaved.animalPos;
+        this.dog.animation.setRootPosition?.(p.x, p.y, p.z);
+        this.dog.animation.setRootYaw?.(this._freeRoamSaved.animalYaw);
+        this.dog.animation.setBehavior?.(this._freeRoamSaved.behavior ?? 'idle');
+        this.dog.animation.setAutopilot?.(this._freeRoamSaved.autopilot ?? false);
+      }
+    } else {
+      this.camera.fov = 40;
+      this.camera.updateProjectionMatrix();
+    }
+    this._freeRoamSaved = null;
+  }
+
+  _rebindFreeRoamAnimal() {
+    if (!this.freeRoam || !this.dog) return;
+    this.freeRoamController?.setAnimal(this.dog);
+    const target = this._chaseTarget();
+    this.chaseCamera?.setTarget(target, {
+      yaw: (this.dog.animation.getRootYaw?.() ?? 0) + Math.PI,
+      subjectMode: 'player',
+      framingScale: this._animalFramingScale(),
+      snap: true,
+    });
   }
 
   enterHarnessDefaults() {
@@ -398,9 +781,12 @@ export class DogSimScene {
     }
 
     this.dog.animation.setAutopilot(false);
-    this.dog.animation.setBehavior(preset.behavior ?? 'idle');
-    this.dog.animation.setRootPosition(0, 0, 0);
-    this.dog.animation.setRootYaw(0);
+    // Free roam owns root TRS + chase cam — only apply lighting/mouth here.
+    if (!this.freeRoam) {
+      this.dog.animation.setBehavior(preset.behavior ?? 'idle');
+      this.dog.animation.setRootPosition(0, 0, 0);
+      this.dog.animation.setRootYaw(0);
+    }
     // Studio/harness stills keep a closed mouth so faces match photo boards
     // (open pant reads as a dog gape on rodents/cats). Sit is still a
     // quadruped crouch — upright sciurid sit needs a dedicated pose kit.
@@ -411,17 +797,23 @@ export class DogSimScene {
       // Snap closed after damp so residual pant blend can't flash teeth/jaw.
       if ((preset.mouthState ?? 'closed') === 'closed') {
         this.dog.animation.setMouthState('closed');
-        this.dog.face?.setMouthOpen(0, 0, 0, 0, false);
+        this.dog.face?.setMouthOpen?.(0, 0, 0, 0, false);
       }
     }
-    this.frameDogForPreset(preset);
+    if (!this.freeRoam) this.frameDogForPreset(preset);
     this.emitSnapshot();
   }
 
   frameDogForPreset(preset) {
+    if (this.freeRoam) return;
     if (!this.dog || !this.camera || !this.controls) return;
     this.dog.root.updateMatrixWorld(true);
-    const bounds = new THREE.Box3().setFromObject(this.dog.root);
+    const isBird = Boolean(this.dog.isBird);
+    // Birds: core-body bones only — Flap/bind hang wing tips to y≈-2 and blow
+    // out the full mesh AABB, which pins the camera too far back.
+    const bounds = isBird && this.dog.animation?.getCoreBounds
+      ? this.dog.animation.getCoreBounds()
+      : new THREE.Box3().setFromObject(this.dog.root);
     const size = bounds.getSize(new THREE.Vector3());
     const center = bounds.getCenter(new THREE.Vector3());
     center.y = bounds.min.y + size.y * 0.5;
@@ -431,16 +823,23 @@ export class DogSimScene {
     const direction = sourcePos.sub(sourceTarget).normalize();
     let target = center;
     let framingExtent = Math.max(size.x, size.y, size.z, 0.2);
+    if (isBird) {
+      framingExtent = Math.max(size.x, size.z * 0.9, size.y, 0.16);
+    }
     if (preset.id === 'head-close') {
-      const head = this.dog.rig.bonesByName.get('Head');
+      const head = this.dog.rig?.bonesByName?.get('Head')
+        ?? this.dog.rig?.bonesByName?.get('head');
       if (head) target = head.getWorldPosition(new THREE.Vector3());
+      const headSize = this.dog.phenotype?.skeleton?.headSize ?? 1;
+      const scale = this.dog.phenotype?.skeleton?.scale ?? 1;
       framingExtent = Math.max(
-        0.12,
-        0.24 * this.dog.phenotype.skeleton.headSize * this.dog.phenotype.skeleton.scale,
+        isBird ? 0.08 : 0.12,
+        (isBird ? 0.2 : 0.24) * headSize * scale,
       );
     }
     const fov = THREE.MathUtils.degToRad(this.camera.fov);
-    const distance = (framingExtent * (preset.id === 'head-close' ? 1.16 : 0.88)) / Math.tan(fov * 0.5);
+    const pad = isBird ? (preset.id === 'head-close' ? 1.35 : 1.12) : (preset.id === 'head-close' ? 1.16 : 0.88);
+    const distance = (framingExtent * pad) / Math.tan(fov * 0.5);
     this.camera.position.copy(target).addScaledVector(direction, distance);
     this.controls.target.copy(target);
     this.controls.minDistance = Math.max(0.15, framingExtent * 0.7);
@@ -455,18 +854,19 @@ export class DogSimScene {
   settleSeconds(seconds) {
     if (!this.dog) return;
     const steps = Math.max(1, Math.round(seconds / FIXED_DT));
+    const isBird = Boolean(this.dog.isBird);
     for (let i = 0; i < steps; i += 1) {
       const clipReady = !this.harnessMode && Boolean(this.clipPlayer?.ready);
       // Skeleton clips own body TRS when the library is ready — skip procedural gait.
-      this.dog.animation?.setClipDriven?.(clipReady);
+      this.dog.animation?.setClipDriven?.(isBird || clipReady);
       this.dog.update(FIXED_DT, {
         fixed: true,
         time: this.dog.animation.getTime(),
-        plantFeet: !clipReady,
+        plantFeet: !isBird && !clipReady,
       });
       // Harness stays procedural-only for deterministic screenshots; live studio
       // advances retargeted skeleton clips as the sole body pose writer.
-      if (!this.harnessMode) {
+      if (!this.harnessMode && !isBird) {
         this.clipPlayer?.update?.(FIXED_DT, this.dog.animation.getBehavior());
         if (this.clipPlayer?.ready) {
           this.dog.animation?.applyPostClipOverlays?.();
@@ -484,7 +884,8 @@ export class DogSimScene {
   _bindClipPlayer(dog) {
     this.clipPlayer?.dispose?.();
     this.clipPlayer = null;
-    if (this.harnessMode || !animalUsesDogClipLibrary(dog)) return;
+    // Birds embed Flap/Glide/Idle/Walk on the GLB — animation facade owns them.
+    if (dog?.isBird || this.harnessMode || !animalUsesDogClipLibrary(dog)) return;
     this.clipPlayer = new DogClipPlayer(dog);
     void this.clipPlayer.initialize();
   }
@@ -518,9 +919,20 @@ export class DogSimScene {
    * @param {string} name
    */
   setClip(name) {
-    if (!name || !this.clipPlayer) return false;
+    if (!name) return false;
     this.liveMotion = true;
     this.dog?.animation.setAutopilot(false);
+    // Bird / goose / cat clips are driven by the animation facade (GLB or
+    // procedural) rather than the retargeted dog-bone clip player.
+    if (this.dog?.isBird || this.dog?.rigKind === 'cat' || this.dog?.rigKind === 'horse') {
+      const catalog = this.dog.birdClips ?? this.dog.catClips ?? this.dog.horseClips ?? GOOSE_CLIP_CATALOG;
+      const entry = catalog.find((item) => item.name === name) ?? null;
+      if (entry?.behavior) this.dog.animation.setBehavior(entry.behavior);
+      const ok = this.dog.animation.playClip?.(name) ?? false;
+      this.emitSnapshot();
+      return ok;
+    }
+    if (!this.clipPlayer) return false;
     const catalog = this.clipPlayer.snapshot?.()?.catalog
       ?? null;
     const entry = Array.isArray(catalog)
@@ -551,11 +963,21 @@ export class DogSimScene {
     this.emitSnapshot();
   }
 
-  rebuildDog({ breedId = this.breedId, seed = this.seed, variantId } = {}) {
+  /**
+   * Rebuild the active animal. Birds are async goose-body varieties; cat-rig
+   * breeds build the bespoke procedural cat; insects update catalog identity
+   * only (no mesh yet); other quadrupeds stay synchronous via createProceduralDog.
+   */
+  async rebuildDog({ breedId = this.breedId, seed = this.seed, variantId } = {}) {
     if (!this.scene) return null;
-    // Keep catalog identity (feline stubs stay "siamese"); silhouette falls back
-    // inside resolveDogPhenotype when the breed is not authored.
-    const normalizedBreedId = normalizeDogBreedId(breedId);
+    // Keep catalog identity; silhouette falls back inside resolveDogPhenotype
+    // when the breed is not authored. `cat-rig` / `horse-rig` breeds route to
+    // their bespoke pipelines below.
+    const normalizedBreedId = isAvianBreed(breedId)
+      ? normalizeDogBreedId(breedId, 'eastern-phoebe')
+      : isInsectCatalogBreed(breedId)
+        ? normalizeDogBreedId(breedId, 'seven-spotted-ladybug')
+        : normalizeDogBreedId(breedId);
     const normalizedSeed = normalizeDogSeed(seed);
     const breedChanged = normalizedBreedId !== this.breedId;
     // Explicit variantId always wins. Otherwise: breed change resets to that
@@ -565,6 +987,22 @@ export class DogSimScene {
       normalizedBreedId,
       variantId ?? (breedChanged ? undefined : this.variantId),
     );
+
+    // Other Insecta entries stay catalog-only until their mesh ships. Ladybug
+    // routes through createProceduralLadybug below.
+    if (isInsectCatalogBreed(normalizedBreedId) && !isLadybugRigBreed(normalizedBreedId)) {
+      const insectBreed = getDogBreed(normalizedBreedId);
+      this.breedId = normalizedBreedId;
+      this.familyId = insectBreed?.familyId ?? this.familyId;
+      this.speciesId = getSpeciesIdForBreed(normalizedBreedId)
+        ?? getSpeciesIdForFamily(this.familyId)
+        ?? 'coccinellidae';
+      this.variantId = normalizedVariantId;
+      this.seed = normalizedSeed;
+      this.emitSnapshot();
+      return this.dog;
+    }
+
     const previous = this.dog;
     const state = previous ? {
       behavior: previous.animation.getBehavior(),
@@ -580,12 +1018,60 @@ export class DogSimScene {
     this.clipPlayer?.dispose?.();
     this.clipPlayer = null;
 
-    const next = createProceduralDog({
-      breedId: normalizedBreedId,
-      seed: normalizedSeed,
-      variantId: normalizedVariantId,
-      shellCount: this.shellCount,
-    });
+    const gen = (this._rebuildGen = (this._rebuildGen ?? 0) + 1);
+
+    let next;
+    if (isAvianBreed(normalizedBreedId)) {
+      // All birds are varieties of the procedural Canada-goose body (own 53-bone
+      // rig + shell plumage). Per-breed identity is scale/palette/pattern knobs.
+      next = await createProceduralGoose({
+        breedId: normalizedBreedId,
+        seed: normalizedSeed,
+        variantId: normalizedVariantId,
+        shellCount: this.shellCount,
+      });
+      if (this._disposed || gen !== this._rebuildGen) {
+        next.dispose();
+        return this.dog;
+      }
+    } else if (isCatRigBreed(normalizedBreedId)) {
+      // The "Tortoiseshell (Procedural)" catalog entry (flag: cat-rig) gets its
+      // own fully-procedural pipeline (bespoke ~50-bone rig, ring-loft body,
+      // tortoiseshell shell coat, feline IK/FSM animation) instead of deriving
+      // from the shared dog rig. All other felines stay dog-derived stubs.
+      next = createProceduralCat({
+        breedId: normalizedBreedId,
+        seed: normalizedSeed,
+        variantId: normalizedVariantId,
+        shellCount: this.shellCount,
+      });
+    } else if (isHorseRigBreed(normalizedBreedId)) {
+      // "Domestic Horse v2 (Procedural)" (flag: horse-rig) gets its own
+      // fully-procedural pipeline (bespoke ~120-bone rig, ring-loft body,
+      // bay shell coat, equine gait/IK/FSM animation) instead of deriving
+      // from the shared dog rig. v1 domestic-horse stays dog-derived.
+      next = createProceduralHorse({
+        breedId: normalizedBreedId,
+        seed: normalizedSeed,
+        variantId: normalizedVariantId,
+        shellCount: this.shellCount,
+      });
+    } else if (isLadybugRigBreed(normalizedBreedId)) {
+      next = createProceduralLadybug({
+        breedId: normalizedBreedId,
+        seed: normalizedSeed,
+        variantId: normalizedVariantId,
+        shellCount: Math.min(this.shellCount ?? 12, 16),
+      });
+    } else {
+      next = createProceduralDog({
+        breedId: normalizedBreedId,
+        seed: normalizedSeed,
+        variantId: normalizedVariantId,
+        shellCount: this.shellCount,
+      });
+    }
+
     this.scene.add(next.root);
     if (state) {
       next.animation.setBehavior(state.behavior);
@@ -594,12 +1080,12 @@ export class DogSimScene {
       next.animation.setTime(state.time);
       next.animation.setRootPosition(state.rootPosition.x, state.rootPosition.y, state.rootPosition.z);
       next.animation.setRootYaw(state.rootYaw);
-      next.setNakedBody(state.nakedBody);
-      next.setShowFur(state.showFur);
+      next.setNakedBody?.(state.nakedBody);
+      next.setShowFur?.(state.showFur);
     }
     if (this.harnessMode) {
-      next.animation.setFrozenBlink(true);
-      next.animation.setFrozenBreeze(true);
+      next.animation.setFrozenBlink?.(true);
+      next.animation.setFrozenBreeze?.(true);
     }
     this.dog = next;
     this.breedId = next.breedId;
@@ -614,9 +1100,18 @@ export class DogSimScene {
     // Subject changed — refresh probe SH so bounce matches the new coat/shape.
     void this.studioLighting?.bakeProbes?.();
 
-    const preset = DOG_REFERENCE_PRESETS.find((item) => item.id === this.activePresetId)
-      ?? DOG_REFERENCE_PRESETS[0];
-    this.frameDogForPreset(preset);
+    if (this.freeRoam) {
+      // Keep free roam through breed swaps; re-bind chase cam + controller.
+      this.dog.root.position.set(0, 0, 0);
+      this.dog.animation.setRootPosition?.(0, 0, 0);
+      this.dog.animation.setRootYaw?.(0);
+      this.dog.animation.setAutopilot?.(false);
+      this._rebindFreeRoamAnimal();
+    } else {
+      const preset = DOG_REFERENCE_PRESETS.find((item) => item.id === this.activePresetId)
+        ?? DOG_REFERENCE_PRESETS[0];
+      this.frameDogForPreset(preset);
+    }
     this.emitSnapshot();
     return next;
   }
@@ -737,6 +1232,8 @@ export class DogSimScene {
         thisRef.controls?.update();
       },
       pet: () => thisRef.petImpulse(),
+      setFreeRoam: (on) => thisRef.setFreeRoam(on),
+      getFreeRoam: () => thisRef.getFreeRoam(),
       renderOnce: async () => {
         thisRef.dog?.update(0, { fixed: true });
         thisRef.controls?.update();
@@ -746,6 +1243,10 @@ export class DogSimScene {
           await thisRef.renderer.renderAsync(thisRef.scene, thisRef.camera);
         }
       },
+      // Live handle for look-dev probes (harness iteration only).
+      getDog: () => thisRef.dog,
+      getBreedId: () => thisRef.breedId,
+      rebuildDog: (opts) => thisRef.rebuildDog(opts ?? {}),
       getBoneCount: () => thisRef.dog?.boneCount ?? 0,
       getBoneWorldPosition: (name) => {
         const bone = thisRef.dog?.rig.bonesByName.get(name);
@@ -766,6 +1267,7 @@ export class DogSimScene {
       status: this.status,
       error: this.error,
       harness: this.harnessMode,
+      freeRoam: this.freeRoam,
       liveMotion: this.liveMotion,
       nakedBody: this.dog?.getNakedBody() ?? false,
       showFur: this.dog?.getShowFur() ?? true,
@@ -781,15 +1283,48 @@ export class DogSimScene {
       familyId: this.familyId,
       breedId: this.breedId,
       breedLabel: breed?.label ?? 'Golden Retriever',
-      animationClips: this.clipPlayer?.snapshot?.() ?? {
-        enabled: false,
-        ready: false,
-        clip: null,
-        clips: 0,
-        available: [],
-        pinned: null,
-        catalog: null,
-      },
+      isInsect: isInsectCatalogBreed(this.breedId)
+        || this.dog?.isInsect
+        || this.dog?.rigKind === 'insect'
+        || ANIMAL_SPECIES.find((entry) => entry.id === this.speciesId)?.orderId === 'insecta',
+      animationClips: (this.dog?.isBird || this.dog?.rigKind === 'cat' || this.dog?.rigKind === 'horse' || this.dog?.rigKind === 'insect')
+        ? (() => {
+          const catalog = this.dog.ladybugClips
+            ?? this.dog.birdClips
+            ?? this.dog.catClips
+            ?? this.dog.horseClips
+            ?? (this.dog?.rigKind === 'insect' ? LADYBUG_CLIP_CATALOG
+              : this.dog?.rigKind === 'horse' ? HORSE_CLIP_CATALOG : GOOSE_CLIP_CATALOG);
+          return {
+            enabled: true,
+            ready: true,
+            library: this.dog.rigKind === 'insect'
+              ? 'ladybug'
+              : this.dog.rigKind === 'cat'
+                ? 'cat'
+                : this.dog.rigKind === 'horse'
+                  ? 'horse'
+                  : (this.dog.isBird || this.dog.rigKind === 'goose' || this.dog.phenotype?.rigKind === 'goose')
+                    ? 'goose'
+                    : 'bird',
+            clip: this.dog.animation.getCurrentClip?.()
+              ?? this.dog.animation.getBehavior?.()
+              ?? null,
+            clips: catalog.length,
+            available: catalog.map((c) => c.name),
+            pinned: null,
+            catalog,
+          };
+        })()
+        : (this.clipPlayer?.snapshot?.() ?? {
+          enabled: false,
+          ready: false,
+          clip: null,
+          clips: 0,
+          available: [],
+          pinned: null,
+          catalog: null,
+        }),
       seed: this.seed,
       breedSummary: breed?.summary ?? null,
       akcRank: breed?.popularity.rank ?? null,
@@ -805,9 +1340,15 @@ export class DogSimScene {
         : [],
       preset: this.activePresetId,
       galleryIndex: this.galleryIndex,
-      speed: Number((this.dog?.animation.getMoveSpeed() ?? 0).toFixed(2)),
+      speed: Number((
+        this.freeRoamController?.horizontalSpeed
+        ?? this.dog?.animation.getMoveSpeed()
+        ?? 0
+      ).toFixed(2)),
       time: Number((this.dog?.animation.getTime() ?? 0).toFixed(2)),
       studioLighting: this.studioLighting?.snapshot?.() ?? null,
+      freeRoamMotion: this.freeRoam ? this.freeRoamController?.snapshot?.() ?? null : null,
+      chaseCamera: this.freeRoam ? this.chaseCamera?.snapshot?.() ?? null : null,
     };
   }
 
@@ -835,19 +1376,45 @@ export class DogSimScene {
 
     const dt = Math.min(this.clock.getDelta(), 0.05);
     if (this.dog && this.status === 'ready') {
-      if (this.liveMotion) {
+      if (this.freeRoam && this.freeRoamController?.enabled) {
+        const input = this.freeRoamInput?.consumeFrame?.() ?? {};
+        const isBird = Boolean(this.dog.isBird);
         const clipReady = Boolean(this.clipPlayer?.ready);
-        // Retargeted clips take priority: no procedural body gait when ready.
-        this.dog.animation?.setClipDriven?.(clipReady);
-        this.dog.update(dt, { plantFeet: !clipReady });
+        this.dog.animation?.setClipDriven?.(isBird || clipReady);
+        // Controller advances root + calls animal.update for pose.
+        this.freeRoamController.update(dt, input);
         this.clipPlayer?.update?.(dt, this.dog.animation.getBehavior());
-        // Clip is the sole body pose writer — plant pads after the mixer.
-        // Mouth/jaw/ears reapply after the sample so pant/alert still work.
-        if (clipReady) {
+        if (clipReady && !isBird) {
           this.dog.animation?.applyPostClipOverlays?.();
           plantDogFeet(this.dog, { getGroundHeight: () => 0 });
         }
-      } else if (!this.harnessMode) {
+        const anim = this.dog.animation;
+        const controller = this.freeRoamController;
+        this.chaseCamera?.update(dt, input, {
+          headingYaw: anim?.getRootYaw?.() ?? 0,
+          yawRate: anim?.getYawRate?.() ?? controller?.yawRate ?? 0,
+          moving: (controller?.horizontalSpeed ?? 0) > 0.08
+            || anim?.getBehavior?.() === 'walk'
+            || anim?.getBehavior?.() === 'trot',
+          speed: controller?.horizontalSpeed ?? anim?.getMoveSpeed?.() ?? 0,
+          forwardIntent: controller?.forwardIntent ?? 0,
+        });
+      } else if (this.liveMotion) {
+        const isBird = Boolean(this.dog.isBird);
+        const clipReady = Boolean(this.clipPlayer?.ready);
+        // Retargeted clips take priority: no procedural body gait when ready.
+        // Birds always drive pose from embedded GLB clips.
+        this.dog.animation?.setClipDriven?.(isBird || clipReady);
+        this.dog.update(dt, { plantFeet: !isBird && !clipReady });
+        this.clipPlayer?.update?.(dt, this.dog.animation.getBehavior());
+        // Clip is the sole body pose writer — plant pads after the mixer.
+        // Mouth/jaw/ears reapply after the sample so pant/alert still work.
+        // Birds plant toes inside createBirdAnimation.update (foot bones only).
+        if (clipReady && !isBird) {
+          this.dog.animation?.applyPostClipOverlays?.();
+          plantDogFeet(this.dog, { getGroundHeight: () => 0 });
+        }
+      } else if (!this.harnessMode && this.dog.furDynamics?.update) {
         // Still advance fur time gently when paused? keep frozen in harness.
         this.dog.furDynamics.update(dt, this.dog.animation.getRootPosition(), {
           time: this.dog.animation.getTime(),
@@ -856,7 +1423,7 @@ export class DogSimScene {
       }
     }
 
-    this.controls?.update();
+    if (!this.freeRoam) this.controls?.update();
     if (this.studioLighting) {
       this.studioLighting.render();
     } else if (this.renderer && this.scene && this.camera) {
@@ -879,6 +1446,12 @@ export class DogSimScene {
     this.animationFrame = 0;
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
+    if (this.freeRoam) this._exitFreeRoam();
+    this.freeRoamInput?.dispose?.();
+    this.freeRoamInput = null;
+    this.freeRoamController = null;
+    this.chaseCamera?.dispose?.();
+    this.chaseCamera = null;
     this.controls?.dispose();
     this.controls = null;
     this.clipPlayer?.dispose?.();
